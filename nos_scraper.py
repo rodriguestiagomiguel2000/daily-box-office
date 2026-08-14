@@ -289,17 +289,43 @@ class NOSScraper:
             data = json.loads(resp.read().decode("utf-8", errors="replace"))
             return data.get("data", {}).get("theaterList", {}).get("items", [])
 
-    def get_movie_sessions(self, aggregate_movie_id: str) -> Dict[str, Any]:
-        """Fetches structured session timetable for a movie by aggregate format number."""
+    def get_movie_sessions(self, aggregate_movie_id: str, max_retries: int = 3, timeout_sec: int = 20) -> Dict[str, Any]:
+        """
+        Fetches structured session timetable for a movie by aggregate format number.
+        Includes retry logic up to 3 attempts with exponential backoff (2s, then 4s)
+        and an increased 20s timeout to prevent transient skips caused by slow responses.
+        """
         url = f"{BASE_SITE}/bin/cinemas/render/getMovieSessions.getMovieSessionsAggregator.json?aggregateMovieId={aggregate_movie_id}"
         req = urllib.request.Request(url, headers={**COMMON_HEADERS, "X-Requested-With": "XMLHttpRequest"})
-        with urllib.request.urlopen(req, timeout=12) as resp:
-            raw = resp.read()
+        
+        last_exception: Optional[Exception] = None
+        for attempt in range(1, max_retries + 1):
             try:
-                text = raw.decode("utf-8")
-            except UnicodeDecodeError:
-                text = raw.decode("latin-1", errors="replace")
-            return json.loads(text)
+                with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+                    raw = resp.read()
+                    try:
+                        text = raw.decode("utf-8")
+                    except UnicodeDecodeError:
+                        text = raw.decode("latin-1", errors="replace")
+                    data = json.loads(text)
+                    if attempt > 1:
+                        log.info(f"Successfully fetched schedule for movie {aggregate_movie_id} on retry attempt {attempt}/{max_retries}.")
+                    return data
+            except Exception as e:
+                last_exception = e
+                if attempt < max_retries:
+                    backoff_sec = 2 ** attempt  # attempt 1: 2s, attempt 2: 4s
+                    log.info(
+                        f"Schedule discovery for movie {aggregate_movie_id} failed on attempt {attempt}/{max_retries} ({type(e).__name__}: {e}). "
+                        f"Retrying in {backoff_sec}s..."
+                    )
+                    time.sleep(backoff_sec)
+                else:
+                    log.warning(
+                        f"Schedule discovery for movie {aggregate_movie_id} failed after all {max_retries} attempts. "
+                        f"Last error: {type(e).__name__}: {e}"
+                    )
+                    raise last_exception if last_exception is not None else e
 
     def get_session_config(self, session_uuid: str) -> Dict[str, Any]:
         """Resolves Room UUID, movie title, room name, and cinema metadata for a session."""

@@ -71,6 +71,15 @@ def parse_portugal_session_time(op_date_str: str, time_str: str) -> datetime:
         raise ValueError(f"Could not parse session time: {op_date_str} {time_str}")
 
 
+def emit_session(run_id: str, session_data: Dict[str, Any]):
+    session_event = {
+        "type": "session",
+        "run_id": run_id,
+        "data": session_data
+    }
+    print(json.dumps(session_event), flush=True)
+
+
 def emit_progress(
     run_id: str,
     status: str,
@@ -354,8 +363,8 @@ def collect_data(
                         "snapshot": snapshot_data
                     }
 
-                # Bounded concurrency: 6 parallel workers for optimal NOS endpoint throughput
-                MAX_CONCURRENT_SCRAPERS = 6
+                # Bounded concurrency: 3 parallel workers for low-memory footprint & high reliability
+                MAX_CONCURRENT_SCRAPERS = 3
                 with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_CONCURRENT_SCRAPERS) as executor:
                     future_to_cand = {
                         executor.submit(process_candidate, cand): cand
@@ -370,9 +379,11 @@ def collect_data(
                         try:
                             res_item = future.result()
                             with progress_lock:
-                                collected_sessions.append(res_item)
                                 run.sessions_successful += 1
                                 run.seat_snapshots_created += 1
+                                # Immediately stream individual session to parent supervisor for incremental DB persistence
+                                emit_session(run.collection_run_id, res_item)
+                                del res_item
                         except Exception as sess_err:
                             err_str = str(sess_err)
                             if "Terminated due to timeout" in err_str:
@@ -464,7 +475,7 @@ def collect_data(
             "errors": run.errors,
             "collector_version": run.collector_version
         },
-        "sessions": collected_sessions
+        "sessions": []
     }
     return final_payload
 
@@ -488,35 +499,15 @@ def main():
     database_url = os.environ.get("DATABASE_URL")
     standalone_mode = database_url is not None and args.run_id is None
 
-    prepared = None
+    if standalone_mode:
+        print("Standalone Database Orchestration Mode Detected (GHA or CLI) -> Delegating to streaming Node runner", flush=True)
+        cmd = ["npx", "tsx", "server/execute_run_cli.ts"]
+        env = os.environ.copy()
+        proc = subprocess.run(cmd, env=env)
+        sys.exit(proc.returncode)
+
     run_id = args.run_id
     movie_ids = args.movie_ids
-
-    if standalone_mode:
-        print("Standalone Database Orchestration Mode Detected (GHA or CLI)", flush=True)
-        try:
-            cmd = ["npx", "tsx", "server/prepare_run_cli.ts"]
-            env = os.environ.copy()
-            proc = subprocess.run(cmd, capture_output=True, text=True, env=env)
-            if proc.returncode != 0:
-                print(f"Error preparing run. CLI stdout:\n{proc.stdout}\nStderr:\n{proc.stderr}", file=sys.stderr, flush=True)
-                sys.exit(proc.returncode)
-            
-            prepared = json.loads(proc.stdout.strip())
-            if prepared.get("skipped"):
-                print(f"CONCURRENCY_LOCK: Collection run skipped. Reason: {prepared.get('reason')}", flush=True)
-                sys.exit(0)
-
-            run_id = prepared["runId"]
-            # If movie-ids weren't passed on CLI, use the ones from the database
-            if not movie_ids:
-                movie_ids = prepared["targetIds"]
-                print(f"Discovered {len(movie_ids)} tracked movies to collect from Neon database.", flush=True)
-            else:
-                print(f"Using explicitly specified movie IDs: {movie_ids}", flush=True)
-        except Exception as e:
-            print(f"Failed to prepare database run: {str(e)}", file=sys.stderr, flush=True)
-            sys.exit(1)
 
     try:
         result = collect_data(
@@ -527,72 +518,14 @@ def main():
         )
     except Exception as scrape_error:
         print(f"Scraper execution failed with unexpected error: {str(scrape_error)}", file=sys.stderr, flush=True)
-        if standalone_mode and prepared:
-            fail_payload = {
-                "type": "final",
-                "run": {
-                    "run_id": run_id,
-                    "started_at": prepared.get("startedAtIso"),
-                    "completed_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    "status": "FAILED",
-                    "movies_found": len(movie_ids) if movie_ids else 0,
-                    "sessions_found": 0,
-                    "sessions_attempted": 0,
-                    "sessions_completed": 0,
-                    "sessions_successful": 0,
-                    "sessions_failed": 0,
-                    "seat_snapshots_created": 0,
-                    "errors": [f"Scraper fatal crash: {str(scrape_error)}"]
-                },
-                "sessions": []
-            }
-            try:
-                fd, temp_path = tempfile.mkstemp(suffix=".json", prefix="nos_run_err_")
-                try:
-                    with os.fdopen(fd, 'w') as f:
-                        json.dump({"prepared": prepared, "finalPayload": fail_payload}, f)
-                    cmd = ["npx", "tsx", "server/persist_payload_cli.ts", temp_path]
-                    subprocess.run(cmd, env=os.environ.copy())
-                finally:
-                    if os.path.exists(temp_path):
-                        os.remove(temp_path)
-            except Exception as db_err:
-                print(f"Failed to persist failure status to database: {str(db_err)}", file=sys.stderr, flush=True)
         sys.exit(1)
 
-    if standalone_mode and prepared:
-        # Write envelope JSON containing both preparation metadata and final scraper result
-        envelope = {
-            "prepared": prepared,
-            "finalPayload": result
-        }
-        try:
-            fd, temp_path = tempfile.mkstemp(suffix=".json", prefix="nos_run_")
-            try:
-                with os.fdopen(fd, 'w') as f:
-                    json.dump(envelope, f)
-                
-                # Spawn Node.js persist script to write back data, transitions, and performance snapshots
-                cmd = ["npx", "tsx", "server/persist_payload_cli.ts", temp_path]
-                print(f"Persisting collected data for {run_id} to database...", flush=True)
-                proc = subprocess.run(cmd, capture_output=False, env=os.environ.copy())
-                if proc.returncode != 0:
-                    print(f"Database persistence failed. Script exited with code {proc.returncode}", file=sys.stderr, flush=True)
-                    sys.exit(proc.returncode)
-                print("Database persistence completed successfully.", flush=True)
-            finally:
-                if os.path.exists(temp_path):
-                    os.remove(temp_path)
-        except Exception as e:
-            print(f"Failed during database persistence: {str(e)}", file=sys.stderr, flush=True)
-            sys.exit(1)
-    else:
-        # Output final JSON payload event on stdout for Node.js supervisor to consume
-        print(json.dumps(result))
+    # Output final JSON payload event on stdout for Node.js supervisor to consume
+    print(json.dumps(result))
 
     # Exit with code 1 if the run failed
     if result.get("run", {}).get("status") == "FAILED":
-         sys.exit(1)
+        sys.exit(1)
 
 
 if __name__ == "__main__":
