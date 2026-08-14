@@ -32,7 +32,7 @@ logging.basicConfig(level=logging.WARNING, format="%(asctime)s [%(levelname)s] %
 log = logging.getLogger("collector_job")
 
 LISBON_TZ = ZoneInfo("Europe/Lisbon")
-BUSINESS_DAY_CUTOFF_HOUR = 2
+BUSINESS_DAY_CUTOFF_HOUR = 6
 
 
 def compute_business_date(starts_at_utc: datetime) -> str:
@@ -160,9 +160,9 @@ def collect_data(
     # Cutoff time for historical session filtering (REQUIREMENT 2 & 7)
     cutoff_utc = start_time_dt - timedelta(minutes=lookback_minutes)
 
-    # Strict Same-Day Filter (Today Only): Portugal local date
+    # Theatrical Operational Day Filter (6:00 AM Lisbon Cutoff):
     now_lisbon = datetime.now(LISBON_TZ)
-    today_lisbon = now_lisbon.date()
+    current_op_date_str = (now_lisbon - timedelta(hours=BUSINESS_DAY_CUTOFF_HOUR)).strftime("%Y-%m-%d")
 
     movies_completed = 0
     last_err: Optional[str] = None
@@ -243,9 +243,10 @@ def collect_data(
                         except Exception:
                             continue
 
-                        # STRICT SAME-DAY FILTER: Force session filter to ONLY scrape showtimes scheduled for TODAY (current Lisbon local date)
-                        sess_lisbon_date = starts_at_utc.astimezone(LISBON_TZ).date()
-                        if sess_lisbon_date != today_lisbon:
+                        # STRICT THEATRICAL OPERATIONAL DAY FILTER (6:00 AM Lisbon Cutoff):
+                        # Force session filter to ONLY scrape showtimes scheduled for current operational day (00:00-05:59 belongs to previous calendar day)
+                        sess_op_date_str = compute_business_date(starts_at_utc)
+                        if sess_op_date_str != current_op_date_str:
                             continue
 
                         # REQUIREMENT 2: Filter out past sessions older than lookback_minutes

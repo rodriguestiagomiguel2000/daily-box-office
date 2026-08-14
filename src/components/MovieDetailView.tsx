@@ -60,11 +60,15 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
 
   const [activeTab, setActiveTab] = useState<"boxoffice" | "timeline" | "sessions" | "cinemas">("boxoffice");
   
-  // Intraday & Box Office State
-  const todayDefaultStr = new Date().toLocaleDateString("en-CA", { timeZone: "Europe/Lisbon" });
+  // Theatrical Operational Date calculation (6:00 AM Lisbon cutoff)
+  const getLisbonOperationalDate = () => {
+    const shifted = new Date(Date.now() - 6 * 60 * 60 * 1000);
+    return shifted.toLocaleDateString("en-CA", { timeZone: "Europe/Lisbon" });
+  };
+  const todayDefaultStr = getLisbonOperationalDate();
   const [historyDates, setHistoryDates] = useState<string[]>([]);
   const [selectedDate, setSelectedDate] = useState<string>(todayDefaultStr);
-  const [targetTime, setTargetTime] = useState<string>("13:00");
+  const [targetTime, setTargetTime] = useState<string>("05:59");
   const [comparisonData, setComparisonData] = useState<IntradayComparisonResponse | null>(null);
   const [curvesData, setCurvesData] = useState<IntradayCurvesResponse | null>(null);
   const [progressionData, setProgressionData] = useState<IntradaySnapshot[]>([]);
@@ -359,8 +363,15 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
                     onChange={(e) => setTargetTime(e.target.value)}
                     className="bg-slate-800 border border-slate-700 text-slate-100 text-xs rounded-xl px-3 py-2 font-mono focus:ring-1 focus:ring-amber-500 outline-none"
                   />
-                  <div className="flex items-center gap-1">
-                    {["10:00", "13:00", "15:00", "18:00", "21:00"].map((t) => (
+                  <div className="flex items-center gap-1 flex-wrap">
+                    {[
+                      { t: "10:00", label: "10:00" },
+                      { t: "14:00", label: "14:00" },
+                      { t: "18:00", label: "18:00" },
+                      { t: "21:00", label: "21:00" },
+                      { t: "23:59", label: "23:59" },
+                      { t: "05:59", label: "05:59 (EOD)" },
+                    ].map(({ t, label }) => (
                       <button
                         key={t}
                         onClick={() => setTargetTime(t)}
@@ -370,7 +381,7 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
                             : "bg-slate-800/80 text-slate-400 hover:text-slate-200"
                         }`}
                       >
-                        {t}
+                        {label}
                       </button>
                     ))}
                   </div>
@@ -378,8 +389,13 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
               </div>
             </div>
 
-            <div className="text-right text-xs text-slate-400">
-              Comparing <span className="font-semibold text-amber-300">{selectedDate} @ {targetTime}</span> vs Previous Day & Previous Week
+            <div className="text-right text-xs text-slate-400 space-y-0.5">
+              <div>
+                Comparing <span className="font-semibold text-amber-300">{selectedDate} @ {targetTime}</span> vs Previous Day & Previous Week
+              </div>
+              <div className="text-[11px] text-slate-500">
+                Theatrical Day Cutoff: <span className="text-slate-400">06:00 AM Lisbon</span> (showtimes 00:00–05:59 count towards previous operational date)
+              </div>
             </div>
           </div>
 

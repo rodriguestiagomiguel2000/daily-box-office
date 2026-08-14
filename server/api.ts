@@ -763,9 +763,30 @@ apiRouter.post("/collector/cron", async (req, res) => {
   }
 });
 
-// Helper functions for Lisbon timezone conversion
-function parseLisbonLocalToUTC(dateStr: string, timeStr: string): Date {
-  const naive = new Date(`${dateStr}T${timeStr}:00.000Z`);
+// Helper functions for Lisbon timezone conversion & Theatrical Operational Day (6:00 AM Cutoff)
+export function getOperationalDateStr(date: Date = new Date()): string {
+  // 6:00 AM Lisbon Cutoff: Subtract 6 hours from timestamp, format in Europe/Lisbon
+  const shifted = new Date(date.getTime() - 6 * 60 * 60 * 1000);
+  return shifted.toLocaleDateString("en-CA", { timeZone: "Europe/Lisbon" });
+}
+
+function parseLisbonLocalToUTC(operationalDateStr: string, timeStr: string): Date {
+  const parts = timeStr.split(":");
+  const hour = parseInt(parts[0], 10) || 0;
+  const minute = parseInt(parts[1], 10) || 0;
+
+  // Theatrical Operational Day: showtimes from 00:00:00 to 05:59:59 belong to the next calendar date
+  let calendarDateStr = operationalDateStr;
+  if (hour < 6) {
+    const [y, m, d] = operationalDateStr.split("-").map((s) => parseInt(s, 10));
+    const nextDay = new Date(Date.UTC(y, m - 1, d + 1));
+    calendarDateStr = nextDay.toISOString().split("T")[0];
+  }
+
+  const paddedH = String(hour).padStart(2, "0");
+  const paddedM = String(minute).padStart(2, "0");
+  const naive = new Date(`${calendarDateStr}T${paddedH}:${paddedM}:00.000Z`);
+
   const formatter = new Intl.DateTimeFormat("en-US", {
     timeZone: "Europe/Lisbon",
     year: "numeric",
@@ -784,15 +805,15 @@ function parseLisbonLocalToUTC(dateStr: string, timeStr: string): Date {
     }
   }
 
-  let hour = parseInt(partsMap.hour, 10);
-  if (hour === 24) hour = 0;
+  let formattedHour = parseInt(partsMap.hour, 10);
+  if (formattedHour === 24) formattedHour = 0;
 
   const lisbonAsUTC = new Date(
     Date.UTC(
       parseInt(partsMap.year, 10),
       parseInt(partsMap.month, 10) - 1,
       parseInt(partsMap.day, 10),
-      hour,
+      formattedHour,
       parseInt(partsMap.minute, 10),
       parseInt(partsMap.second, 10)
     )
@@ -871,7 +892,7 @@ async function getOrComputeMovieSnapshotAtTime(
       FROM sessions s
       JOIN seat_snapshots ss ON ss.session_id = s.id
       WHERE s.movie_id = $1 
-        AND (s.operational_date = $2 OR TO_CHAR((s.starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '2 hours', 'YYYY-MM-DD') = $2)
+        AND (s.operational_date = $2 OR TO_CHAR((s.starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD') = $2)
         AND ss.collected_at <= $3
       ORDER BY s.id, ss.collected_at DESC
     ),
@@ -962,7 +983,7 @@ apiRouter.get("/movies/:id/history-dates", async (req, res) => {
 
     const datesRes = await query(
       `SELECT DISTINCT 
-        COALESCE(NULLIF(s.operational_date, ''), TO_CHAR((s.starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '2 hours', 'YYYY-MM-DD')) as date
+        COALESCE(NULLIF(s.operational_date, ''), TO_CHAR((s.starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD')) as date
        FROM sessions s
        WHERE s.movie_id = $1 AND s.starts_at IS NOT NULL
        ORDER BY date DESC;`,
@@ -983,7 +1004,7 @@ apiRouter.get("/movies/:id/intraday-progression", async (req, res) => {
     const movieId = parseInt(req.params.id, 10);
     if (isNaN(movieId)) return res.status(400).json({ error: "Invalid movie ID" });
 
-    const dateStr = (req.query.date as string) || new Date().toISOString().split("T")[0];
+    const dateStr = (req.query.date as string) || getOperationalDateStr();
 
     const snapsRes = await query(
       `SELECT 
@@ -1046,7 +1067,7 @@ apiRouter.get("/movies/:id/intraday-progression", async (req, res) => {
        FROM seat_snapshots ss
        JOIN sessions s ON ss.session_id = s.id
        WHERE s.movie_id = $1 
-         AND (s.operational_date = $2 OR TO_CHAR((s.starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '2 hours', 'YYYY-MM-DD') = $2)
+         AND (s.operational_date = $2 OR TO_CHAR((s.starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD') = $2)
        ORDER BY ss.collected_at ASC;`,
       [movieId, dateStr]
     );
@@ -1064,13 +1085,13 @@ apiRouter.get("/movies/:id/intraday-progression", async (req, res) => {
   }
 });
 
-// 3. Intraday Comparison: TODAY vs YESTERDAY vs SAME WEEKDAY LAST WEEK
+// 3. Intraday Comparison: TODAY vs YESTERDAY vs SAME WEEKDAY LAST WEEK (6:00 AM Theatrical Cutoff)
 apiRouter.get("/movies/:id/intraday-comparison", async (req, res) => {
   try {
     const movieId = parseInt(req.params.id, 10);
     if (isNaN(movieId)) return res.status(400).json({ error: "Invalid movie ID" });
 
-    const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "Europe/Lisbon" });
+    const todayStr = getOperationalDateStr();
     const targetDateStr = (req.query.date as string) || todayStr;
 
     let targetTimeStr = (req.query.time as string) || new Date().toLocaleTimeString("pt-PT", {
@@ -1108,19 +1129,32 @@ apiRouter.get("/movies/:id/intraday-comparison", async (req, res) => {
   }
 });
 
-// 4. Intraday Curves for Recharts (Hourly series: Today vs Yesterday vs Last Week)
+// 4. Intraday Curves for Recharts (Hourly series across the Theatrical Operational Day: 08:00 to 05:59 next day)
 apiRouter.get("/movies/:id/intraday-curves", async (req, res) => {
   try {
     const movieId = parseInt(req.params.id, 10);
     if (isNaN(movieId)) return res.status(400).json({ error: "Invalid movie ID" });
 
-    const todayStr = new Date().toLocaleDateString("en-CA", { timeZone: "Europe/Lisbon" });
+    const todayStr = getOperationalDateStr();
     const targetDateStr = (req.query.date as string) || todayStr;
 
     const yesterdayStr = getPreviousDateStr(targetDateStr, 1);
     const lastWeekStr = getPreviousDateStr(targetDateStr, 7);
 
-    const hours = ["08:00", "09:00", "10:00", "11:00", "12:00", "13:00", "14:00", "15:00", "16:00", "17:00", "18:00", "19:00", "20:00", "21:00", "22:00", "23:00"];
+    // Operational Day Timeline: 08:00 morning through 23:59 and late night 02:00, 05:59 (Next Day EOD Cutoff)
+    const hours = [
+      "08:00",
+      "10:00",
+      "12:00",
+      "14:00",
+      "16:00",
+      "18:00",
+      "20:00",
+      "22:00",
+      "23:59",
+      "02:00",
+      "05:59",
+    ];
 
     const points = await Promise.all(
       hours.map(async (h) => {
@@ -1135,7 +1169,7 @@ apiRouter.get("/movies/:id/intraday-curves", async (req, res) => {
         ]);
 
         return {
-          time: h,
+          time: h === "05:59" ? "05:59 (EOD)" : h === "02:00" ? "02:00 (+1d)" : h,
           today_revenue: todaySnap.estimated_revenue,
           today_admissions: todaySnap.estimated_admissions,
           today_occupancy: Math.round(todaySnap.occupancy_proxy * 1000) / 10,

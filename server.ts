@@ -15,13 +15,11 @@ async function startServer() {
   // Run PostgreSQL migrations on startup
   try {
     await runMigrations();
-    // Start in-memory scheduler if explicitly enabled or in development.
-    // In production, collections are triggered externally via Cloud Scheduler -> POST /api/collector/cron
-    if (envConfig.ENABLE_IN_MEMORY_SCHEDULER || envConfig.NODE_ENV !== "production") {
-      scheduler.start(15);
-    } else {
-      console.log("In-memory setInterval scheduler disabled in production. Collections driven by external cron endpoint.");
-    }
+    // In-memory scheduler is DISABLED by default.
+    // In the AI Studio hosted environment (.ai.studio) and standard runtime,
+    // do NOT spawn automatic SCHEDULED background runs.
+    // Collections are strictly driven by POST /api/collector/cron or manual triggers.
+    console.log("[SCHEDULER] In-memory setInterval scheduler is disabled by default. Collections are driven via POST /api/collector/cron.");
   } catch (err) {
     console.error("Database initialization failed:", err);
   }
