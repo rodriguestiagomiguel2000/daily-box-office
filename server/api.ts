@@ -505,7 +505,7 @@ apiRouter.get("/movies/:id/detail", async (req, res) => {
 
       return {
         timestamp: new Date(row.timeline_time).toISOString(),
-        time_label: new Date(row.timeline_time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+        time_label: new Date(row.timeline_time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Lisbon" }),
         total_unavailable: unavail,
         total_available: parseInt(row.total_available, 10) || 0,
         total_sellable: sellable,
@@ -829,7 +829,7 @@ async function getOrComputeMovieSnapshotAtTime(
       FROM sessions s
       JOIN seat_snapshots ss ON ss.session_id = s.id
       WHERE s.movie_id = $1 
-        AND (s.operational_date = $2 OR TO_CHAR(s.starts_at AT TIME ZONE 'Europe/Lisbon', 'YYYY-MM-DD') = $2)
+        AND (s.operational_date = $2 OR TO_CHAR((s.starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '2 hours', 'YYYY-MM-DD') = $2)
         AND ss.collected_at <= $3
       ORDER BY s.id, ss.collected_at DESC
     ),
@@ -920,7 +920,7 @@ apiRouter.get("/movies/:id/history-dates", async (req, res) => {
 
     const datesRes = await query(
       `SELECT DISTINCT 
-        COALESCE(NULLIF(s.operational_date, ''), TO_CHAR(s.starts_at AT TIME ZONE 'Europe/Lisbon', 'YYYY-MM-DD')) as date
+        COALESCE(NULLIF(s.operational_date, ''), TO_CHAR((s.starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '2 hours', 'YYYY-MM-DD')) as date
        FROM sessions s
        WHERE s.movie_id = $1 AND s.starts_at IS NOT NULL
        ORDER BY date DESC;`,
@@ -1004,7 +1004,7 @@ apiRouter.get("/movies/:id/intraday-progression", async (req, res) => {
        FROM seat_snapshots ss
        JOIN sessions s ON ss.session_id = s.id
        WHERE s.movie_id = $1 
-         AND (s.operational_date = $2 OR TO_CHAR(s.starts_at AT TIME ZONE 'Europe/Lisbon', 'YYYY-MM-DD') = $2)
+         AND (s.operational_date = $2 OR TO_CHAR((s.starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '2 hours', 'YYYY-MM-DD') = $2)
        ORDER BY ss.collected_at ASC;`,
       [movieId, dateStr]
     );

@@ -52,6 +52,6 @@ export const formatToPortugal = (date: Date): string => {
       return `${portugalDateStr} at ${portugalTimeStr}`;
     }
   } catch (err) {
-    return date.toLocaleTimeString();
+    return date.toLocaleTimeString([], { timeZone: "Europe/Lisbon" });
   }
 };

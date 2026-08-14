@@ -815,7 +815,7 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
                         <td className="py-3 px-4 font-bold text-amber-400 font-sans">
                           {item.time}
                           <span className="text-[10px] text-slate-500 font-mono block">
-                            {new Date(item.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                            {new Date(item.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Lisbon" })}
                           </span>
                         </td>
                         <td className="py-3 px-3 text-center font-sans">
@@ -1043,7 +1043,7 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
                           </td>
                           <td className="py-3 px-3">
                             <div className="font-medium text-slate-200">
-                              {new Date(sess.starts_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                              {new Date(sess.starts_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Lisbon" })}
                             </div>
                             <div className="text-[11px] text-slate-500">{sess.operational_date}</div>
                           </td>

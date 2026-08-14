@@ -46,7 +46,7 @@ export const SessionDetailModal: React.FC<SessionDetailModalProps> = ({ sessionI
   const chartData = snapshots.map((s) => {
     const d = new Date(s.collected_at);
     return {
-      time: d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }),
+      time: d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Lisbon" }),
       unavailable: s.unavailable_seats,
       available: s.available_seats,
       newly_unavailable: s.newly_unavailable,
@@ -121,7 +121,7 @@ export const SessionDetailModal: React.FC<SessionDetailModalProps> = ({ sessionI
                     Start Time
                   </div>
                   <div className="text-sm font-semibold text-slate-200">
-                    {session.starts_at ? new Date(session.starts_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "N/A"}
+                    {session.starts_at ? new Date(session.starts_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Lisbon" }) : "N/A"}
                   </div>
                   <div className="text-[10px] text-slate-500 mt-0.5">{session.operational_date}</div>
                 </div>
@@ -170,7 +170,7 @@ export const SessionDetailModal: React.FC<SessionDetailModalProps> = ({ sessionI
                     Last Sweep
                   </div>
                   <div className="text-xs font-medium text-slate-300">
-                    {session.latest_collected_at ? new Date(session.latest_collected_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "N/A"}
+                    {session.latest_collected_at ? new Date(session.latest_collected_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Lisbon" }) : "N/A"}
                   </div>
                   <div className="text-[10px] text-slate-500 mt-0.5">{snapshots.length} total sweeps</div>
                 </div>
@@ -290,8 +290,8 @@ export const SessionDetailModal: React.FC<SessionDetailModalProps> = ({ sessionI
                     <tbody className="divide-y divide-slate-800/60 font-mono">
                       {snapshots.map((s) => {
                         const dateObj = new Date(s.collected_at);
-                        const timeStr = dateObj.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit" });
-                        const dateStr = dateObj.toLocaleDateString([], { month: "short", day: "numeric" });
+                        const timeStr = dateObj.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "Europe/Lisbon" });
+                        const dateStr = dateObj.toLocaleDateString([], { month: "short", day: "numeric", timeZone: "Europe/Lisbon" });
                         const occPct = (s.occupancy_proxy * 100).toFixed(1);
 
                         return (

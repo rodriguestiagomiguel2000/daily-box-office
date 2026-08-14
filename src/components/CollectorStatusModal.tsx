@@ -253,7 +253,7 @@ export const CollectorStatusModal: React.FC<CollectorStatusModalProps> = ({
                 <span className="text-slate-400">Last Execution:</span>
                 <div className="font-semibold text-slate-200 mt-1">
                   {scheduler?.lastRunTime
-                    ? new Date(scheduler.lastRunTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                    ? new Date(scheduler.lastRunTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Lisbon" })
                     : "None yet"}
                 </div>
               </div>

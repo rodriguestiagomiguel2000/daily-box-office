@@ -2,7 +2,7 @@ name: NOS Cinemas Box Office Collector
 
 on:
   schedule:
-    - cron: "*/15 8-23,0-1 * * *"
+    - cron: "*/15 8-23,0-2 * * *"
   workflow_dispatch:
 
 concurrency:

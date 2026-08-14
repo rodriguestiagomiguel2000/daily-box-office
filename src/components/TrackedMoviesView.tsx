@@ -301,7 +301,7 @@ export const TrackedMoviesView: React.FC<TrackedMoviesViewProps> = ({
                       <span>Latest Snapshot:</span>
                       <span className="text-slate-400 font-medium">
                         {movie.latest_collection_time
-                          ? new Date(movie.latest_collection_time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
+                          ? new Date(movie.latest_collection_time).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Lisbon" })
                           : "Pending sweep"}
                       </span>
                     </div>

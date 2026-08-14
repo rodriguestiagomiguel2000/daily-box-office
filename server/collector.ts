@@ -684,12 +684,12 @@ export async function generateMoviePerformanceSnapshots(collectionRunDbId: numbe
     const pairsRes = await query<{ movie_id: number; operational_date: string; snapshot_timestamp: Date }>(
       `SELECT DISTINCT 
         s.movie_id, 
-        COALESCE(NULLIF(s.operational_date, ''), TO_CHAR(s.starts_at AT TIME ZONE 'Europe/Lisbon', 'YYYY-MM-DD')) as operational_date,
+        COALESCE(NULLIF(s.operational_date, ''), TO_CHAR((s.starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '2 hours', 'YYYY-MM-DD')) as operational_date,
         MAX(ss.collected_at) as snapshot_timestamp
        FROM seat_snapshots ss
        JOIN sessions s ON ss.session_id = s.id
        WHERE ss.collection_run_id = $1
-       GROUP BY s.movie_id, COALESCE(NULLIF(s.operational_date, ''), TO_CHAR(s.starts_at AT TIME ZONE 'Europe/Lisbon', 'YYYY-MM-DD'));`,
+       GROUP BY s.movie_id, COALESCE(NULLIF(s.operational_date, ''), TO_CHAR((s.starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '2 hours', 'YYYY-MM-DD'));`,
       [collectionRunDbId]
     );
 
@@ -711,7 +711,7 @@ export async function generateMoviePerformanceSnapshots(collectionRunDbId: numbe
           FROM sessions s
           JOIN seat_snapshots ss ON ss.session_id = s.id
           WHERE s.movie_id = $1 
-            AND (s.operational_date = $2 OR TO_CHAR(s.starts_at AT TIME ZONE 'Europe/Lisbon', 'YYYY-MM-DD') = $2)
+            AND (s.operational_date = $2 OR TO_CHAR((s.starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '2 hours', 'YYYY-MM-DD') = $2)
             AND ss.collected_at <= $3
           ORDER BY s.id, ss.collected_at DESC
         ),

@@ -30,12 +30,19 @@ logging.basicConfig(level=logging.WARNING, format="%(asctime)s [%(levelname)s] %
 log = logging.getLogger("collector_job")
 
 LISBON_TZ = ZoneInfo("Europe/Lisbon")
+BUSINESS_DAY_CUTOFF_HOUR = 2
+
+
+def compute_business_date(starts_at_utc: datetime) -> str:
+    lisbon_dt = starts_at_utc.astimezone(LISBON_TZ)
+    shifted = lisbon_dt - timedelta(hours=BUSINESS_DAY_CUTOFF_HOUR)
+    return shifted.strftime("%Y-%m-%d")
 
 
 def parse_portugal_session_time(op_date_str: str, time_str: str) -> datetime:
     """
     Parses Portugal local time string and converts it to a timezone-aware UTC datetime.
-    op_date_str e.g. "2026-08-13" or "2026-08-13T00:00:00"
+    op_date_str e.g. "2026-08-13" or "2026-08-13T00:00:00" or "2026-08-21+01:00"
     time_str e.g. "21:30" or "2026-08-13T21:30:00"
     """
     if "T" in time_str and len(time_str) > 10:
@@ -47,7 +54,7 @@ def parse_portugal_session_time(op_date_str: str, time_str: str) -> datetime:
         except Exception:
             pass
 
-    clean_date = op_date_str.split("T")[0] if op_date_str else datetime.now(LISBON_TZ).strftime("%Y-%m-%d")
+    clean_date = op_date_str[:10] if op_date_str else datetime.now(LISBON_TZ).strftime("%Y-%m-%d")
     raw_time = time_str.strip()
     if len(raw_time) == 5:
         raw_time = f"{raw_time}:00"
@@ -57,8 +64,9 @@ def parse_portugal_session_time(op_date_str: str, time_str: str) -> datetime:
         dt_naive = datetime.strptime(dt_str, "%Y-%m-%d %H:%M:%S")
         dt_local = dt_naive.replace(tzinfo=LISBON_TZ)
         return dt_local.astimezone(timezone.utc)
-    except Exception:
-        return datetime.now(timezone.utc)
+    except Exception as e:
+        log.error(f"Failed to parse session time: op_date='{op_date_str}', time='{time_str}'. Error: {e}")
+        raise ValueError(f"Could not parse session time: {op_date_str} {time_str}")
 
 
 def emit_progress(
@@ -268,7 +276,7 @@ def collect_data(
                             session_meta = {
                                 "external_session_id": s_uuid,
                                 "starts_at": full_starts_at,
-                                "operational_date": op_date.split("T")[0] if op_date else "",
+                                "operational_date": compute_business_date(starts_at_utc),
                                 "format": s.get("format") or ("IMAX" if "imax" in movie_title.lower() else "2D"),
                                 "description": s.get("description") or f"{movie_title} @ {theater_name}"
                             }
