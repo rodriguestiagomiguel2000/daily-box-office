@@ -7,13 +7,15 @@ Supports real-time progress streaming via stdout line-by-line JSON events.
 """
 
 import argparse
+import concurrent.futures
 import json
-import re
-import sys
-import os
-import subprocess
-import tempfile
 import logging
+import os
+import re
+import subprocess
+import sys
+import tempfile
+import threading
 from datetime import datetime, timezone, timedelta
 from typing import Any, Dict, List, Optional, Set
 from zoneinfo import ZoneInfo
@@ -158,8 +160,15 @@ def collect_data(
     # Cutoff time for historical session filtering (REQUIREMENT 2 & 7)
     cutoff_utc = start_time_dt - timedelta(minutes=lookback_minutes)
 
+    # Smart Scope: Dates in Portugal local time for today and tomorrow prioritization
+    now_lisbon = datetime.now(LISBON_TZ)
+    today_lisbon = now_lisbon.date()
+    tomorrow_lisbon = today_lisbon + timedelta(days=1)
+
     movies_completed = 0
     last_err: Optional[str] = None
+    timed_out = False
+    progress_lock = threading.Lock()
 
     emit_progress(
         run_id=run.collection_run_id,
@@ -179,6 +188,9 @@ def collect_data(
     )
 
     for m in target_movies:
+        if timed_out:
+            break
+
         agg_id = str(m.get("external_id") or m.get("aggregateformatnumber") or "").strip()
         if not agg_id:
             continue
@@ -200,7 +212,9 @@ def collect_data(
         try:
             sched = scraper.get_movie_sessions(agg_id)
             days = sched.get("days", []) if isinstance(sched, dict) else []
-            movie_sessions_count = 0
+
+            # 1. Discover all candidate sessions for this movie
+            movie_candidates: List[Dict[str, Any]] = []
 
             for day in days:
                 for theater in day.get("theaters", []):
@@ -225,7 +239,10 @@ def collect_data(
 
                         raw_time = s.get("time") or "00:00"
                         op_date = s.get("operationalDate") or day.get("date") or ""
-                        starts_at_utc = parse_portugal_session_time(op_date, raw_time)
+                        try:
+                            starts_at_utc = parse_portugal_session_time(op_date, raw_time)
+                        except Exception:
+                            continue
 
                         # REQUIREMENT 2: Filter out past sessions older than lookback_minutes
                         if starts_at_utc < cutoff_utc:
@@ -234,110 +251,174 @@ def collect_data(
                         seen_session_uuids_in_run.add(s_uuid)
                         run.sessions_found += 1
 
-                        if limit_sessions_per_movie and movie_sessions_count >= limit_sessions_per_movie:
-                            continue
+                        # SMART SCOPE: Prioritize today's and tomorrow's active showtimes
+                        sess_lisbon_date = starts_at_utc.astimezone(LISBON_TZ).date()
+                        if sess_lisbon_date == today_lisbon:
+                            priority_tier = 0  # Today: Highest priority
+                        elif sess_lisbon_date == tomorrow_lisbon:
+                            priority_tier = 1  # Tomorrow: Next priority
+                        elif sess_lisbon_date > tomorrow_lisbon:
+                            priority_tier = 2  # Future dates: Next
+                        else:
+                            priority_tier = 3  # Past / other
 
-                        movie_sessions_count += 1
-                        run.sessions_attempted += 1
+                        movie_candidates.append({
+                            "s_uuid": s_uuid,
+                            "starts_at_utc": starts_at_utc,
+                            "op_date": op_date,
+                            "raw_session": s,
+                            "movie_title": movie_title,
+                            "movie_meta": movie_meta,
+                            "theater_name": theater_name,
+                            "cinema_meta": cinema_meta,
+                            "priority_tier": priority_tier,
+                        })
 
-                        current_sess_label = f"{theater_name} - {s.get('format') or '2D'} - {starts_at_utc.strftime('%H:%M')}"
-                        elapsed = (datetime.now(timezone.utc) - start_time_dt).total_seconds()
+            # Sort candidate sessions by smart scope priority (today first, tomorrow second, then chronological)
+            movie_candidates.sort(key=lambda c: (c["priority_tier"], c["starts_at_utc"]))
 
-                        emit_progress(
-                            run_id=run.collection_run_id,
-                            status="RUNNING",
-                            current_movie=movie_title,
-                            movies_total=movies_total,
-                            movies_completed=movies_completed,
-                            sessions_found=run.sessions_found,
-                            sessions_attempted=run.sessions_attempted,
-                            sessions_completed=run.sessions_successful + run.sessions_failed,
-                            sessions_successful=run.sessions_successful,
-                            sessions_failed=run.sessions_failed,
-                            snapshots_created=run.seat_snapshots_created,
-                            current_session=current_sess_label,
-                            started_at=started_at_iso,
-                            elapsed_seconds=elapsed,
-                            last_error=last_err
-                        )
+            if limit_sessions_per_movie:
+                movie_candidates = movie_candidates[:limit_sessions_per_movie]
 
-                        # REQUIREMENT 6: Session isolation and explicit error handling
+            # 2. Parallel Session Scraping with Bounded Concurrency (batch of 5-8 workers)
+            if movie_candidates:
+                # Pre-initialize session/CSRF token on the main scraper
+                try:
+                    scraper.init_session(movie_candidates[0]["s_uuid"])
+                except Exception as init_err:
+                    log.warning(f"Initial session setup warning: {init_err}")
+
+                def process_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
+                    # Stale run auto-cleanup check: 10 minute timeout (600s)
+                    elapsed_check = (datetime.now(timezone.utc) - start_time_dt).total_seconds()
+                    if elapsed_check > 600:
+                        raise TimeoutError("Terminated due to timeout")
+
+                    cand_uuid = candidate["s_uuid"]
+                    snap = scraper.process_session(cand_uuid)
+
+                    room_meta = {
+                        "external_id": snap.theater_room_uuid or f"room-{snap.room_name}",
+                        "name": snap.room_name or "Sala",
+                        "capacity": snap.total_seats
+                    }
+
+                    full_starts_at = candidate["starts_at_utc"].strftime("%Y-%m-%dT%H:%M:%SZ")
+
+                    session_meta = {
+                        "external_session_id": cand_uuid,
+                        "starts_at": full_starts_at,
+                        "operational_date": compute_business_date(candidate["starts_at_utc"]),
+                        "format": candidate["raw_session"].get("format") or ("IMAX" if "imax" in candidate["movie_title"].lower() else "2D"),
+                        "description": candidate["raw_session"].get("description") or f"{candidate['movie_title']} @ {candidate['theater_name']}"
+                    }
+
+                    seats_list = []
+                    for seat in snap.seats.values():
+                        seats_list.append({
+                            "stable_seat_key": seat.seat_key,
+                            "theater_room_uuid": seat.theater_room_uuid,
+                            "queue": seat.queue,
+                            "row": seat.row,
+                            "col": seat.col,
+                            "seat_number": seat.seat_number,
+                            "is_seat": seat.is_seat,
+                            "is_available": seat.is_available,
+                            "is_safety_seat": seat.is_safety_seat,
+                            "is_premium": seat.is_premium,
+                            "is_vip": seat.is_vip,
+                            "is_love_seat": seat.is_love_seat,
+                            "is_handicapped": seat.is_handicapped,
+                            "state": seat.state
+                        })
+
+                    prices_list = [
+                        {"ticket_type": desc, "price": pr}
+                        for desc, pr in snap.ticket_types
+                    ]
+
+                    snapshot_data = {
+                        "collected_at": snap.collected_at.isoformat() + "Z",
+                        "total_seats": snap.total_seats,
+                        "sellable_seats": snap.sellable_seats,
+                        "available_seats": snap.available_seats,
+                        "unavailable_seats": snap.unavailable_seats,
+                        "safety_seats": snap.safety_seats,
+                        "unknown_seats": snap.unknown_seats,
+                        "occupancy_proxy": snap.occupancy_proxy,
+                        "invariant_valid": snap.is_invariant_valid,
+                        "source": snap.source,
+                        "collector_version": snap.collector_version,
+                        "seats": seats_list,
+                        "ticket_prices": prices_list
+                    }
+
+                    return {
+                        "movie": candidate["movie_meta"],
+                        "cinema": candidate["cinema_meta"],
+                        "room": room_meta,
+                        "session": session_meta,
+                        "snapshot": snapshot_data
+                    }
+
+                # Bounded concurrency: 6 parallel workers for optimal NOS endpoint throughput
+                MAX_CONCURRENT_SCRAPERS = 6
+                with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_CONCURRENT_SCRAPERS) as executor:
+                    future_to_cand = {
+                        executor.submit(process_candidate, cand): cand
+                        for cand in movie_candidates
+                    }
+
+                    run.sessions_attempted += len(movie_candidates)
+
+                    for future in concurrent.futures.as_completed(future_to_cand):
+                        cand = future_to_cand[future]
+                        current_sess_label = f"{cand['theater_name']} - {cand['raw_session'].get('format') or '2D'} - {cand['starts_at_utc'].strftime('%H:%M')}"
                         try:
-                            snap = scraper.process_session(s_uuid)
+                            res_item = future.result()
+                            with progress_lock:
+                                collected_sessions.append(res_item)
+                                run.sessions_successful += 1
+                                run.seat_snapshots_created += 1
+                        except Exception as sess_err:
+                            err_str = str(sess_err)
+                            if "Terminated due to timeout" in err_str:
+                                timed_out = True
+                            with progress_lock:
+                                run.sessions_failed += 1
+                                err_msg = f"Session {cand['s_uuid']} failed ({cand['movie_title']} @ {cand['theater_name']}): {err_str}"
+                                log.warning(err_msg)
+                                run.errors.append(err_msg)
+                                last_err = err_msg
 
-                            room_meta = {
-                                "external_id": snap.theater_room_uuid or f"room-{snap.room_name}",
-                                "name": snap.room_name or "Sala",
-                                "capacity": snap.total_seats
-                            }
+                        elapsed = (datetime.now(timezone.utc) - start_time_dt).total_seconds()
+                        if elapsed > 600:
+                            timed_out = True
 
-                            full_starts_at = starts_at_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
+                        with progress_lock:
+                            emit_progress(
+                                run_id=run.collection_run_id,
+                                status="RUNNING" if not timed_out else "FAILED",
+                                current_movie=movie_title,
+                                movies_total=movies_total,
+                                movies_completed=movies_completed,
+                                sessions_found=run.sessions_found,
+                                sessions_attempted=run.sessions_attempted,
+                                sessions_completed=run.sessions_successful + run.sessions_failed,
+                                sessions_successful=run.sessions_successful,
+                                sessions_failed=run.sessions_failed,
+                                snapshots_created=run.seat_snapshots_created,
+                                current_session=current_sess_label,
+                                started_at=started_at_iso,
+                                elapsed_seconds=elapsed,
+                                last_error=last_err
+                            )
 
-                            session_meta = {
-                                "external_session_id": s_uuid,
-                                "starts_at": full_starts_at,
-                                "operational_date": compute_business_date(starts_at_utc),
-                                "format": s.get("format") or ("IMAX" if "imax" in movie_title.lower() else "2D"),
-                                "description": s.get("description") or f"{movie_title} @ {theater_name}"
-                            }
-
-                            seats_list = []
-                            for seat in snap.seats.values():
-                                seats_list.append({
-                                    "stable_seat_key": seat.seat_key,
-                                    "theater_room_uuid": seat.theater_room_uuid,
-                                    "queue": seat.queue,
-                                    "row": seat.row,
-                                    "col": seat.col,
-                                    "seat_number": seat.seat_number,
-                                    "is_seat": seat.is_seat,
-                                    "is_available": seat.is_available,
-                                    "is_safety_seat": seat.is_safety_seat,
-                                    "is_premium": seat.is_premium,
-                                    "is_vip": seat.is_vip,
-                                    "is_love_seat": seat.is_love_seat,
-                                    "is_handicapped": seat.is_handicapped,
-                                    "state": seat.state
-                                })
-
-                            prices_list = [
-                                {"ticket_type": desc, "price": pr}
-                                for desc, pr in snap.ticket_types
-                            ]
-
-                            snapshot_data = {
-                                "collected_at": snap.collected_at.isoformat() + "Z",
-                                "total_seats": snap.total_seats,
-                                "sellable_seats": snap.sellable_seats,
-                                "available_seats": snap.available_seats,
-                                "unavailable_seats": snap.unavailable_seats,
-                                "safety_seats": snap.safety_seats,
-                                "unknown_seats": snap.unknown_seats,
-                                "occupancy_proxy": snap.occupancy_proxy,
-                                "invariant_valid": snap.is_invariant_valid,
-                                "source": snap.source,
-                                "collector_version": snap.collector_version,
-                                "seats": seats_list,
-                                "ticket_prices": prices_list
-                            }
-
-                            collected_sessions.append({
-                                "movie": movie_meta,
-                                "cinema": cinema_meta,
-                                "room": room_meta,
-                                "session": session_meta,
-                                "snapshot": snapshot_data
-                            })
-
-                            run.sessions_successful += 1
-                            run.seat_snapshots_created += 1
-
-                        except Exception as e:
-                            run.sessions_failed += 1
-                            err_msg = f"Session {s_uuid} failed ({movie_title} @ {theater_name}): {str(e)}"
-                            log.warning(err_msg)
-                            run.errors.append(err_msg)
-                            last_err = err_msg
+                        if timed_out:
+                            # Cancel remaining futures if timeout exceeded
+                            for pending_f in future_to_cand:
+                                pending_f.cancel()
+                            break
 
         except Exception as e:
             err_msg = f"Movie '{movie_title}' schedule discovery failed: {str(e)}"
@@ -348,7 +429,12 @@ def collect_data(
         movies_completed += 1
 
     run.finish()
-    final_status = "SUCCESS" if not run.errors else ("PARTIAL" if run.seat_snapshots_created > 0 else "FAILED")
+    if timed_out or (datetime.now(timezone.utc) - start_time_dt).total_seconds() > 600:
+        final_status = "FAILED"
+        if "Terminated due to timeout" not in run.errors:
+            run.errors.append("Terminated due to timeout")
+    else:
+        final_status = "SUCCESS" if not run.errors else ("PARTIAL" if run.seat_snapshots_created > 0 else "FAILED")
 
     elapsed_final = (datetime.now(timezone.utc) - start_time_dt).total_seconds()
     emit_progress(

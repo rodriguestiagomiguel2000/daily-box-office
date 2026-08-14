@@ -18,6 +18,7 @@ import http.cookiejar
 import json
 import logging
 import re
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -70,42 +71,48 @@ class NOSScraper:
             urllib.request.HTTPCookieProcessor(self.cookie_jar)
         )
         self.csrf_token: Optional[str] = None
+        self._init_lock = threading.Lock()
 
     def init_session(self, sample_session_uuid: str) -> str:
         """
         Triggers OutSystems cookie issuance (nr1Users and nr2Users) by making an initial
         POST request to DataActionDT00. Extracts the unquoted 'crf=' CSRF token from nr2Users.
+        Thread-safe: guarded by self._init_lock.
         """
-        url = f"{BASE_TICKET}/Cinemas/screenservices/Cinemas/MainFlow/Ticket/DataActionDT00_GetConfig_and_SessionVars"
-        headers = {
-            **COMMON_HEADERS,
-            "Content-Type": "application/json; charset=UTF-8",
-            "Origin": BASE_TICKET,
-            "Referer": f"{BASE_TICKET}/Cinemas/Ticket?SessionUUID={sample_session_uuid}",
-        }
-        body = json.dumps({
-            "versionInfo": {"moduleVersion": DT00_API_VERSION, "apiVersion": DT00_API_VERSION},
-            "viewName": "MainFlow.Ticket",
-            "screenData": {"variables": {"SessionUUID": sample_session_uuid}}
-        }).encode("utf-8")
+        with self._init_lock:
+            if self.csrf_token:
+                return self.csrf_token
 
-        req = urllib.request.Request(url, data=body, headers=headers)
-        try:
-            with self.opener.open(req, timeout=12) as resp:
+            url = f"{BASE_TICKET}/Cinemas/screenservices/Cinemas/MainFlow/Ticket/DataActionDT00_GetConfig_and_SessionVars"
+            headers = {
+                **COMMON_HEADERS,
+                "Content-Type": "application/json; charset=UTF-8",
+                "Origin": BASE_TICKET,
+                "Referer": f"{BASE_TICKET}/Cinemas/Ticket?SessionUUID={sample_session_uuid}",
+            }
+            body = json.dumps({
+                "versionInfo": {"moduleVersion": DT00_API_VERSION, "apiVersion": DT00_API_VERSION},
+                "viewName": "MainFlow.Ticket",
+                "screenData": {"variables": {"SessionUUID": sample_session_uuid}}
+            }).encode("utf-8")
+
+            req = urllib.request.Request(url, data=body, headers=headers)
+            try:
+                with self.opener.open(req, timeout=12) as resp:
+                    pass
+            except urllib.error.HTTPError:
+                # 403 Invalid Login on initial anonymous call is expected while cookies are being set
                 pass
-        except urllib.error.HTTPError:
-            # 403 Invalid Login on initial anonymous call is expected while cookies are being set
-            pass
 
-        for cookie in self.cookie_jar:
-            if cookie.name == "nr2Users":
-                decoded = urllib.parse.unquote(cookie.value)
-                if "crf=" in decoded:
-                    self.csrf_token = decoded.split("crf=")[1].split(";")[0]
-                    log.info("OutSystems session initialized. CSRF token acquired.")
-                    return self.csrf_token
+            for cookie in self.cookie_jar:
+                if cookie.name == "nr2Users":
+                    decoded = urllib.parse.unquote(cookie.value)
+                    if "crf=" in decoded:
+                        self.csrf_token = decoded.split("crf=")[1].split(";")[0]
+                        log.info("OutSystems session initialized. CSRF token acquired.")
+                        return self.csrf_token
 
-        raise RuntimeError("Failed to extract 'crf=' CSRF token from nr2Users cookie.")
+            raise RuntimeError("Failed to extract 'crf=' CSRF token from nr2Users cookie.")
 
     def _get_ticket_headers(self, session_uuid: str) -> Dict[str, str]:
         if not self.csrf_token:
