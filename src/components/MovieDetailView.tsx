@@ -1,0 +1,1146 @@
+import React, { useState, useEffect, useCallback } from "react";
+import {
+  ArrowLeft,
+  Film,
+  Building,
+  Calendar,
+  Clock,
+  TrendingUp,
+  DollarSign,
+  Users,
+  CheckCircle,
+  AlertTriangle,
+  RefreshCw,
+  Search,
+  Filter,
+  Info,
+  ChevronRight,
+  BarChart2,
+  Activity,
+  Layers,
+  ArrowUpRight,
+  ArrowDownRight,
+  Sparkles,
+  Ticket,
+} from "lucide-react";
+import {
+  ResponsiveContainer,
+  LineChart,
+  Line,
+  BarChart,
+  Bar,
+  XAxis,
+  YAxis,
+  Tooltip,
+  CartesianGrid,
+  Legend,
+} from "recharts";
+import {
+  MovieDetailResponse,
+  IntradayComparisonResponse,
+  IntradayCurvesResponse,
+  IntradaySnapshot,
+} from "../types";
+import { SessionDetailModal } from "./SessionDetailModal";
+
+interface MovieDetailViewProps {
+  data: MovieDetailResponse;
+  onBack: () => void;
+  onRefresh: () => void;
+  isRefreshing: boolean;
+}
+
+export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
+  data,
+  onBack,
+  onRefresh,
+  isRefreshing,
+}) => {
+  const { movie, overview, timeline, sessions, cinemas } = data;
+
+  const [activeTab, setActiveTab] = useState<"boxoffice" | "timeline" | "sessions" | "cinemas">("boxoffice");
+  
+  // Intraday & Box Office State
+  const todayDefaultStr = new Date().toLocaleDateString("en-CA", { timeZone: "Europe/Lisbon" });
+  const [historyDates, setHistoryDates] = useState<string[]>([]);
+  const [selectedDate, setSelectedDate] = useState<string>(todayDefaultStr);
+  const [targetTime, setTargetTime] = useState<string>("13:00");
+  const [comparisonData, setComparisonData] = useState<IntradayComparisonResponse | null>(null);
+  const [curvesData, setCurvesData] = useState<IntradayCurvesResponse | null>(null);
+  const [progressionData, setProgressionData] = useState<IntradaySnapshot[]>([]);
+  const [curveMetric, setCurveMetric] = useState<"revenue" | "admissions" | "occupancy" | "velocity" | "shows">("revenue");
+  const [isLoadingIntraday, setIsLoadingIntraday] = useState<boolean>(false);
+
+  // Session table filtering & sorting
+  const [sessionSearch, setSessionSearch] = useState("");
+  const [formatFilter, setFormatFilter] = useState("ALL");
+  const [cinemaFilter, setCinemaFilter] = useState("ALL");
+  const [statusFilter, setStatusFilter] = useState<"ALL" | "CURRENT" | "HISTORICAL">("ALL");
+  const [sortBy, setSortBy] = useState<"occupancy" | "time" | "unavailable">("occupancy");
+  const [selectedSessionId, setSelectedSessionId] = useState<number | null>(null);
+
+  // Fetch available dates on mount
+  useEffect(() => {
+    async function fetchDates() {
+      try {
+        const res = await fetch(`/api/movies/${movie.id}/history-dates`);
+        if (res.ok) {
+          const json = await res.json();
+          if (json.dates && json.dates.length > 0) {
+            setHistoryDates(json.dates);
+            if (!json.dates.includes(selectedDate)) {
+              setSelectedDate(json.dates[0]);
+            }
+          }
+        }
+      } catch (err) {
+        console.error("Error fetching historical dates:", err);
+      }
+    }
+    fetchDates();
+  }, [movie.id]);
+
+  // Fetch intraday comparison & curves whenever selectedDate or targetTime changes
+  const fetchIntradayPerformance = useCallback(async () => {
+    setIsLoadingIntraday(true);
+    try {
+      const dateParam = selectedDate || todayDefaultStr;
+      const timeParam = targetTime || "13:00";
+
+      const [compRes, curvesRes, progRes] = await Promise.all([
+        fetch(`/api/movies/${movie.id}/intraday-comparison?date=${dateParam}&time=${timeParam}`),
+        fetch(`/api/movies/${movie.id}/intraday-curves?date=${dateParam}`),
+        fetch(`/api/movies/${movie.id}/intraday-progression?date=${dateParam}`),
+      ]);
+
+      if (compRes.ok) {
+        const json = await compRes.json();
+        setComparisonData(json);
+      }
+      if (curvesRes.ok) {
+        const json = await curvesRes.json();
+        setCurvesData(json);
+      }
+      if (progRes.ok) {
+        const json = await progRes.json();
+        setProgressionData(json.items || []);
+      }
+    } catch (err) {
+      console.error("Error fetching intraday performance:", err);
+    } finally {
+      setIsLoadingIntraday(false);
+    }
+  }, [movie.id, selectedDate, targetTime, todayDefaultStr]);
+
+  useEffect(() => {
+    fetchIntradayPerformance();
+  }, [fetchIntradayPerformance]);
+
+  // Filter & Sort Sessions
+  const filteredSessions = sessions
+    .filter((s) => {
+      const matchesSearch =
+        s.cinema_name.toLowerCase().includes(sessionSearch.toLowerCase()) ||
+        s.room_name.toLowerCase().includes(sessionSearch.toLowerCase());
+      const matchesFormat = formatFilter === "ALL" || s.format.toUpperCase().includes(formatFilter.toUpperCase());
+      const matchesCinema = cinemaFilter === "ALL" || s.cinema_name === cinemaFilter;
+      const matchesStatus =
+        statusFilter === "ALL" ||
+        (statusFilter === "CURRENT" && s.is_current) ||
+        (statusFilter === "HISTORICAL" && !s.is_current);
+      return matchesSearch && matchesFormat && matchesCinema && matchesStatus;
+    })
+    .sort((a, b) => {
+      if (sortBy === "occupancy") return b.occupancy_proxy - a.occupancy_proxy;
+      if (sortBy === "unavailable") return b.unavailable_seats - a.unavailable_seats;
+      if (sortBy === "time") return new Date(a.starts_at).getTime() - new Date(b.starts_at).getTime();
+      return 0;
+    });
+
+  const uniqueFormats = Array.from(new Set(sessions.map((s) => s.format).filter(Boolean)));
+  const uniqueCinemas = Array.from(new Set(sessions.map((s) => s.cinema_name)));
+
+  // Percent change calculator helper
+  const calcChange = (curr: number, base: number) => {
+    if (!base || base === 0) return null;
+    const pct = ((curr - base) / base) * 100;
+    return pct;
+  };
+
+  return (
+    <div className="space-y-6">
+      {/* Session History Modal */}
+      {selectedSessionId && (
+        <SessionDetailModal
+          sessionId={selectedSessionId}
+          onClose={() => setSelectedSessionId(null)}
+        />
+      )}
+
+      {/* Prediction Notice Banner */}
+      <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-3.5 flex items-start sm:items-center gap-3 text-amber-300 text-xs">
+        <Info className="w-4 h-4 text-amber-400 shrink-0 mt-0.5 sm:mt-0" />
+        <div>
+          <span className="font-semibold text-amber-200">Historical & Intraday Foundation for Future Forecasting: </span>
+          All completed sessions are permanently preserved in historical time-series observations. The actual ML forecasting model is not active yet, but complete intraday metrics (revenue, showcounts, velocity, capacity) are ready for future model training.
+        </div>
+      </div>
+
+      {/* Header & Back Button */}
+      <div className="flex items-center justify-between">
+        <button
+          id="detail-back-btn"
+          onClick={onBack}
+          className="inline-flex items-center space-x-2 px-3.5 py-2 rounded-xl bg-slate-900 border border-slate-800 hover:bg-slate-800 text-slate-300 hover:text-white transition font-medium text-sm"
+        >
+          <ArrowLeft className="w-4 h-4" />
+          <span>Back to All Tracked Movies</span>
+        </button>
+
+        <button
+          id="detail-refresh-btn"
+          onClick={() => {
+            onRefresh();
+            fetchIntradayPerformance();
+          }}
+          disabled={isRefreshing || isLoadingIntraday}
+          className="inline-flex items-center space-x-2 px-4 py-2 rounded-xl bg-slate-800 border border-slate-700 hover:bg-slate-700 text-slate-200 text-sm font-medium transition"
+        >
+          <RefreshCw className={`w-4 h-4 ${(isRefreshing || isLoadingIntraday) ? "animate-spin" : ""}`} />
+          <span>{isRefreshing || isLoadingIntraday ? "Updating..." : "Refresh Metrics"}</span>
+        </button>
+      </div>
+
+      {/* Movie Hero Card */}
+      <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl">
+        <div className="flex flex-col md:flex-row items-start md:items-center gap-6">
+          <div className="w-20 h-28 bg-slate-800 rounded-xl overflow-hidden shrink-0 flex items-center justify-center border border-slate-700 shadow-md">
+            {movie.poster_url ? (
+              <img src={movie.poster_url} alt={movie.title} className="w-full h-full object-cover" />
+            ) : (
+              <Film className="w-8 h-8 text-slate-600" />
+            )}
+          </div>
+
+          <div className="flex-1 space-y-2">
+            <div className="flex items-center gap-3 flex-wrap">
+              <h1 className="text-2xl font-bold text-slate-100">{movie.title}</h1>
+              <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                Tracking Active
+              </span>
+            </div>
+
+            <div className="flex items-center gap-4 text-xs text-slate-400 flex-wrap">
+              <span className="flex items-center gap-1">
+                <Clock className="w-3.5 h-3.5 text-slate-500" />
+                {movie.duration ? `${movie.duration} mins` : "Standard Duration"}
+              </span>
+              <span className="flex items-center gap-1">
+                <Calendar className="w-3.5 h-3.5 text-slate-500" />
+                Release: {movie.release_date || "Current Season"}
+              </span>
+              <span className="flex items-center gap-1 font-mono text-slate-500">
+                ID: {movie.external_id.slice(0, 8)}...
+              </span>
+            </div>
+
+            <p className="text-xs text-slate-400 max-w-2xl">
+              Real-time OutSystems seat map telemetry across Portuguese theatrical exhibitors. Preserving all historical session observations for intraday curve analysis.
+            </p>
+          </div>
+
+          {/* Current Active Inventory Overview Badge */}
+          <div className="bg-slate-950/60 border border-slate-800/80 p-4 rounded-xl text-right shrink-0">
+            <div className="text-[11px] text-amber-400 font-semibold uppercase tracking-wider mb-1">
+              Active Inventory (Upcoming)
+            </div>
+            <div className="text-xl font-black text-slate-100">
+              {overview.sessions_count} <span className="text-xs font-normal text-slate-400">Sessions</span>
+            </div>
+            <div className="text-xs text-slate-400 mt-1">
+              {overview.cinemas_count} Cinemas • {overview.sellable_capacity.toLocaleString()} Sellable Capacity
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* Navigation Tabs: Box Office vs Timeline vs Sessions vs Cinemas */}
+      <div className="flex border-b border-slate-800 space-x-6 text-sm font-medium overflow-x-auto">
+        <button
+          id="tab-boxoffice-btn"
+          onClick={() => setActiveTab("boxoffice")}
+          className={`pb-3 transition border-b-2 flex items-center gap-2 whitespace-nowrap ${
+            activeTab === "boxoffice"
+              ? "border-amber-500 text-amber-400 font-semibold"
+              : "border-transparent text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          <BarChart2 className="w-4 h-4 text-amber-400" />
+          <span>Box Office & Intraday Comparison</span>
+        </button>
+
+        <button
+          id="tab-timeline-btn"
+          onClick={() => setActiveTab("timeline")}
+          className={`pb-3 transition border-b-2 flex items-center gap-2 whitespace-nowrap ${
+            activeTab === "timeline"
+              ? "border-amber-500 text-amber-400 font-semibold"
+              : "border-transparent text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          <Activity className="w-4 h-4 text-cyan-400" />
+          <span>Timeline & Growth Sweeps ({timeline.length})</span>
+        </button>
+
+        <button
+          id="tab-sessions-btn"
+          onClick={() => setActiveTab("sessions")}
+          className={`pb-3 transition border-b-2 flex items-center gap-2 whitespace-nowrap ${
+            activeTab === "sessions"
+              ? "border-amber-500 text-amber-400 font-semibold"
+              : "border-transparent text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          <Ticket className="w-4 h-4 text-emerald-400" />
+          <span>Individual Sessions ({sessions.length})</span>
+        </button>
+
+        <button
+          id="tab-cinemas-btn"
+          onClick={() => setActiveTab("cinemas")}
+          className={`pb-3 transition border-b-2 flex items-center gap-2 whitespace-nowrap ${
+            activeTab === "cinemas"
+              ? "border-amber-500 text-amber-400 font-semibold"
+              : "border-transparent text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          <Building className="w-4 h-4 text-purple-400" />
+          <span>Cinema Venues ({cinemas.length})</span>
+        </button>
+      </div>
+
+      {/* TAB 1: BOX OFFICE & INTRADAY PERFORMANCE */}
+      {activeTab === "boxoffice" && (
+        <div className="space-y-6">
+          {/* Controls Bar */}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+            <div className="flex items-center gap-3 flex-wrap w-full md:w-auto">
+              <div>
+                <label className="block text-[11px] text-slate-400 uppercase tracking-wider mb-1 font-semibold">
+                  Select Target Date
+                </label>
+                <select
+                  id="intraday-date-select"
+                  value={selectedDate}
+                  onChange={(e) => setSelectedDate(e.target.value)}
+                  className="bg-slate-800 border border-slate-700 text-slate-100 text-xs rounded-xl px-3 py-2 font-medium focus:ring-1 focus:ring-amber-500 outline-none cursor-pointer"
+                >
+                  {historyDates.length === 0 ? (
+                    <option value={todayDefaultStr}>{todayDefaultStr} (Today)</option>
+                  ) : (
+                    historyDates.map((d) => (
+                      <option key={d} value={d}>
+                        {d} {d === todayDefaultStr ? "(Today)" : ""}
+                      </option>
+                    ))
+                  )}
+                </select>
+              </div>
+
+              <div>
+                <label className="block text-[11px] text-slate-400 uppercase tracking-wider mb-1 font-semibold">
+                  Intraday Comparison Time
+                </label>
+                <div className="flex items-center gap-2">
+                  <input
+                    id="intraday-time-input"
+                    type="time"
+                    value={targetTime}
+                    onChange={(e) => setTargetTime(e.target.value)}
+                    className="bg-slate-800 border border-slate-700 text-slate-100 text-xs rounded-xl px-3 py-2 font-mono focus:ring-1 focus:ring-amber-500 outline-none"
+                  />
+                  <div className="flex items-center gap-1">
+                    {["10:00", "13:00", "15:00", "18:00", "21:00"].map((t) => (
+                      <button
+                        key={t}
+                        onClick={() => setTargetTime(t)}
+                        className={`px-2 py-1 rounded-lg text-[11px] font-mono transition ${
+                          targetTime === t
+                            ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
+                            : "bg-slate-800/80 text-slate-400 hover:text-slate-200"
+                        }`}
+                      >
+                        {t}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="text-right text-xs text-slate-400">
+              Comparing <span className="font-semibold text-amber-300">{selectedDate} @ {targetTime}</span> vs Previous Day & Previous Week
+            </div>
+          </div>
+
+          {/* Intraday Comparison Cards: TODAY vs YESTERDAY vs SAME WEEKDAY LAST WEEK */}
+          {comparisonData && (
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+              {/* TODAY / Target Day Card */}
+              <div id="card-comparison-today" className="bg-slate-900 border-2 border-amber-500/40 rounded-2xl p-5 shadow-lg relative overflow-hidden">
+                <div className="absolute top-0 right-0 bg-amber-500/20 text-amber-300 px-3 py-1 rounded-bl-xl text-[10px] font-bold uppercase tracking-wider border-b border-l border-amber-500/30">
+                  Target Date
+                </div>
+
+                <div className="flex items-center gap-2 text-amber-400 font-bold text-sm mb-1">
+                  <Calendar className="w-4 h-4" />
+                  <span>{comparisonData.today.date}</span>
+                  <span className="text-slate-400 text-xs font-normal">@ {comparisonData.today.time}</span>
+                </div>
+                <div className="text-xs text-slate-400 mb-4">Intraday state at requested time</div>
+
+                <div className="space-y-4">
+                  <div>
+                    <div className="text-xs text-slate-400 uppercase tracking-wider">Est. Revenue</div>
+                    <div className="text-2xl font-black text-emerald-400">
+                      €{comparisonData.today.estimated_revenue.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3 pt-2 border-t border-slate-800 text-xs">
+                    <div>
+                      <div className="text-slate-400">Est. Admissions</div>
+                      <div className="font-bold text-slate-100 text-base">{comparisonData.today.estimated_admissions.toLocaleString()}</div>
+                    </div>
+                    <div>
+                      <div className="text-slate-400">Occupancy Proxy</div>
+                      <div className="font-bold text-amber-400 text-base">{(comparisonData.today.occupancy_proxy * 100).toFixed(1)}%</div>
+                    </div>
+                  </div>
+
+                  {/* Showcount First-Class Metrics */}
+                  <div className="bg-slate-950/70 border border-slate-800 p-3 rounded-xl text-xs space-y-2">
+                    <div className="flex items-center justify-between text-slate-300 font-semibold border-b border-slate-800/80 pb-1.5">
+                      <span>Showcount (NOS Sessions)</span>
+                      <span className="text-amber-400 font-bold">{comparisonData.today.showcount_total} Total</span>
+                    </div>
+                    <div className="grid grid-cols-3 gap-1 text-[11px] text-center font-mono">
+                      <div className="bg-slate-900 p-1.5 rounded border border-slate-800">
+                        <div className="text-slate-500 text-[9px] uppercase">Completed</div>
+                        <div className="font-bold text-emerald-400">{comparisonData.today.shows_completed}</div>
+                      </div>
+                      <div className="bg-slate-900 p-1.5 rounded border border-slate-800">
+                        <div className="text-slate-500 text-[9px] uppercase">Started</div>
+                        <div className="font-bold text-amber-400">{comparisonData.today.shows_started}</div>
+                      </div>
+                      <div className="bg-slate-900 p-1.5 rounded border border-slate-800">
+                        <div className="text-slate-500 text-[9px] uppercase">Remaining</div>
+                        <div className="font-bold text-cyan-400">{comparisonData.today.shows_remaining}</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3 pt-2 border-t border-slate-800 text-xs">
+                    <div>
+                      <div className="text-slate-400">Revenue / Show</div>
+                      <div className="font-bold text-slate-200">€{comparisonData.today.revenue_per_show.toFixed(2)}</div>
+                    </div>
+                    <div>
+                      <div className="text-slate-400">Admissions / Show</div>
+                      <div className="font-bold text-slate-200">{comparisonData.today.admissions_per_show.toFixed(1)} seats</div>
+                    </div>
+                  </div>
+
+                  <div className="text-[11px] text-slate-500 pt-1 flex items-center justify-between">
+                    <span>Sales Velocity:</span>
+                    <span className="font-mono text-cyan-300 font-medium">{comparisonData.today.sales_velocity.toFixed(1)} seats/hr</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* YESTERDAY Card */}
+              <div id="card-comparison-yesterday" className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-lg relative overflow-hidden">
+                <div className="flex items-center justify-between mb-1">
+                  <div className="flex items-center gap-2 text-cyan-400 font-bold text-sm">
+                    <Calendar className="w-4 h-4" />
+                    <span>Yesterday</span>
+                    <span className="text-slate-400 text-xs font-normal">({comparisonData.yesterday.date})</span>
+                  </div>
+                  <span className="text-[10px] text-slate-500 font-mono">@ {comparisonData.yesterday.time}</span>
+                </div>
+                <div className="text-xs text-slate-400 mb-4">Previous calendar day at {targetTime}</div>
+
+                <div className="space-y-4">
+                  <div>
+                    <div className="text-xs text-slate-400 uppercase tracking-wider flex items-center justify-between">
+                      <span>Est. Revenue</span>
+                      {(() => {
+                        const change = calcChange(comparisonData.today.estimated_revenue, comparisonData.yesterday.estimated_revenue);
+                        if (change === null) return null;
+                        return (
+                          <span className={`text-[11px] font-bold flex items-center ${change >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                            {change >= 0 ? <ArrowUpRight className="w-3.5 h-3.5" /> : <ArrowDownRight className="w-3.5 h-3.5" />}
+                            {Math.abs(change).toFixed(1)}% vs yesterday
+                          </span>
+                        );
+                      })()}
+                    </div>
+                    <div className="text-2xl font-black text-slate-200">
+                      €{comparisonData.yesterday.estimated_revenue.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3 pt-2 border-t border-slate-800 text-xs">
+                    <div>
+                      <div className="text-slate-400">Est. Admissions</div>
+                      <div className="font-bold text-slate-200 text-base">{comparisonData.yesterday.estimated_admissions.toLocaleString()}</div>
+                    </div>
+                    <div>
+                      <div className="text-slate-400">Occupancy Proxy</div>
+                      <div className="font-bold text-cyan-300 text-base">{(comparisonData.yesterday.occupancy_proxy * 100).toFixed(1)}%</div>
+                    </div>
+                  </div>
+
+                  {/* Showcount Stats */}
+                  <div className="bg-slate-950/70 border border-slate-800 p-3 rounded-xl text-xs space-y-2">
+                    <div className="flex items-center justify-between text-slate-300 font-semibold border-b border-slate-800/80 pb-1.5">
+                      <span>Showcount</span>
+                      <span className="text-cyan-400 font-bold">{comparisonData.yesterday.showcount_total} Total</span>
+                    </div>
+                    <div className="grid grid-cols-3 gap-1 text-[11px] text-center font-mono">
+                      <div className="bg-slate-900 p-1.5 rounded border border-slate-800">
+                        <div className="text-slate-500 text-[9px] uppercase">Completed</div>
+                        <div className="font-bold text-slate-200">{comparisonData.yesterday.shows_completed}</div>
+                      </div>
+                      <div className="bg-slate-900 p-1.5 rounded border border-slate-800">
+                        <div className="text-slate-500 text-[9px] uppercase">Started</div>
+                        <div className="font-bold text-slate-200">{comparisonData.yesterday.shows_started}</div>
+                      </div>
+                      <div className="bg-slate-900 p-1.5 rounded border border-slate-800">
+                        <div className="text-slate-500 text-[9px] uppercase">Remaining</div>
+                        <div className="font-bold text-slate-200">{comparisonData.yesterday.shows_remaining}</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3 pt-2 border-t border-slate-800 text-xs">
+                    <div>
+                      <div className="text-slate-400">Revenue / Show</div>
+                      <div className="font-bold text-slate-200">€{comparisonData.yesterday.revenue_per_show.toFixed(2)}</div>
+                    </div>
+                    <div>
+                      <div className="text-slate-400">Admissions / Show</div>
+                      <div className="font-bold text-slate-200">{comparisonData.yesterday.admissions_per_show.toFixed(1)} seats</div>
+                    </div>
+                  </div>
+
+                  <div className="text-[11px] text-slate-500 pt-1 flex items-center justify-between">
+                    <span>Sales Velocity:</span>
+                    <span className="font-mono text-slate-300 font-medium">{comparisonData.yesterday.sales_velocity.toFixed(1)} seats/hr</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* SAME WEEKDAY LAST WEEK Card */}
+              <div id="card-comparison-lastweek" className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-lg relative overflow-hidden">
+                <div className="flex items-center justify-between mb-1">
+                  <div className="flex items-center gap-2 text-purple-400 font-bold text-sm">
+                    <Calendar className="w-4 h-4" />
+                    <span>Same Weekday Last Week</span>
+                  </div>
+                  <span className="text-[10px] text-slate-500 font-mono">@ {comparisonData.last_week.time}</span>
+                </div>
+                <div className="text-xs text-slate-400 mb-4">Same day of week (-7 days) at {targetTime}</div>
+
+                <div className="space-y-4">
+                  <div>
+                    <div className="text-xs text-slate-400 uppercase tracking-wider flex items-center justify-between">
+                      <span>Est. Revenue</span>
+                      {(() => {
+                        const change = calcChange(comparisonData.today.estimated_revenue, comparisonData.last_week.estimated_revenue);
+                        if (change === null) return null;
+                        return (
+                          <span className={`text-[11px] font-bold flex items-center ${change >= 0 ? "text-emerald-400" : "text-rose-400"}`}>
+                            {change >= 0 ? <ArrowUpRight className="w-3.5 h-3.5" /> : <ArrowDownRight className="w-3.5 h-3.5" />}
+                            {Math.abs(change).toFixed(1)}% vs last week
+                          </span>
+                        );
+                      })()}
+                    </div>
+                    <div className="text-2xl font-black text-slate-200">
+                      €{comparisonData.last_week.estimated_revenue.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3 pt-2 border-t border-slate-800 text-xs">
+                    <div>
+                      <div className="text-slate-400">Est. Admissions</div>
+                      <div className="font-bold text-slate-200 text-base">{comparisonData.last_week.estimated_admissions.toLocaleString()}</div>
+                    </div>
+                    <div>
+                      <div className="text-slate-400">Occupancy Proxy</div>
+                      <div className="font-bold text-purple-300 text-base">{(comparisonData.last_week.occupancy_proxy * 100).toFixed(1)}%</div>
+                    </div>
+                  </div>
+
+                  {/* Showcount Stats */}
+                  <div className="bg-slate-950/70 border border-slate-800 p-3 rounded-xl text-xs space-y-2">
+                    <div className="flex items-center justify-between text-slate-300 font-semibold border-b border-slate-800/80 pb-1.5">
+                      <span>Showcount</span>
+                      <span className="text-purple-400 font-bold">{comparisonData.last_week.showcount_total} Total</span>
+                    </div>
+                    <div className="grid grid-cols-3 gap-1 text-[11px] text-center font-mono">
+                      <div className="bg-slate-900 p-1.5 rounded border border-slate-800">
+                        <div className="text-slate-500 text-[9px] uppercase">Completed</div>
+                        <div className="font-bold text-slate-200">{comparisonData.last_week.shows_completed}</div>
+                      </div>
+                      <div className="bg-slate-900 p-1.5 rounded border border-slate-800">
+                        <div className="text-slate-500 text-[9px] uppercase">Started</div>
+                        <div className="font-bold text-slate-200">{comparisonData.last_week.shows_started}</div>
+                      </div>
+                      <div className="bg-slate-900 p-1.5 rounded border border-slate-800">
+                        <div className="text-slate-500 text-[9px] uppercase">Remaining</div>
+                        <div className="font-bold text-slate-200">{comparisonData.last_week.shows_remaining}</div>
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3 pt-2 border-t border-slate-800 text-xs">
+                    <div>
+                      <div className="text-slate-400">Revenue / Show</div>
+                      <div className="font-bold text-slate-200">€{comparisonData.last_week.revenue_per_show.toFixed(2)}</div>
+                    </div>
+                    <div>
+                      <div className="text-slate-400">Admissions / Show</div>
+                      <div className="font-bold text-slate-200">{comparisonData.last_week.admissions_per_show.toFixed(1)} seats</div>
+                    </div>
+                  </div>
+
+                  <div className="text-[11px] text-slate-500 pt-1 flex items-center justify-between">
+                    <span>Sales Velocity:</span>
+                    <span className="font-mono text-slate-300 font-medium">{comparisonData.last_week.sales_velocity.toFixed(1)} seats/hr</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {/* Intraday Cumulative Time-Series Curves Chart */}
+          {curvesData && curvesData.curve && (
+            <div id="chart-intraday-curves" className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl">
+              <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 mb-6">
+                <div>
+                  <h3 className="font-bold text-slate-100 text-lg flex items-center gap-2">
+                    <span>Intraday Performance Curves</span>
+                    <span className="text-xs px-2.5 py-0.5 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/30">
+                      Hourly Time-Series
+                    </span>
+                  </h3>
+                  <p className="text-xs text-slate-400 mt-0.5">
+                    Cumulative trajectory for {selectedDate} (Gold) vs Yesterday ({curvesData.yesterday_date}, Cyan) vs Same Weekday Last Week ({curvesData.last_week_date}, Purple)
+                  </p>
+                </div>
+
+                {/* Metric Selector Buttons */}
+                <div className="flex items-center gap-1 bg-slate-800/80 p-1 rounded-xl border border-slate-700/80 text-xs">
+                  <button
+                    onClick={() => setCurveMetric("revenue")}
+                    className={`px-3 py-1.5 rounded-lg font-medium transition ${
+                      curveMetric === "revenue"
+                        ? "bg-amber-500 text-slate-950 font-bold shadow"
+                        : "text-slate-400 hover:text-slate-200"
+                    }`}
+                  >
+                    Revenue (€)
+                  </button>
+                  <button
+                    onClick={() => setCurveMetric("admissions")}
+                    className={`px-3 py-1.5 rounded-lg font-medium transition ${
+                      curveMetric === "admissions"
+                        ? "bg-amber-500 text-slate-950 font-bold shadow"
+                        : "text-slate-400 hover:text-slate-200"
+                    }`}
+                  >
+                    Admissions
+                  </button>
+                  <button
+                    onClick={() => setCurveMetric("occupancy")}
+                    className={`px-3 py-1.5 rounded-lg font-medium transition ${
+                      curveMetric === "occupancy"
+                        ? "bg-amber-500 text-slate-950 font-bold shadow"
+                        : "text-slate-400 hover:text-slate-200"
+                    }`}
+                  >
+                    Occupancy %
+                  </button>
+                  <button
+                    onClick={() => setCurveMetric("velocity")}
+                    className={`px-3 py-1.5 rounded-lg font-medium transition ${
+                      curveMetric === "velocity"
+                        ? "bg-amber-500 text-slate-950 font-bold shadow"
+                        : "text-slate-400 hover:text-slate-200"
+                    }`}
+                  >
+                    Velocity
+                  </button>
+                </div>
+              </div>
+
+              {/* Chart */}
+              <div className="h-80">
+                <ResponsiveContainer width="100%" height="100%">
+                  <LineChart data={curvesData.curve} margin={{ top: 10, right: 30, left: 10, bottom: 0 }}>
+                    <CartesianGrid strokeDasharray="3 3" stroke="#334155" opacity={0.6} />
+                    <XAxis dataKey="time" stroke="#94a3b8" fontSize={12} />
+                    <YAxis
+                      stroke="#94a3b8"
+                      fontSize={12}
+                      tickFormatter={(val) =>
+                        curveMetric === "revenue"
+                          ? `€${val >= 1000 ? `${(val / 1000).toFixed(1)}k` : val}`
+                          : curveMetric === "occupancy"
+                          ? `${val}%`
+                          : val
+                      }
+                    />
+                    <Tooltip
+                      contentStyle={{ backgroundColor: "#0f172a", borderColor: "#334155", borderRadius: "12px", color: "#f8fafc" }}
+                      formatter={(value: any) =>
+                        curveMetric === "revenue"
+                          ? `€${Number(value).toLocaleString()}`
+                          : curveMetric === "occupancy"
+                          ? `${value}%`
+                          : value
+                      }
+                    />
+                    <Legend wrapperStyle={{ paddingTop: "15px" }} />
+
+                    <Line
+                      type="monotone"
+                      dataKey={
+                        curveMetric === "revenue"
+                          ? "today_revenue"
+                          : curveMetric === "admissions"
+                          ? "today_admissions"
+                          : curveMetric === "occupancy"
+                          ? "today_occupancy"
+                          : "today_velocity"
+                      }
+                      name={`Target (${selectedDate})`}
+                      stroke="#f59e0b"
+                      strokeWidth={3.5}
+                      dot={{ r: 3, fill: "#f59e0b" }}
+                      activeDot={{ r: 6 }}
+                    />
+
+                    <Line
+                      type="monotone"
+                      dataKey={
+                        curveMetric === "revenue"
+                          ? "yesterday_revenue"
+                          : curveMetric === "admissions"
+                          ? "yesterday_admissions"
+                          : curveMetric === "occupancy"
+                          ? "yesterday_occupancy"
+                          : "yesterday_velocity"
+                      }
+                      name={`Yesterday (${curvesData.yesterday_date})`}
+                      stroke="#06b6d4"
+                      strokeWidth={2}
+                      strokeDasharray="4 4"
+                      dot={false}
+                    />
+
+                    <Line
+                      type="monotone"
+                      dataKey={
+                        curveMetric === "revenue"
+                          ? "last_week_revenue"
+                          : curveMetric === "admissions"
+                          ? "last_week_admissions"
+                          : curveMetric === "occupancy"
+                          ? "last_week_occupancy"
+                          : "last_week_velocity"
+                      }
+                      name={`Same Weekday Last Week (${curvesData.last_week_date})`}
+                      stroke="#a855f7"
+                      strokeWidth={2}
+                      strokeDasharray="6 6"
+                      dot={false}
+                    />
+                  </LineChart>
+                </ResponsiveContainer>
+              </div>
+            </div>
+          )}
+
+          {/* Intraday Progression Table */}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow">
+            <div className="p-4 border-b border-slate-800 flex items-center justify-between bg-slate-950/40">
+              <div>
+                <h3 className="font-bold text-slate-200 text-sm">
+                  Intraday Sweep Progression Log ({selectedDate})
+                </h3>
+                <p className="text-xs text-slate-400">Chronological observation sweeps stored per collection run</p>
+              </div>
+              <span className="text-xs font-mono text-cyan-400 bg-slate-800 px-2.5 py-1 rounded-lg">
+                {progressionData.length} Observations
+              </span>
+            </div>
+
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-slate-800/80 text-slate-400 uppercase tracking-wider font-semibold border-b border-slate-800">
+                  <tr>
+                    <th className="py-3 px-4">Sweep Time</th>
+                    <th className="py-3 px-3 text-center">Shows (Tot / Start / Comp)</th>
+                    <th className="py-3 px-3 text-right">Capacity</th>
+                    <th className="py-3 px-3 text-right">Est. Admissions</th>
+                    <th className="py-3 px-3 text-right">Occupancy %</th>
+                    <th className="py-3 px-3 text-right">Est. Revenue (€)</th>
+                    <th className="py-3 px-3 text-right">Rev / Show</th>
+                    <th className="py-3 px-3 text-right">Sales Velocity</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800 text-slate-200 font-mono">
+                  {progressionData.length === 0 ? (
+                    <tr>
+                      <td colSpan={8} className="py-8 text-center text-slate-500 font-sans">
+                        No collection sweeps recorded for {selectedDate} yet.
+                      </td>
+                    </tr>
+                  ) : (
+                    progressionData.map((item, idx) => (
+                      <tr key={idx} className="hover:bg-slate-800/50 transition">
+                        <td className="py-3 px-4 font-bold text-amber-400 font-sans">
+                          {item.time}
+                          <span className="text-[10px] text-slate-500 font-mono block">
+                            {new Date(item.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                          </span>
+                        </td>
+                        <td className="py-3 px-3 text-center font-sans">
+                          <span className="font-bold text-slate-200">{item.showcount_total}</span>
+                          <span className="text-slate-500 text-[11px] ml-1">
+                            ({item.shows_started} start / {item.shows_completed} comp)
+                          </span>
+                        </td>
+                        <td className="py-3 px-3 text-right text-slate-400">{item.sellable_capacity.toLocaleString()}</td>
+                        <td className="py-3 px-3 text-right text-cyan-300 font-bold">{item.estimated_admissions.toLocaleString()}</td>
+                        <td className="py-3 px-3 text-right">
+                          <span className={(item.occupancy_proxy * 100) > 40 ? "text-amber-400 font-bold" : "text-slate-300"}>
+                            {(item.occupancy_proxy * 100).toFixed(1)}%
+                          </span>
+                        </td>
+                        <td className="py-3 px-3 text-right text-emerald-400 font-bold">
+                          €{item.estimated_revenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        </td>
+                        <td className="py-3 px-3 text-right text-slate-300">€{item.revenue_per_show.toFixed(2)}</td>
+                        <td className="py-3 px-3 text-right text-cyan-400">{item.sales_velocity.toFixed(1)} /hr</td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 2: TIMELINE & GROWTH CURVES (Historical Sweeps) */}
+      {activeTab === "timeline" && (
+        <div className="space-y-6">
+          {timeline.length === 0 ? (
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl p-12 text-center text-slate-400">
+              <Clock className="w-10 h-10 mx-auto text-slate-600 mb-3" />
+              <h4 className="text-base font-semibold text-slate-300">No historical sweeps recorded yet</h4>
+              <p className="text-xs text-slate-500 mt-1 max-w-sm mx-auto">
+                Trigger collection runs to build the historical time-series curves of unavailable seats,
+                seat transitions, and occupancy velocity.
+              </p>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Chart 1: Cumulative Sales Proxy Curve */}
+              <div id="chart-cumulative-unavailable" className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
+                <div className="flex items-center justify-between mb-4">
+                  <div>
+                    <h3 className="font-bold text-slate-100 text-base">Cumulative Reservations Proxy</h3>
+                    <p className="text-xs text-slate-400">Strictly non-decreasing cumulative reservations across sweeps</p>
+                  </div>
+                  <span className="text-xs px-2.5 py-1 rounded bg-slate-800 text-cyan-400 font-semibold">
+                    Cumulative Growth
+                  </span>
+                </div>
+                <div className="h-64">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={timeline} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                      <XAxis dataKey="time_label" stroke="#94a3b8" fontSize={12} />
+                      <YAxis stroke="#94a3b8" fontSize={12} />
+                      <Tooltip
+                        contentStyle={{ backgroundColor: "#0f172a", borderColor: "#334155", borderRadius: "8px" }}
+                        labelStyle={{ color: "#f8fafc" }}
+                      />
+                      <Line
+                        type="monotone"
+                        dataKey="total_unavailable"
+                        name="Unavailable Seats"
+                        stroke="#06b6d4"
+                        strokeWidth={2.5}
+                        dot={{ r: 3, fill: "#06b6d4" }}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+
+              {/* Chart 2: Occupancy Proxy % */}
+              <div id="chart-occupancy-proxy" className="bg-slate-900 border border-slate-800 rounded-2xl p-5">
+                <div className="flex items-center justify-between mb-4">
+                  <div>
+                    <h3 className="font-bold text-slate-100 text-base">Occupancy Proxy % Trajectory</h3>
+                    <p className="text-xs text-slate-400">Ratio of unavailable seats over total sellable room capacity</p>
+                  </div>
+                  <span className="text-xs px-2.5 py-1 rounded bg-slate-800 text-amber-400 font-semibold">
+                    Occupancy Rate
+                  </span>
+                </div>
+                <div className="h-64">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <LineChart data={timeline} margin={{ top: 10, right: 20, left: 0, bottom: 0 }}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
+                      <XAxis dataKey="time_label" stroke="#94a3b8" fontSize={12} />
+                      <YAxis stroke="#94a3b8" fontSize={12} tickFormatter={(val) => `${(val * 100).toFixed(0)}%`} />
+                      <Tooltip
+                        contentStyle={{ backgroundColor: "#0f172a", borderColor: "#334155", borderRadius: "8px" }}
+                        formatter={(val: any) => [`${(Number(val) * 100).toFixed(1)}%`, "Occupancy Proxy"]}
+                      />
+                      <Line
+                        type="monotone"
+                        dataKey="occupancy_proxy"
+                        name="Occupancy %"
+                        stroke="#f59e0b"
+                        strokeWidth={2.5}
+                        dot={{ r: 3, fill: "#f59e0b" }}
+                      />
+                    </LineChart>
+                  </ResponsiveContainer>
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+      )}
+
+      {/* TAB 3: INDIVIDUAL SESSIONS */}
+      {activeTab === "sessions" && (
+        <div className="space-y-4">
+          {/* Controls Bar */}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4 flex flex-col md:flex-row items-stretch md:items-center justify-between gap-3">
+            <div className="relative flex-1">
+              <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-slate-500" />
+              <input
+                id="session-search-input"
+                type="text"
+                value={sessionSearch}
+                onChange={(e) => setSessionSearch(e.target.value)}
+                placeholder="Search cinema name or room..."
+                className="w-full bg-slate-800 border border-slate-700 pl-9 pr-3 py-2 rounded-xl text-xs text-slate-200 placeholder-slate-500 focus:outline-none focus:ring-1 focus:ring-amber-500"
+              />
+            </div>
+
+            <div className="flex items-center gap-2 flex-wrap text-xs">
+              {/* Status Filter */}
+              <select
+                id="session-status-filter"
+                value={statusFilter}
+                onChange={(e: any) => setStatusFilter(e.target.value)}
+                className="bg-slate-800 border border-slate-700 text-slate-300 rounded-xl px-3 py-2 outline-none font-medium"
+              >
+                <option value="ALL">All Statuses (Current & Historical)</option>
+                <option value="CURRENT">Active / Upcoming Only</option>
+                <option value="HISTORICAL">Completed / Historical Only</option>
+              </select>
+
+              {/* Format Filter */}
+              <select
+                id="session-format-filter"
+                value={formatFilter}
+                onChange={(e) => setFormatFilter(e.target.value)}
+                className="bg-slate-800 border border-slate-700 text-slate-300 rounded-xl px-3 py-2 outline-none font-medium"
+              >
+                <option value="ALL">All Formats</option>
+                {uniqueFormats.map((f) => (
+                  <option key={f} value={f}>{f}</option>
+                ))}
+              </select>
+
+              {/* Sort By */}
+              <select
+                id="session-sort-by"
+                value={sortBy}
+                onChange={(e: any) => setSortBy(e.target.value)}
+                className="bg-slate-800 border border-slate-700 text-slate-300 rounded-xl px-3 py-2 outline-none font-medium"
+              >
+                <option value="occupancy">Sort by Occupancy %</option>
+                <option value="unavailable">Sort by Unavailable Seats</option>
+                <option value="time">Sort by Start Time</option>
+              </select>
+            </div>
+          </div>
+
+          {/* Sessions Table */}
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow">
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs sm:text-sm">
+                <thead className="bg-slate-800/80 text-slate-400 uppercase tracking-wider font-semibold border-b border-slate-800">
+                  <tr>
+                    <th className="py-3 px-4">Status & Cinema</th>
+                    <th className="py-3 px-3">Date & Time</th>
+                    <th className="py-3 px-3">Format</th>
+                    <th className="py-3 px-3 text-right">Capacity</th>
+                    <th className="py-3 px-3 text-right">Available</th>
+                    <th className="py-3 px-3 text-right">Unavailable</th>
+                    <th className="py-3 px-3 text-right">Occupancy %</th>
+                    <th className="py-3 px-3 text-right">Est. Rev</th>
+                    <th className="py-3 px-3 text-center">History</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800 text-slate-200">
+                  {filteredSessions.length === 0 ? (
+                    <tr>
+                      <td colSpan={9} className="py-8 text-center text-slate-500">
+                        No sessions match the current filters.
+                      </td>
+                    </tr>
+                  ) : (
+                    filteredSessions.map((sess) => {
+                      const occ = sess.occupancy_proxy * 100;
+                      return (
+                        <tr
+                          key={sess.session_id}
+                          onClick={() => setSelectedSessionId(sess.session_id)}
+                          className="hover:bg-slate-800/70 transition cursor-pointer group"
+                        >
+                          <td className="py-3 px-4">
+                            <div className="flex items-center gap-2 mb-0.5">
+                              {sess.is_current ? (
+                                <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
+                                  Upcoming
+                                </span>
+                              ) : (
+                                <span className="px-1.5 py-0.2 rounded text-[10px] font-bold bg-slate-800 text-slate-400 border border-slate-700">
+                                  Historical
+                                </span>
+                              )}
+                              <span className="font-semibold text-slate-100 group-hover:text-amber-400 transition-colors">
+                                {sess.cinema_name}
+                              </span>
+                            </div>
+                            <div className="text-xs text-slate-500">
+                              {sess.room_name} • {sess.cinema_city || "Portugal"}
+                            </div>
+                          </td>
+                          <td className="py-3 px-3">
+                            <div className="font-medium text-slate-200">
+                              {new Date(sess.starts_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                            </div>
+                            <div className="text-[11px] text-slate-500">{sess.operational_date}</div>
+                          </td>
+                          <td className="py-3 px-3">
+                            <span
+                              className={`px-2 py-0.5 rounded text-xs font-semibold ${
+                                sess.format.toUpperCase().includes("IMAX")
+                                  ? "bg-purple-900/60 text-purple-300 border border-purple-700"
+                                  : "bg-slate-800 text-slate-300 border border-slate-700"
+                              }`}
+                            >
+                              {sess.format}
+                            </span>
+                          </td>
+                          <td className="py-3 px-3 text-right text-slate-400 font-mono">
+                            {sess.sellable_seats}
+                          </td>
+                          <td className="py-3 px-3 text-right text-emerald-400 font-mono">
+                            {sess.available_seats}
+                          </td>
+                          <td className="py-3 px-3 text-right font-bold text-cyan-300 font-mono">
+                            {sess.unavailable_seats}
+                          </td>
+                          <td className="py-3 px-3 text-right font-mono">
+                            <span
+                              className={`font-semibold ${
+                                occ > 50 ? "text-amber-400" : occ > 20 ? "text-cyan-400" : "text-slate-300"
+                              }`}
+                            >
+                              {occ.toFixed(1)}%
+                            </span>
+                          </td>
+                          <td className="py-3 px-3 text-right font-mono text-emerald-400">
+                            €{sess.estimated_revenue.toFixed(2)}
+                          </td>
+                          <td className="py-3 px-3 text-center">
+                            <span className="inline-flex items-center gap-1 text-xs font-semibold text-cyan-400 group-hover:underline">
+                              History <ChevronRight className="w-3.5 h-3.5" />
+                            </span>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* TAB 4: CINEMA BREAKDOWN */}
+      {activeTab === "cinemas" && (
+        <div className="space-y-4">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow">
+            <table className="w-full text-left text-xs sm:text-sm">
+              <thead className="bg-slate-800/80 text-slate-400 uppercase tracking-wider font-semibold border-b border-slate-800">
+                <tr>
+                  <th className="py-3 px-4">Cinema Venue</th>
+                  <th className="py-3 px-3">City / Region</th>
+                  <th className="py-3 px-3 text-right">Current Sessions</th>
+                  <th className="py-3 px-3 text-right">Sellable Capacity</th>
+                  <th className="py-3 px-3 text-right">Available</th>
+                  <th className="py-3 px-3 text-right">Unavailable</th>
+                  <th className="py-3 px-3 text-right">Occupancy Proxy</th>
+                  <th className="py-3 px-3 text-right">Est. Revenue</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-slate-800 text-slate-200">
+                {cinemas.map((cin) => {
+                  const occ = cin.occupancy_proxy * 100;
+                  return (
+                    <tr key={cin.cinema_id} className="hover:bg-slate-800/40 transition">
+                      <td className="py-3 px-4 font-semibold text-slate-100">{cin.cinema_name}</td>
+                      <td className="py-3 px-3 text-slate-400">{cin.city || cin.region || "Portugal"}</td>
+                      <td className="py-3 px-3 text-right font-mono text-slate-300">{cin.sessions_count}</td>
+                      <td className="py-3 px-3 text-right font-mono text-slate-400">{cin.sellable_capacity}</td>
+                      <td className="py-3 px-3 text-right font-mono text-emerald-400">{cin.available_seats}</td>
+                      <td className="py-3 px-3 text-right font-mono font-bold text-cyan-300">
+                        {cin.unavailable_seats}
+                      </td>
+                      <td className="py-3 px-3 text-right font-mono">
+                        <span className={`font-semibold ${occ > 40 ? "text-amber-400" : "text-slate-300"}`}>
+                          {occ.toFixed(1)}%
+                        </span>
+                      </td>
+                      <td className="py-3 px-3 text-right font-mono text-emerald-400 font-semibold">
+                        €{cin.estimated_revenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};

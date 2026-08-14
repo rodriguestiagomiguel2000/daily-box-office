@@ -1,0 +1,40 @@
+name: NOS Cinemas Box Office Collector
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+concurrency:
+  group: nos-collector
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    name: NOS Live Box Office Scraper
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js Environment
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+
+      - name: Setup Python Environment
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Node Dependencies
+        run: npm ci
+
+      - name: Run Standalone NOS Collector
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: |
+          echo "Starting NOS collector run..."
+          python3 nos_collector_job.py

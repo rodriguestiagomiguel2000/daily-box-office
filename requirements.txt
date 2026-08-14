@@ -1,0 +1,3 @@
+# Portugal Box Office Tracker - NOS Cinemas Scraper
+# This scraper is highly optimized and relies exclusively on Python standard libraries.
+# No external Python dependencies are required.
