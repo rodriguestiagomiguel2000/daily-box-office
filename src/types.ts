@@ -202,7 +202,9 @@ export interface CollectorStatusResponse {
 
 export interface IntradaySnapshot {
   date: string;
-  timestamp: string;
+  snapshot_timestamp?: string;
+  timestamp?: string;
+  created_at?: string;
   time: string;
   showcount_total: number;
   shows_started: number;

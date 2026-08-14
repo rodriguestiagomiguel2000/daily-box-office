@@ -831,7 +831,7 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
                         <td className="py-3 px-4 font-bold text-amber-400 font-sans">
                           {item.time}
                           <span className="text-[10px] text-slate-500 font-mono block">
-                            {new Date(item.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Lisbon" })}
+                            {new Date(item.snapshot_timestamp || item.timestamp || item.created_at || item.date).toLocaleDateString("pt-PT", { timeZone: "Europe/Lisbon" })}
                           </span>
                         </td>
                         <td className="py-3 px-3 text-center font-sans">

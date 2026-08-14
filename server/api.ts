@@ -1037,6 +1037,8 @@ apiRouter.get("/movies/:id/intraday-progression", async (req, res) => {
     if (snapsRes.rows.length > 0) {
       const items = snapsRes.rows.map((s) => ({
         ...s,
+        snapshot_timestamp: s.snapshot_timestamp,
+        timestamp: s.snapshot_timestamp,
         time: new Date(s.snapshot_timestamp).toLocaleTimeString("pt-PT", {
           hour: "2-digit",
           minute: "2-digit",
