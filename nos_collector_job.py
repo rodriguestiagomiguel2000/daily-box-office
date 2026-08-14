@@ -179,7 +179,7 @@ def collect_data(
     )
 
     for m in target_movies:
-        agg_id = str(m.get("aggregateformatnumber") or "").strip()
+        agg_id = str(m.get("external_id") or m.get("aggregateformatnumber") or "").strip()
         if not agg_id:
             continue
 
@@ -191,10 +191,10 @@ def collect_data(
         movie_meta = {
             "external_id": str(agg_id),
             "title": movie_title,
-            "poster_url": m.get("imageportraiturl") or m.get("imagelandscapeurl") or "",
+            "poster_url": m.get("poster_url") or m.get("imageportraiturl") or m.get("imagelandscapeurl") or "",
             "duration": int(m.get("duration") or 0) if str(m.get("duration") or "").isdigit() else None,
-            "age_rating": m.get("certificatedescription") or m.get("certificate") or "",
-            "release_date": m.get("releasedate") or "",
+            "age_rating": m.get("age_rating") or m.get("certificatedescription") or m.get("certificate") or "",
+            "release_date": m.get("release_date") or m.get("releasedate") or "",
         }
 
         try:
@@ -203,10 +203,9 @@ def collect_data(
             movie_sessions_count = 0
 
             for day in days:
-                op_date = day.get("date") or ""
                 for theater in day.get("theaters", []):
                     theater_name = theater.get("name") or "NOS Cinema"
-                    theater_uuid = theater.get("uuid") or ""
+                    theater_uuid = theater.get("theaterId") or theater.get("uuid") or ""
                     theater_city = theater.get("city") or ""
                     theater_region = theater.get("region") or ""
 
@@ -225,6 +224,7 @@ def collect_data(
                             continue
 
                         raw_time = s.get("time") or "00:00"
+                        op_date = s.get("operationalDate") or day.get("date") or ""
                         starts_at_utc = parse_portugal_session_time(op_date, raw_time)
 
                         # REQUIREMENT 2: Filter out past sessions older than lookback_minutes
