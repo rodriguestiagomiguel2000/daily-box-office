@@ -3,6 +3,7 @@ import readline from "readline";
 import { pool, query } from "./db";
 
 export interface CollectorJobOptions {
+  runId?: string;
   movieExternalIds?: string[];
   limitSessionsPerMovie?: number;
   lookbackMinutes?: number;
@@ -148,7 +149,7 @@ export async function prepareCollectionRun(options: CollectorJobOptions = {}): P
           [`run-temp-${Date.now()}`, startedAtIso, triggerSource]
         );
         const collectionRunDbId = runInsertRes.rows[0].id;
-        const runId = `run-${collectionRunDbId}`;
+        const runId = options.runId || `run-${collectionRunDbId}`;
         await query(`UPDATE collection_runs SET run_id = $1 WHERE id = $2;`, [runId, collectionRunDbId]);
 
         return {
@@ -173,7 +174,7 @@ export async function prepareCollectionRun(options: CollectorJobOptions = {}): P
       [`run-temp-${Date.now()}`, startedAtIso, triggerSource]
     );
     const collectionRunDbId = runInsertRes.rows[0].id;
-    const runId = `run-${collectionRunDbId}`;
+    const runId = options.runId || `run-${collectionRunDbId}`;
 
     await query(`UPDATE collection_runs SET run_id = $1 WHERE id = $2;`, [runId, collectionRunDbId]);
 

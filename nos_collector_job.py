@@ -160,10 +160,9 @@ def collect_data(
     # Cutoff time for historical session filtering (REQUIREMENT 2 & 7)
     cutoff_utc = start_time_dt - timedelta(minutes=lookback_minutes)
 
-    # Smart Scope: Dates in Portugal local time for today and tomorrow prioritization
+    # Strict Same-Day Filter (Today Only): Portugal local date
     now_lisbon = datetime.now(LISBON_TZ)
     today_lisbon = now_lisbon.date()
-    tomorrow_lisbon = today_lisbon + timedelta(days=1)
 
     movies_completed = 0
     last_err: Optional[str] = None
@@ -213,7 +212,7 @@ def collect_data(
             sched = scraper.get_movie_sessions(agg_id)
             days = sched.get("days", []) if isinstance(sched, dict) else []
 
-            # 1. Discover all candidate sessions for this movie
+            # 1. Discover all candidate sessions for this movie (Today only)
             movie_candidates: List[Dict[str, Any]] = []
 
             for day in days:
@@ -244,23 +243,17 @@ def collect_data(
                         except Exception:
                             continue
 
+                        # STRICT SAME-DAY FILTER: Force session filter to ONLY scrape showtimes scheduled for TODAY (current Lisbon local date)
+                        sess_lisbon_date = starts_at_utc.astimezone(LISBON_TZ).date()
+                        if sess_lisbon_date != today_lisbon:
+                            continue
+
                         # REQUIREMENT 2: Filter out past sessions older than lookback_minutes
                         if starts_at_utc < cutoff_utc:
                             continue
 
                         seen_session_uuids_in_run.add(s_uuid)
                         run.sessions_found += 1
-
-                        # SMART SCOPE: Prioritize today's and tomorrow's active showtimes
-                        sess_lisbon_date = starts_at_utc.astimezone(LISBON_TZ).date()
-                        if sess_lisbon_date == today_lisbon:
-                            priority_tier = 0  # Today: Highest priority
-                        elif sess_lisbon_date == tomorrow_lisbon:
-                            priority_tier = 1  # Tomorrow: Next priority
-                        elif sess_lisbon_date > tomorrow_lisbon:
-                            priority_tier = 2  # Future dates: Next
-                        else:
-                            priority_tier = 3  # Past / other
 
                         movie_candidates.append({
                             "s_uuid": s_uuid,
@@ -271,11 +264,10 @@ def collect_data(
                             "movie_meta": movie_meta,
                             "theater_name": theater_name,
                             "cinema_meta": cinema_meta,
-                            "priority_tier": priority_tier,
                         })
 
-            # Sort candidate sessions by smart scope priority (today first, tomorrow second, then chronological)
-            movie_candidates.sort(key=lambda c: (c["priority_tier"], c["starts_at_utc"]))
+            # Sort candidate sessions chronologically for today
+            movie_candidates.sort(key=lambda c: c["starts_at_utc"])
 
             if limit_sessions_per_movie:
                 movie_candidates = movie_candidates[:limit_sessions_per_movie]

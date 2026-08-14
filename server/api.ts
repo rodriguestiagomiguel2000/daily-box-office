@@ -741,15 +741,21 @@ apiRouter.post("/collector/cron", async (req, res) => {
       });
     }
 
-    console.log("[CRON] Executing full data collection run...");
-    const result = await executeCollectionRun({ triggerSource: "CRON" });
+    const runId = `cron-${Date.now()}`;
+    console.log(`[CRON] Executing collection run ${runId} asynchronously in background...`);
+
+    // Execute asynchronously in the background WITHOUT await
+    executeCollectionRun({ triggerSource: "CRON", runId }).catch((err) => {
+      console.error("Background run error:", err);
+    });
+
     return res.status(200).json({
       success: true,
-      message: "Data collection completed successfully",
-      result,
+      message: "Collection run started for today's sessions",
+      runId,
     });
   } catch (err: any) {
-    console.error("[CRON] Error executing collection run via /api/collector/cron:", err);
+    console.error("[CRON] Error starting collection run via /api/collector/cron:", err);
     return res.status(500).json({
       success: false,
       error: err?.message || "Internal server error during data collection",
