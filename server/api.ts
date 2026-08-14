@@ -714,11 +714,47 @@ apiRouter.post("/collector/trigger", async (req, res) => {
 
 // Secure HTTP collection trigger endpoint for Cloud Scheduler or external cron
 apiRouter.post("/collector/cron", async (req, res) => {
-  return res.status(200).json({
-    status: "MIGRATED_INACTIVE",
-    skipped: true,
-    message: "Production collection cron has migrated to GitHub Actions. This HTTP endpoint is disabled to prevent duplicate runs."
-  });
+  try {
+    const authHeader = req.headers.authorization || (req.headers["authorization"] as string | undefined);
+    const expectedSecret = process.env.COLLECTOR_CRON_SECRET;
+
+    if (!expectedSecret) {
+      console.error("[CRON] COLLECTOR_CRON_SECRET environment variable is not configured on server.");
+      return res.status(401).json({ error: "Unauthorized: Missing cron secret configuration" });
+    }
+
+    const match = authHeader ? authHeader.match(/^Bearer\s+(.+)$/i) : null;
+    const token = match ? match[1].trim() : null;
+
+    if (!token || token !== expectedSecret) {
+      console.warn("[CRON] Unauthorized request to /api/collector/cron: invalid or missing bearer token.");
+      return res.status(401).json({ error: "Unauthorized" });
+    }
+
+    console.log("[CRON] Authorized collection cron trigger received. Checking active progress...");
+    const active = getActiveProgress();
+    if (active.isCollecting) {
+      return res.status(409).json({
+        success: false,
+        message: "Collection run is already in progress",
+        progress: active.progress,
+      });
+    }
+
+    console.log("[CRON] Executing full data collection run...");
+    const result = await executeCollectionRun({ triggerSource: "CRON" });
+    return res.status(200).json({
+      success: true,
+      message: "Data collection completed successfully",
+      result,
+    });
+  } catch (err: any) {
+    console.error("[CRON] Error executing collection run via /api/collector/cron:", err);
+    return res.status(500).json({
+      success: false,
+      error: err?.message || "Internal server error during data collection",
+    });
+  }
 });
 
 // Helper functions for Lisbon timezone conversion

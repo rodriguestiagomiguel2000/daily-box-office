@@ -1,13 +1,14 @@
 import express from "express";
 import path from "path";
 import { createServer as createViteServer } from "vite";
+import { envConfig } from "./server/env";
 import { runMigrations } from "./server/migrate";
 import { apiRouter } from "./server/api";
 import { scheduler } from "./server/scheduler";
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = envConfig.PORT || 3000;
 
   app.use(express.json());
 
@@ -16,7 +17,7 @@ async function startServer() {
     await runMigrations();
     // Start in-memory scheduler if explicitly enabled or in development.
     // In production, collections are triggered externally via Cloud Scheduler -> POST /api/collector/cron
-    if (process.env.ENABLE_IN_MEMORY_SCHEDULER === "true" || process.env.NODE_ENV !== "production") {
+    if (envConfig.ENABLE_IN_MEMORY_SCHEDULER || envConfig.NODE_ENV !== "production") {
       scheduler.start(15);
     } else {
       console.log("In-memory setInterval scheduler disabled in production. Collections driven by external cron endpoint.");
