@@ -259,20 +259,19 @@ export const CollectorStatusModal: React.FC<CollectorStatusModalProps> = ({
               </div>
 
               <div>
-                <span className="text-slate-400">Next Scheduled:</span>
-                <div className="font-semibold text-slate-200 mt-1">
-                  {scheduler?.nextRunTime
-                    ? new Date(scheduler.nextRunTime).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })
-                    : "Paused"}
-                </div>
-              </div>
-
-              <div>
                 <span className="text-slate-400">Collector Core:</span>
-                <div className="font-mono text-amber-400 font-semibold mt-1">
-                  v{scheduler?.collectorVersion || "2.0.0"} (NOS Validated)
+                <div className="font-mono text-cyan-400 font-semibold mt-1">
+                  v{scheduler?.collectorVersion || "2.0.0"} (GHA Powered)
                 </div>
               </div>
+            </div>
+
+            {/* Note about GitHub Actions Delay */}
+            <div className="text-[11px] text-slate-400 bg-slate-900/50 p-2.5 rounded-lg border border-slate-800/40 flex items-center space-x-2">
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+              <span>
+                <strong>Hora aproximada:</strong> O GitHub Actions executa tarefas em segundo plano e pode apresentar um ligeiro atraso de alguns minutos em relação ao horário exato agendado.
+              </span>
             </div>
           </div>
 

@@ -1,6 +1,7 @@
-import React from "react";
+import React, { useState, useEffect } from "react";
 import { Film, Users, Building, Calendar, Clock, TrendingUp, DollarSign, ChevronRight, EyeOff, AlertCircle, Info, RefreshCw } from "lucide-react";
 import { TrackedMovieSummary } from "../types";
+import { getNextScheduledTime, formatToPortugal } from "../utils/scheduling";
 
 interface TrackedMoviesViewProps {
   movies: TrackedMovieSummary[];
@@ -27,6 +28,18 @@ export const TrackedMoviesView: React.FC<TrackedMoviesViewProps> = ({
   const totalNewlyUnavailable = movies.reduce((acc, m) => acc + m.newly_unavailable, 0);
   const totalEstimatedRevenue = movies.reduce((acc, m) => acc + m.estimated_revenue, 0);
   const overallOccupancy = totalSellable > 0 ? (totalUnavailable / totalSellable) * 100 : 0;
+  
+  const [nextRunText, setNextRunText] = useState<string>("");
+
+  useEffect(() => {
+    const updateNextRun = () => {
+      setNextRunText(formatToPortugal(getNextScheduledTime()));
+    };
+
+    updateNextRun();
+    const interval = setInterval(updateNextRun, 30000);
+    return () => clearInterval(interval);
+  }, []);
 
   return (
     <div className="space-y-8">
@@ -102,26 +115,38 @@ export const TrackedMoviesView: React.FC<TrackedMoviesViewProps> = ({
           </p>
         </div>
 
-        <div className="flex items-center gap-3">
-          <button
-            id="refresh-movies-btn"
-            onClick={onRefreshMovies}
-            disabled={isLoading}
-            className="inline-flex items-center space-x-2 px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 active:bg-slate-800 text-slate-200 border border-slate-700 font-medium text-sm transition shadow disabled:opacity-50 cursor-pointer"
-            title="Refresh tracked catalog metrics without triggering collector sweeps"
+        <div className="flex items-center gap-4">
+          <div
+            id="next-run-badge"
+            title="Approximate time: GitHub Actions may run a few minutes after the scheduled time."
+            className="flex items-center space-x-1.5 text-xs text-slate-400"
           >
-            <RefreshCw className={`w-4 h-4 text-amber-400 ${isLoading ? "animate-spin" : ""}`} />
-            <span>{isLoading ? "Refreshing..." : "Refresh Movies"}</span>
-          </button>
+            <Clock className="w-3.5 h-3.5 text-amber-500" />
+            <span className="font-medium text-slate-300">Next run:</span>
+            <span className="text-amber-300 font-semibold">{nextRunText || "..."}</span>
+          </div>
 
-          <button
-            id="add-movie-tracking-btn"
-            onClick={onOpenCatalog}
-            className="inline-flex items-center space-x-2 px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold text-sm transition shadow cursor-pointer"
-          >
-            <Film className="w-4 h-4" />
-            <span>Add Movies to Track</span>
-          </button>
+          <div className="flex items-center gap-3">
+            <button
+              id="refresh-movies-btn"
+              onClick={onRefreshMovies}
+              disabled={isLoading}
+              className="inline-flex items-center space-x-2 px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 active:bg-slate-800 text-slate-200 border border-slate-700 font-medium text-sm transition shadow disabled:opacity-50 cursor-pointer"
+              title="Refresh tracked catalog metrics without triggering collector sweeps"
+            >
+              <RefreshCw className={`w-4 h-4 text-amber-400 ${isLoading ? "animate-spin" : ""}`} />
+              <span>{isLoading ? "Refreshing..." : "Refresh Movies"}</span>
+            </button>
+
+            <button
+              id="add-movie-tracking-btn"
+              onClick={onOpenCatalog}
+              className="inline-flex items-center space-x-2 px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-semibold text-sm transition shadow cursor-pointer"
+            >
+              <Film className="w-4 h-4" />
+              <span>Add Movies to Track</span>
+            </button>
+          </div>
         </div>
       </div>
 
