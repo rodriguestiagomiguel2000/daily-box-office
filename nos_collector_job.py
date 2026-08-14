@@ -416,6 +416,10 @@ def main():
                 sys.exit(proc.returncode)
             
             prepared = json.loads(proc.stdout.strip())
+            if prepared.get("skipped"):
+                print(f"CONCURRENCY_LOCK: Collection run skipped. Reason: {prepared.get('reason')}", flush=True)
+                sys.exit(0)
+
             run_id = prepared["runId"]
             # If movie-ids weren't passed on CLI, use the ones from the database
             if not movie_ids:

@@ -58,17 +58,33 @@ export interface PreparedRun {
 }
 
 export async function prepareCollectionRun(options: CollectorJobOptions = {}): Promise<PreparedRun | null> {
+  // 1. Auto-recover stale runs: Mark any run in status 'RUNNING' that started more than 20 minutes ago as FAILED/STALE
+  try {
+    const staleRecoverRes = await query(
+      `UPDATE collection_runs 
+       SET status = 'FAILED', 
+           completed_at = NOW(), 
+           errors = '["Run exceeded maximum runtime and was marked as STALE."]'::jsonb
+       WHERE status = 'RUNNING' 
+         AND started_at < NOW() - INTERVAL '20 minutes';`
+    );
+    if (staleRecoverRes.rowCount && staleRecoverRes.rowCount > 0) {
+      console.log(`Auto-recovered ${staleRecoverRes.rowCount} stale running collection runs.`);
+    }
+  } catch (err) {
+    console.error("Failed to perform auto-recovery of stale runs:", err);
+  }
+
   if (isCollectingGlobal) {
     console.warn("Collection run requested while another is already active (in-memory lock). Rejecting concurrent run.");
     return null;
   }
 
-  // 1. Database-backed concurrency lock to prevent overlapping runs across different nodes/environments (e.g. GHA vs Cloud Run)
+  // 2. Database-backed concurrency lock to prevent overlapping runs across different nodes/environments (e.g. GHA vs Cloud Run)
   try {
     const activeCheck = await query<{ run_id: string; started_at: Date }>(
       `SELECT run_id, started_at FROM collection_runs 
        WHERE status = 'RUNNING' 
-         AND started_at > NOW() - INTERVAL '20 minutes'
        LIMIT 1;`
     );
 
