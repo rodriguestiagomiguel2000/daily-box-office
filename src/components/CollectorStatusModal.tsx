@@ -68,90 +68,130 @@ export const CollectorStatusModal: React.FC<CollectorStatusModalProps> = ({
 
         <div className="p-6 overflow-y-auto flex-1 space-y-6">
           {/* Live Active Collection Progress Card */}
-          {(status?.is_collecting || status?.active_progress) && (
-            <div className="bg-amber-950/30 border border-amber-500/40 p-5 rounded-2xl space-y-3 animate-pulse-subtle">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center space-x-2">
-                  <RefreshCw className="w-4 h-4 text-amber-400 animate-spin" />
-                  <span className="text-sm font-bold text-amber-200">
-                    Live Collection Run In Progress ({status?.active_progress?.run_id || "Active"})
-                  </span>
-                </div>
-                <span className="px-2.5 py-0.5 rounded-full text-xs font-mono font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                  {status?.active_progress?.status || "RUNNING"}
-                </span>
-              </div>
+          {(status?.is_collecting || status?.active_progress) && (() => {
+            const progress = status.active_progress;
+            const runStatus = (progress?.status || (status.is_collecting ? "RUNNING" : "SUCCESS")).toUpperCase();
+            const runId = progress?.run_id || "Active";
+            const isRunning = runStatus === "RUNNING";
+            const isSuccess = runStatus === "SUCCESS";
+            const isPartial = runStatus === "PARTIAL";
+            const isFailed = runStatus === "FAILED";
 
-              {/* Progress Bar */}
-              <div className="space-y-1">
-                <div className="flex justify-between text-xs text-slate-300">
-                  <span>
-                    Current Movie: <strong className="text-amber-300">{status?.active_progress?.current_movie || "Initializing"}</strong>
-                  </span>
-                  <span className="font-mono">
-                    Sessions: {status?.active_progress?.sessions_completed || 0} / {status?.active_progress?.sessions_found || 0}
+            let cardContainerClass = "bg-amber-950/30 border-amber-500/40 animate-pulse-subtle";
+            let headerText = `Live Collection Run In Progress (${runId})`;
+            let headerTextColor = "text-amber-200";
+            let badgeClass = "bg-amber-500/20 text-amber-300 border-amber-500/30";
+            let progressFillClass = "bg-amber-400";
+            let HeaderIcon = <RefreshCw className="w-4 h-4 text-amber-400 animate-spin" />;
+
+            if (isSuccess) {
+              cardContainerClass = "bg-emerald-950/30 border-emerald-500/40";
+              headerText = `Run Completed Successfully (${runId})`;
+              headerTextColor = "text-emerald-200";
+              badgeClass = "bg-emerald-500/20 text-emerald-300 border-emerald-500/30";
+              progressFillClass = "bg-emerald-400";
+              HeaderIcon = <CheckCircle className="w-4 h-4 text-emerald-400" />;
+            } else if (isPartial) {
+              cardContainerClass = "bg-amber-950/20 border-amber-500/50";
+              headerText = `Run Completed with Errors (${runId})`;
+              headerTextColor = "text-amber-200";
+              badgeClass = "bg-amber-500/20 text-amber-300 border-amber-500/30";
+              progressFillClass = "bg-amber-500";
+              HeaderIcon = <AlertCircle className="w-4 h-4 text-amber-400" />;
+            } else if (isFailed) {
+              cardContainerClass = "bg-rose-950/30 border-rose-500/40";
+              headerText = `Run Failed (${runId})`;
+              headerTextColor = "text-rose-200";
+              badgeClass = "bg-rose-500/20 text-rose-300 border-rose-500/30";
+              progressFillClass = "bg-rose-500";
+              HeaderIcon = <AlertCircle className="w-4 h-4 text-rose-400" />;
+            }
+
+            return (
+              <div className={`p-5 rounded-2xl border space-y-3 ${cardContainerClass}`}>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center space-x-2">
+                    {HeaderIcon}
+                    <span className={`text-sm font-bold ${headerTextColor}`}>
+                      {headerText}
+                    </span>
+                  </div>
+                  <span className={`px-2.5 py-0.5 rounded-full text-xs font-mono font-bold border ${badgeClass}`}>
+                    {runStatus}
                   </span>
                 </div>
-                <div className="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
-                  <div
-                    className="bg-amber-400 h-2 transition-all duration-300 rounded-full"
-                    style={{
-                      width: `${
-                        status?.active_progress?.sessions_found && status.active_progress.sessions_found > 0
-                          ? Math.min(
-                              100,
-                              Math.round(
-                                ((status.active_progress.sessions_completed || 0) /
-                                  status.active_progress.sessions_found) *
-                                  100
+
+                {/* Progress Bar */}
+                <div className="space-y-1">
+                  <div className="flex justify-between text-xs text-slate-300">
+                    <span>
+                      Current Movie: <strong className={isRunning ? "text-amber-300" : isSuccess ? "text-emerald-300" : isFailed ? "text-rose-300" : "text-amber-300"}>{progress?.current_movie || (isRunning ? "Initializing" : "Completed")}</strong>
+                    </span>
+                    <span className="font-mono">
+                      Sessions: {progress?.sessions_completed || 0} / {progress?.sessions_found || 0}
+                    </span>
+                  </div>
+                  <div className="w-full bg-slate-800 rounded-full h-2 overflow-hidden">
+                    <div
+                      className={`${progressFillClass} h-2 transition-all duration-300 rounded-full`}
+                      style={{
+                        width: `${
+                          progress?.sessions_found && progress.sessions_found > 0
+                            ? Math.min(
+                                100,
+                                Math.round(
+                                  ((progress.sessions_completed || 0) / progress.sessions_found) * 100
+                                )
                               )
-                            )
-                          : 5
-                      }%`,
-                    }}
-                  />
+                            : isRunning
+                            ? 5
+                            : 100
+                        }%`,
+                      }}
+                    />
+                  </div>
                 </div>
-              </div>
 
-              {/* Detailed Live Metrics Grid */}
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs pt-1">
-                <div>
-                  <span className="text-slate-400">Current Target:</span>
-                  <div className="font-medium text-slate-200 truncate mt-0.5">
-                    {status?.active_progress?.current_session || "Discovering timetable..."}
+                {/* Detailed Live Metrics Grid */}
+                <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs pt-1">
+                  <div>
+                    <span className="text-slate-400">Current Target:</span>
+                    <div className="font-medium text-slate-200 truncate mt-0.5">
+                      {progress?.current_session || (isRunning ? "Discovering timetable..." : "Finished")}
+                    </div>
+                  </div>
+                  <div>
+                    <span className="text-slate-400">Success / Failed:</span>
+                    <div className="font-mono font-bold mt-0.5">
+                      <span className="text-emerald-400">{progress?.sessions_successful || 0}</span>
+                      <span className="text-slate-500 mx-1">/</span>
+                      <span className="text-rose-400">{progress?.sessions_failed || 0}</span>
+                    </div>
+                  </div>
+                  <div>
+                    <span className="text-slate-400">Snapshots Created:</span>
+                    <div className="font-mono font-bold text-cyan-300 mt-0.5">
+                      {progress?.snapshots_created || 0}
+                    </div>
+                  </div>
+                  <div>
+                    <span className="text-slate-400">Elapsed Time:</span>
+                    <div className="font-mono text-amber-300 mt-0.5">
+                      {progress?.elapsed_seconds
+                        ? `${Math.round(progress.elapsed_seconds)}s`
+                        : "0s"}
+                    </div>
                   </div>
                 </div>
-                <div>
-                  <span className="text-slate-400">Success / Failed:</span>
-                  <div className="font-mono font-bold mt-0.5">
-                    <span className="text-emerald-400">{status?.active_progress?.sessions_successful || 0}</span>
-                    <span className="text-slate-500 mx-1">/</span>
-                    <span className="text-rose-400">{status?.active_progress?.sessions_failed || 0}</span>
-                  </div>
-                </div>
-                <div>
-                  <span className="text-slate-400">Snapshots Created:</span>
-                  <div className="font-mono font-bold text-cyan-300 mt-0.5">
-                    {status?.active_progress?.snapshots_created || 0}
-                  </div>
-                </div>
-                <div>
-                  <span className="text-slate-400">Elapsed Time:</span>
-                  <div className="font-mono text-amber-300 mt-0.5">
-                    {status?.active_progress?.elapsed_seconds
-                      ? `${Math.round(status.active_progress.elapsed_seconds)}s`
-                      : "0s"}
-                  </div>
-                </div>
-              </div>
 
-              {status?.active_progress?.last_error && (
-                <div className="text-[11px] font-mono text-rose-300 bg-rose-950/40 p-2 rounded border border-rose-800/40 truncate">
-                  • Latest error: {status.active_progress.last_error}
-                </div>
-              )}
-            </div>
-          )}
+                {progress?.last_error && (
+                  <div className="text-[11px] font-mono text-rose-300 bg-rose-950/40 p-2 rounded border border-rose-800/40 truncate">
+                    • Latest error: {progress.last_error}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
 
           {/* Storage Telemetry Banner */}
           <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
@@ -261,16 +301,16 @@ export const CollectorStatusModal: React.FC<CollectorStatusModalProps> = ({
               <div>
                 <span className="text-slate-400">Collector Core:</span>
                 <div className="font-mono text-cyan-400 font-semibold mt-1">
-                  v{scheduler?.collectorVersion || "2.0.0"} (GHA Powered)
+                  v{scheduler?.collectorVersion || "2.0.0"} (Render Cron)
                 </div>
               </div>
             </div>
 
-            {/* Note about GitHub Actions Delay */}
+            {/* Note about Background Cron Delay */}
             <div className="text-[11px] text-slate-400 bg-slate-900/50 p-2.5 rounded-lg border border-slate-800/40 flex items-center space-x-2">
               <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
               <span>
-                <strong>Hora aproximada:</strong> O GitHub Actions executa tarefas em segundo plano e pode apresentar um ligeiro atraso de alguns minutos em relação ao horário exato agendado.
+                <strong>Hora aproximada:</strong> a execução em segundo plano pode apresentar um ligeiro atraso de alguns minutos em relação ao horário exato agendado.
               </span>
             </div>
           </div>

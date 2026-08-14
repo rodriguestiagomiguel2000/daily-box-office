@@ -118,7 +118,7 @@ export const TrackedMoviesView: React.FC<TrackedMoviesViewProps> = ({
         <div className="flex items-center gap-4">
           <div
             id="next-run-badge"
-            title="Approximate time: GitHub Actions may run a few minutes after the scheduled time."
+            title="Approximate time: Background cron execution may run a few minutes after the scheduled time."
             className="flex items-center space-x-1.5 text-xs text-slate-400"
           >
             <Clock className="w-3.5 h-3.5 text-amber-500" />
