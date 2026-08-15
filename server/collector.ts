@@ -570,11 +570,11 @@ export async function persistSingleSession(
             number: seat.seat_number,
           });
 
-          if (prevState === "AVAILABLE" && currState === "OCCUPIED") {
+          if (prevState === "AVAILABLE" && (currState === "UNAVAILABLE" || currState === "OCCUPIED")) {
             newlyUnavailable++;
-          } else if (prevState === "OCCUPIED" && currState === "AVAILABLE") {
+          } else if ((prevState === "UNAVAILABLE" || prevState === "OCCUPIED" || prevState === "SAFETY") && currState === "AVAILABLE") {
             newlyAvailable++;
-          } else if (currState === "SAFETY") {
+          } else if (currState === "SAFETY" && prevState !== "SAFETY") {
             newlySafety++;
           } else {
             otherChanges++;

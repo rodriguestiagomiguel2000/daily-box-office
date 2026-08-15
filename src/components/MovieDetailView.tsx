@@ -86,6 +86,7 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
 
   // Session table filtering & sorting
   const [sessionSearch, setSessionSearch] = useState("");
+  const [dateFilter, setDateFilter] = useState("ALL");
   const [formatFilter, setFormatFilter] = useState("ALL");
   const [cinemaFilter, setCinemaFilter] = useState("ALL");
   const [statusFilter, setStatusFilter] = useState<"ALL" | "CURRENT" | "HISTORICAL">("ALL");
@@ -239,13 +240,14 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
       const matchesSearch =
         s.cinema_name.toLowerCase().includes(sessionSearch.toLowerCase()) ||
         s.room_name.toLowerCase().includes(sessionSearch.toLowerCase());
+      const matchesDate = dateFilter === "ALL" || s.operational_date === dateFilter;
       const matchesFormat = formatFilter === "ALL" || s.format.toUpperCase().includes(formatFilter.toUpperCase());
       const matchesCinema = cinemaFilter === "ALL" || s.cinema_name === cinemaFilter;
       const matchesStatus =
         statusFilter === "ALL" ||
         (statusFilter === "CURRENT" && s.is_current) ||
         (statusFilter === "HISTORICAL" && !s.is_current);
-      return matchesSearch && matchesFormat && matchesCinema && matchesStatus;
+      return matchesSearch && matchesDate && matchesFormat && matchesCinema && matchesStatus;
     })
     .sort((a, b) => {
       if (sortBy === "occupancy") return b.occupancy_proxy - a.occupancy_proxy;
@@ -254,6 +256,7 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
       return 0;
     });
 
+  const uniqueDates = Array.from(new Set(sessions.map((s) => s.operational_date).filter(Boolean))).sort().reverse();
   const uniqueFormats = Array.from(new Set(sessions.map((s) => s.format).filter(Boolean)));
   const uniqueCinemas = Array.from(new Set(sessions.map((s) => s.cinema_name)));
 
@@ -1056,6 +1059,19 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
             </div>
 
             <div className="flex items-center gap-2 flex-wrap text-xs">
+              {/* Date Filter */}
+              <select
+                id="session-date-filter"
+                value={dateFilter}
+                onChange={(e) => setDateFilter(e.target.value)}
+                className="bg-slate-800 border border-slate-700 text-slate-300 rounded-xl px-3 py-2 outline-none font-medium"
+              >
+                <option value="ALL">All Dates</option>
+                {uniqueDates.map((d) => (
+                  <option key={d} value={d}>{d}</option>
+                ))}
+              </select>
+
               {/* Status Filter */}
               <select
                 id="session-status-filter"
