@@ -1208,6 +1208,165 @@ apiRouter.get("/movies/:id/intraday-curves", async (req, res) => {
   }
 });
 
+// GET /api/boxoffice/daily-history
+apiRouter.get("/boxoffice/daily-history", async (req, res) => {
+  try {
+    const todayStr = getOperationalDateStr();
+
+    // 1. Get all movies that have tracking_enabled = true OR have performance snapshots / sessions
+    const moviesRes = await query(`
+      SELECT DISTINCT m.id, m.title, m.poster_url, m.release_date, m.tracking_enabled
+      FROM movies m
+      WHERE m.tracking_enabled = true 
+         OR m.id IN (SELECT DISTINCT movie_id FROM movie_performance_snapshots)
+         OR m.id IN (SELECT DISTINCT movie_id FROM sessions)
+      ORDER BY m.tracking_enabled DESC, m.id ASC;
+    `);
+    const movies = moviesRes.rows;
+
+    // 2. Fetch latest snapshot per (movie_id, operational_date) from movie_performance_snapshots
+    const snapsRes = await query(`
+      WITH latest_snaps AS (
+        SELECT DISTINCT ON (movie_id, operational_date)
+          id,
+          movie_id,
+          operational_date,
+          snapshot_timestamp,
+          showcount_total,
+          shows_started,
+          shows_completed,
+          sellable_capacity,
+          available_seats,
+          unavailable_seats,
+          occupancy_proxy,
+          estimated_admissions,
+          estimated_revenue,
+          sales_velocity
+        FROM movie_performance_snapshots
+        ORDER BY movie_id, operational_date, snapshot_timestamp DESC
+      )
+      SELECT ls.*
+      FROM latest_snaps ls;
+    `);
+
+    // 3. Group snapshots by operational_date
+    const dateMap = new Map<string, Record<number, any>>();
+
+    for (const snap of snapsRes.rows) {
+      const opDate = snap.operational_date;
+      if (!opDate) continue;
+      if (!dateMap.has(opDate)) {
+        dateMap.set(opDate, {});
+      }
+      const rev = parseFloat(snap.estimated_revenue) || 0;
+      const adm = parseInt(snap.estimated_admissions, 10) || 0;
+      const cap = parseInt(snap.sellable_capacity, 10) || 0;
+      const occ = parseFloat(snap.occupancy_proxy) || 0;
+      const shows = parseInt(snap.showcount_total, 10) || 0;
+
+      dateMap.get(opDate)![snap.movie_id] = {
+        movie_id: snap.movie_id,
+        revenue: rev,
+        admissions: adm,
+        capacity: cap,
+        occupancy: occ,
+        shows: shows,
+        snapshot_timestamp: snap.snapshot_timestamp,
+        is_live: opDate === todayStr,
+      };
+    }
+
+    // 4. Ensure today's operational date is present in dateMap even if no snapshots exist yet
+    if (!dateMap.has(todayStr)) {
+      dateMap.set(todayStr, {});
+    }
+
+    // 5. For today's date, compute live stats if snapshot is missing
+    for (const movie of movies) {
+      const todayData = dateMap.get(todayStr)?.[movie.id];
+      if (!todayData) {
+        const liveSnap = await getOrComputeMovieSnapshotAtTime(movie.id, todayStr, new Date());
+        if (liveSnap && (liveSnap.showcount_total > 0 || liveSnap.estimated_revenue > 0)) {
+          if (!dateMap.has(todayStr)) dateMap.set(todayStr, {});
+          dateMap.get(todayStr)![movie.id] = {
+            movie_id: movie.id,
+            revenue: liveSnap.estimated_revenue,
+            admissions: liveSnap.estimated_admissions,
+            capacity: liveSnap.sellable_capacity,
+            occupancy: liveSnap.occupancy_proxy,
+            shows: liveSnap.showcount_total,
+            snapshot_timestamp: liveSnap.timestamp || new Date().toISOString(),
+            is_live: true,
+          };
+        }
+      }
+    }
+
+    // 6. Build operational dates list sorted DESC
+    const sortedDates = Array.from(dateMap.keys()).sort((a, b) => b.localeCompare(a));
+
+    const rows = sortedDates.map((opDate) => {
+      const movieEntries = dateMap.get(opDate) || {};
+      let dailyTotalRev = 0;
+      let dailyTotalAdm = 0;
+
+      for (const movieIdStr in movieEntries) {
+        const entry = movieEntries[movieIdStr];
+        dailyTotalRev += entry.revenue || 0;
+        dailyTotalAdm += entry.admissions || 0;
+      }
+
+      return {
+        operational_date: opDate,
+        is_today: opDate === todayStr,
+        total_revenue: Math.round(dailyTotalRev * 100) / 100,
+        total_admissions: dailyTotalAdm,
+        movie_data: movieEntries,
+      };
+    });
+
+    // 7. Calculate overall movie totals
+    const totalsPerMovie: Record<number, { total_revenue: number; total_admissions: number; days_tracked: number }> = {};
+    let grandTotalRevenue = 0;
+    let grandTotalAdmissions = 0;
+
+    for (const movie of movies) {
+      totalsPerMovie[movie.id] = { total_revenue: 0, total_admissions: 0, days_tracked: 0 };
+    }
+
+    for (const row of rows) {
+      for (const movie of movies) {
+        const mData = row.movie_data[movie.id];
+        if (mData && (mData.revenue > 0 || mData.shows > 0)) {
+          totalsPerMovie[movie.id].total_revenue += mData.revenue || 0;
+          totalsPerMovie[movie.id].total_admissions += mData.admissions || 0;
+          totalsPerMovie[movie.id].days_tracked += 1;
+
+          grandTotalRevenue += mData.revenue || 0;
+          grandTotalAdmissions += mData.admissions || 0;
+        }
+      }
+    }
+
+    for (const id in totalsPerMovie) {
+      totalsPerMovie[id].total_revenue = Math.round(totalsPerMovie[id].total_revenue * 100) / 100;
+    }
+
+    res.json({
+      movies,
+      rows,
+      summary: {
+        totals_per_movie: totalsPerMovie,
+        grand_total_revenue: Math.round(grandTotalRevenue * 100) / 100,
+        grand_total_admissions: grandTotalAdmissions,
+      },
+    });
+  } catch (err: any) {
+    console.error("Error fetching daily box office history:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // Configure scheduler interval or toggle
 apiRouter.post("/collector/config", (req, res) => {
   const { interval_minutes, is_running } = req.body;

@@ -272,3 +272,34 @@ export interface IntradayProgressionResponse {
   items: IntradaySnapshot[];
 }
 
+export interface DailyBoxOfficeMovieData {
+  movie_id: number;
+  revenue: number;
+  admissions: number;
+  capacity: number;
+  occupancy: number;
+  shows: number;
+  snapshot_timestamp?: string;
+  is_live: boolean;
+}
+
+export interface DailyBoxOfficeRow {
+  operational_date: string;
+  is_today: boolean;
+  total_revenue: number;
+  total_admissions: number;
+  movie_data: Record<number, DailyBoxOfficeMovieData>;
+}
+
+export interface DailyBoxOfficeSummary {
+  totals_per_movie: Record<number, { total_revenue: number; total_admissions: number; days_tracked: number }>;
+  grand_total_revenue: number;
+  grand_total_admissions: number;
+}
+
+export interface DailyBoxOfficeHistoryResponse {
+  movies: Movie[];
+  rows: DailyBoxOfficeRow[];
+  summary: DailyBoxOfficeSummary;
+}
+

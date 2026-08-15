@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { Header } from "./components/Header";
 import { TrackedMoviesView } from "./components/TrackedMoviesView";
 import { MovieDetailView } from "./components/MovieDetailView";
+import { DailyBoxOfficeHistoryView } from "./components/DailyBoxOfficeHistoryView";
 import { CatalogModal } from "./components/CatalogModal";
 import { CollectorStatusModal } from "./components/CollectorStatusModal";
 import { TrackedMovieSummary, MovieDetailResponse, CollectorStatusResponse, Movie } from "./types";
@@ -12,6 +13,7 @@ export function App() {
   const [movieDetail, setMovieDetail] = useState<MovieDetailResponse | null>(null);
   const [collectorStatus, setCollectorStatus] = useState<CollectorStatusResponse | null>(null);
   const [catalogMovies, setCatalogMovies] = useState<Movie[]>([]);
+  const [isDailyHistoryView, setIsDailyHistoryView] = useState<boolean>(false);
 
   const [isLoadingSummary, setIsLoadingSummary] = useState(true);
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
@@ -220,11 +222,23 @@ export function App() {
         onTriggerRun={handleTriggerRun}
         onOpenCatalog={handleOpenCatalog}
         onOpenStatus={() => setIsStatusOpen(true)}
+        onOpenDailyHistory={() => {
+          setSelectedMovieId(null);
+          setMovieDetail(null);
+          setIsDailyHistoryView(true);
+        }}
         onHomeClick={() => {
           setSelectedMovieId(null);
           setMovieDetail(null);
+          setIsDailyHistoryView(false);
         }}
-        activeView={selectedMovieId ? "detail" : "tracked"}
+        activeView={
+          selectedMovieId
+            ? "detail"
+            : isDailyHistoryView
+            ? "daily-history"
+            : "tracked"
+        }
       />
 
       {/* Main Container */}
@@ -238,6 +252,11 @@ export function App() {
             }}
             onRefresh={() => fetchMovieDetail(selectedMovieId)}
             isRefreshing={isLoadingDetail}
+          />
+        ) : isDailyHistoryView ? (
+          <DailyBoxOfficeHistoryView
+            onSelectMovie={handleSelectMovie}
+            onBackToDashboard={() => setIsDailyHistoryView(false)}
           />
         ) : (
           <TrackedMoviesView
