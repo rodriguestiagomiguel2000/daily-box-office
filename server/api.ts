@@ -830,192 +830,301 @@ function getPreviousDateStr(dateStr: string, daysBack: number): string {
   return dt.toISOString().split("T")[0];
 }
 
-// Helper function to get or aggregate movie performance snapshot at a specific point in time
+// Helper function to get or aggregate movie performance snapshots for multiple target points in time in batch
+async function getOrComputeMovieSnapshotsBatch(
+  movieId: number,
+  targets: Array<{ date: string; targetTs: Date }>
+) {
+  if (targets.length === 0) return [];
+
+  const formattedTargets = targets.map((t, idx) => ({
+    idx,
+    op_date: t.date,
+    target_ts: t.targetTs.toISOString(),
+  }));
+
+  // 1. Batch Cache Lookup (1 SQL Query)
+  const cacheRes = await query(
+    `WITH targets AS (
+      SELECT 
+        (elem->>'idx')::int AS target_idx,
+        elem->>'op_date' AS op_date,
+        (elem->>'target_ts')::timestamptz AS target_ts
+      FROM jsonb_array_elements($2::jsonb) AS elem
+    )
+    SELECT 
+      t.target_idx,
+      t.op_date,
+      t.target_ts,
+      mps.id AS snap_id,
+      mps.operational_date,
+      mps.snapshot_timestamp,
+      mps.showcount_total,
+      mps.shows_started,
+      mps.shows_completed,
+      mps.shows_remaining,
+      mps.sellable_capacity,
+      mps.available_seats,
+      mps.unavailable_seats,
+      mps.occupancy_proxy,
+      mps.estimated_admissions,
+      mps.estimated_revenue,
+      mps.revenue_per_show,
+      mps.admissions_per_show,
+      mps.newly_unavailable,
+      mps.newly_available,
+      mps.sales_velocity
+    FROM targets t
+    LEFT JOIN LATERAL (
+      SELECT *
+      FROM movie_performance_snapshots
+      WHERE movie_id = $1
+        AND operational_date = t.op_date
+        AND snapshot_timestamp >= t.target_ts - INTERVAL '45 minutes'
+        AND snapshot_timestamp <= t.target_ts + INTERVAL '45 minutes'
+      ORDER BY ABS(EXTRACT(EPOCH FROM (snapshot_timestamp - t.target_ts))) ASC
+      LIMIT 1
+    ) mps ON true;`,
+    [movieId, JSON.stringify(formattedTargets)]
+  );
+
+  const results: any[] = new Array(targets.length);
+  const missingTargets: Array<{ idx: number; op_date: string; target_ts: string }> = [];
+
+  for (const row of cacheRes.rows) {
+    const idx = Number(row.target_idx);
+    if (row.snap_id !== null && row.snap_id !== undefined) {
+      results[idx] = {
+        date: row.operational_date,
+        timestamp: row.snapshot_timestamp,
+        time: new Date(row.snapshot_timestamp).toLocaleTimeString("pt-PT", {
+          hour: "2-digit",
+          minute: "2-digit",
+          timeZone: "Europe/Lisbon",
+        }),
+        showcount_total: Number(row.showcount_total),
+        shows_started: Number(row.shows_started),
+        shows_completed: Number(row.shows_completed),
+        shows_remaining: Number(row.shows_remaining),
+        sellable_capacity: Number(row.sellable_capacity),
+        available_seats: Number(row.available_seats),
+        unavailable_seats: Number(row.unavailable_seats),
+        occupancy_proxy: Number(row.occupancy_proxy),
+        estimated_admissions: Number(row.estimated_admissions),
+        estimated_revenue: Number(row.estimated_revenue),
+        revenue_per_show: Number(row.revenue_per_show),
+        admissions_per_show: Number(row.admissions_per_show),
+        newly_unavailable: Number(row.newly_unavailable),
+        newly_available: Number(row.newly_available),
+        sales_velocity: Number(row.sales_velocity),
+        is_fallback: false,
+      };
+    } else {
+      missingTargets.push({
+        idx,
+        op_date: targets[idx].date,
+        target_ts: targets[idx].targetTs.toISOString(),
+      });
+    }
+  }
+
+  // 2. Fallback Batch Aggregation (1 SQL Query if missingTargets > 0)
+  if (missingTargets.length > 0) {
+    const aggRes = await query(
+      `WITH missing_targets AS (
+        SELECT 
+          (elem->>'idx')::int AS target_idx,
+          elem->>'op_date' AS op_date,
+          (elem->>'target_ts')::timestamptz AS target_ts
+        FROM jsonb_array_elements($2::jsonb) AS elem
+      )
+      SELECT 
+        mt.target_idx,
+        mt.op_date,
+        mt.target_ts,
+        agg.*
+      FROM missing_targets mt
+      CROSS JOIN LATERAL (
+        WITH session_latest_snaps AS (
+          SELECT DISTINCT ON (s.id)
+            s.id as session_id,
+            s.starts_at,
+            s.format,
+            ss.sellable_seats,
+            ss.available_seats,
+            ss.unavailable_seats,
+            ss.occupancy_proxy,
+            ss.collected_at
+          FROM sessions s
+          JOIN seat_snapshots ss ON ss.session_id = s.id
+          WHERE s.movie_id = $1 
+            AND (s.operational_date = mt.op_date OR TO_CHAR((s.starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD') = mt.op_date)
+            AND ss.collected_at <= mt.target_ts
+          ORDER BY s.id, ss.collected_at DESC
+        ),
+        session_transitions AS (
+          SELECT DISTINCT ON (st.session_id)
+            st.session_id,
+            st.newly_unavailable,
+            st.newly_available,
+            st.sales_velocity_proxy
+          FROM seat_transitions st
+          WHERE st.session_id IN (SELECT session_id FROM session_latest_snaps)
+            AND st.transition_timestamp <= mt.target_ts
+          ORDER BY st.session_id, st.transition_timestamp DESC
+        ),
+        session_prices AS (
+          SELECT session_id, AVG(price) as avg_price
+          FROM session_ticket_prices
+          WHERE session_id IN (SELECT session_id FROM session_latest_snaps) AND price > 0
+          GROUP BY session_id
+        )
+        SELECT 
+          COUNT(sls.session_id) as showcount_total,
+          COUNT(CASE WHEN sls.starts_at <= mt.target_ts THEN 1 END) as shows_started,
+          COUNT(CASE WHEN sls.starts_at + INTERVAL '2 hours' <= mt.target_ts THEN 1 END) as shows_completed,
+          COUNT(CASE WHEN sls.starts_at + INTERVAL '2 hours' > mt.target_ts THEN 1 END) as shows_remaining,
+          COALESCE(SUM(sls.sellable_seats), 0) as sellable_capacity,
+          COALESCE(SUM(sls.available_seats), 0) as available_seats,
+          COALESCE(SUM(sls.unavailable_seats), 0) as unavailable_seats,
+          COALESCE(SUM(st.newly_unavailable), 0) as newly_unavailable,
+          COALESCE(SUM(st.newly_available), 0) as newly_available,
+          COALESCE(SUM(st.sales_velocity_proxy), 0.0) as sales_velocity,
+          COALESCE(SUM(sls.unavailable_seats * COALESCE(sp.avg_price, CASE WHEN sls.format ILIKE '%IMAX%' THEN 13.50 ELSE 7.60 END)), 0.0) as estimated_revenue
+        FROM session_latest_snaps sls
+        LEFT JOIN session_transitions st ON sls.session_id = st.session_id
+        LEFT JOIN session_prices sp ON sls.session_id = sp.session_id
+      ) agg;`,
+      [movieId, JSON.stringify(missingTargets)]
+    );
+
+    const toInsert: any[] = [];
+    const nowMs = Date.now();
+    const fortyFiveMinMs = 45 * 60 * 1000;
+
+    for (const row of aggRes.rows) {
+      const idx = Number(row.target_idx);
+      const targetTsObj = targets[idx].targetTs;
+      const operationalDate = targets[idx].date;
+
+      const showcountTotal = parseInt(row.showcount_total, 10) || 0;
+      const showsStarted = parseInt(row.shows_started, 10) || 0;
+      const showsCompleted = parseInt(row.shows_completed, 10) || 0;
+      const showsRemaining = parseInt(row.shows_remaining, 10) || 0;
+      const sellableCapacity = parseInt(row.sellable_capacity, 10) || 0;
+      const availableSeats = parseInt(row.available_seats, 10) || 0;
+      const unavailableSeats = parseInt(row.unavailable_seats, 10) || 0;
+      const newlyUnavailable = parseInt(row.newly_unavailable, 10) || 0;
+      const newlyAvailable = parseInt(row.newly_available, 10) || 0;
+      const salesVelocity = parseFloat(row.sales_velocity) || 0.0;
+      const estimatedRevenue = Math.round((parseFloat(row.estimated_revenue) || 0.0) * 100) / 100;
+      const estimatedAdmissions = unavailableSeats;
+      const occupancyProxy = sellableCapacity > 0 ? unavailableSeats / sellableCapacity : 0.0;
+      const revenuePerShow = showcountTotal > 0 ? Math.round((estimatedRevenue / showcountTotal) * 100) / 100 : 0.0;
+      const admissionsPerShow = showcountTotal > 0 ? Math.round((estimatedAdmissions / showcountTotal) * 10) / 10 : 0.0;
+
+      results[idx] = {
+        date: operationalDate,
+        timestamp: targetTsObj.toISOString(),
+        time: targetTsObj.toLocaleTimeString("pt-PT", {
+          hour: "2-digit",
+          minute: "2-digit",
+          timeZone: "Europe/Lisbon",
+        }),
+        showcount_total: showcountTotal,
+        shows_started: showsStarted,
+        shows_completed: showsCompleted,
+        shows_remaining: showsRemaining,
+        sellable_capacity: sellableCapacity,
+        available_seats: availableSeats,
+        unavailable_seats: unavailableSeats,
+        occupancy_proxy: occupancyProxy,
+        estimated_admissions: estimatedAdmissions,
+        estimated_revenue: estimatedRevenue,
+        revenue_per_show: revenuePerShow,
+        admissions_per_show: admissionsPerShow,
+        newly_unavailable: newlyUnavailable,
+        newly_available: newlyAvailable,
+        sales_velocity: salesVelocity,
+        is_fallback: true,
+      };
+
+      if (nowMs - targetTsObj.getTime() > fortyFiveMinMs) {
+        toInsert.push({
+          movie_id: movieId,
+          operational_date: operationalDate,
+          snapshot_timestamp: targetTsObj.toISOString(),
+          showcount_total: showcountTotal,
+          shows_started: showsStarted,
+          shows_completed: showsCompleted,
+          shows_remaining: showsRemaining,
+          sellable_capacity: sellableCapacity,
+          available_seats: availableSeats,
+          unavailable_seats: unavailableSeats,
+          occupancy_proxy: occupancyProxy,
+          estimated_admissions: estimatedAdmissions,
+          estimated_revenue: estimatedRevenue,
+          revenue_per_show: revenuePerShow,
+          admissions_per_show: admissionsPerShow,
+          newly_unavailable: newlyUnavailable,
+          newly_available: newlyAvailable,
+          sales_velocity: salesVelocity,
+        });
+      }
+    }
+
+    // 3. Write-Through Batch Insert (1 SQL Query if toInsert > 0)
+    if (toInsert.length > 0) {
+      try {
+        await query(
+          `INSERT INTO movie_performance_snapshots (
+            movie_id, operational_date, snapshot_timestamp,
+            showcount_total, shows_started, shows_completed, shows_remaining,
+            sellable_capacity, available_seats, unavailable_seats, occupancy_proxy,
+            estimated_admissions, estimated_revenue, revenue_per_show, admissions_per_show,
+            newly_unavailable, newly_available, sales_velocity
+          )
+          SELECT
+            (elem->>'movie_id')::int,
+            elem->>'operational_date',
+            (elem->>'snapshot_timestamp')::timestamptz,
+            (elem->>'showcount_total')::int,
+            (elem->>'shows_started')::int,
+            (elem->>'shows_completed')::int,
+            (elem->>'shows_remaining')::int,
+            (elem->>'sellable_capacity')::int,
+            (elem->>'available_seats')::int,
+            (elem->>'unavailable_seats')::int,
+            (elem->>'occupancy_proxy')::double precision,
+            (elem->>'estimated_admissions')::int,
+            (elem->>'estimated_revenue')::numeric,
+            (elem->>'revenue_per_show')::numeric,
+            (elem->>'admissions_per_show')::numeric,
+            (elem->>'newly_unavailable')::int,
+            (elem->>'newly_available')::int,
+            (elem->>'sales_velocity')::double precision
+          FROM jsonb_array_elements($1::jsonb) AS elem;`,
+          [JSON.stringify(toInsert)]
+        );
+      } catch (insertErr) {
+        console.warn("[Cache Batch Write-Through] Failed batch insert:", insertErr);
+      }
+    }
+  }
+
+  return results;
+}
+
+// Single snapshot helper wrapping batch calculation for backwards compatibility
 async function getOrComputeMovieSnapshotAtTime(
   movieId: number,
   operationalDate: string,
   targetTimestamp: Date
 ) {
-  // 1. First check if a pre-calculated movie_performance_snapshot exists within +/- 45 mins
-  const snapRes = await query(
-    `SELECT * FROM movie_performance_snapshots
-     WHERE movie_id = $1 
-       AND operational_date = $2
-       AND snapshot_timestamp >= $3::timestamptz - INTERVAL '45 minutes'
-       AND snapshot_timestamp <= $3::timestamptz + INTERVAL '45 minutes'
-     ORDER BY ABS(EXTRACT(EPOCH FROM (snapshot_timestamp - $3::timestamptz))) ASC
-     LIMIT 1;`,
-    [movieId, operationalDate, targetTimestamp]
-  );
-
-  if (snapRes.rows.length > 0) {
-    const s = snapRes.rows[0];
-    return {
-      date: s.operational_date,
-      timestamp: s.snapshot_timestamp,
-      time: new Date(s.snapshot_timestamp).toLocaleTimeString("pt-PT", {
-        hour: "2-digit",
-        minute: "2-digit",
-        timeZone: "Europe/Lisbon",
-      }),
-      showcount_total: Number(s.showcount_total),
-      shows_started: Number(s.shows_started),
-      shows_completed: Number(s.shows_completed),
-      shows_remaining: Number(s.shows_remaining),
-      sellable_capacity: Number(s.sellable_capacity),
-      available_seats: Number(s.available_seats),
-      unavailable_seats: Number(s.unavailable_seats),
-      occupancy_proxy: Number(s.occupancy_proxy),
-      estimated_admissions: Number(s.estimated_admissions),
-      estimated_revenue: Number(s.estimated_revenue),
-      revenue_per_show: Number(s.revenue_per_show),
-      admissions_per_show: Number(s.admissions_per_show),
-      newly_unavailable: Number(s.newly_unavailable),
-      newly_available: Number(s.newly_available),
-      sales_velocity: Number(s.sales_velocity),
-      is_fallback: false,
-    };
-  }
-
-  // 2. Fallback: dynamically aggregate from raw seat_snapshots for that date up to targetTimestamp
-  const aggRes = await query(
-    `WITH session_latest_snaps AS (
-      SELECT DISTINCT ON (s.id)
-        s.id as session_id,
-        s.starts_at,
-        s.format,
-        ss.sellable_seats,
-        ss.available_seats,
-        ss.unavailable_seats,
-        ss.occupancy_proxy,
-        ss.collected_at
-      FROM sessions s
-      JOIN seat_snapshots ss ON ss.session_id = s.id
-      WHERE s.movie_id = $1 
-        AND (s.operational_date = $2 OR TO_CHAR((s.starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD') = $2)
-        AND ss.collected_at <= $3
-      ORDER BY s.id, ss.collected_at DESC
-    ),
-    session_transitions AS (
-      SELECT DISTINCT ON (st.session_id)
-        st.session_id,
-        st.newly_unavailable,
-        st.newly_available,
-        st.sales_velocity_proxy
-      FROM seat_transitions st
-      WHERE st.session_id IN (SELECT session_id FROM session_latest_snaps)
-        AND st.transition_timestamp <= $3
-      ORDER BY st.session_id, st.transition_timestamp DESC
-    ),
-    session_prices AS (
-      SELECT session_id, AVG(price) as avg_price
-      FROM session_ticket_prices
-      WHERE session_id IN (SELECT session_id FROM session_latest_snaps) AND price > 0
-      GROUP BY session_id
-    )
-    SELECT 
-      COUNT(sls.session_id) as showcount_total,
-      COUNT(CASE WHEN sls.starts_at <= $3 THEN 1 END) as shows_started,
-      COUNT(CASE WHEN sls.starts_at + INTERVAL '2 hours' <= $3 THEN 1 END) as shows_completed,
-      COUNT(CASE WHEN sls.starts_at + INTERVAL '2 hours' > $3 THEN 1 END) as shows_remaining,
-      COALESCE(SUM(sls.sellable_seats), 0) as sellable_capacity,
-      COALESCE(SUM(sls.available_seats), 0) as available_seats,
-      COALESCE(SUM(sls.unavailable_seats), 0) as unavailable_seats,
-      COALESCE(SUM(st.newly_unavailable), 0) as newly_unavailable,
-      COALESCE(SUM(st.newly_available), 0) as newly_available,
-      COALESCE(SUM(st.sales_velocity_proxy), 0.0) as sales_velocity,
-      COALESCE(SUM(sls.unavailable_seats * COALESCE(sp.avg_price, CASE WHEN sls.format ILIKE '%IMAX%' THEN 13.50 ELSE 7.60 END)), 0.0) as estimated_revenue
-    FROM session_latest_snaps sls
-    LEFT JOIN session_transitions st ON sls.session_id = st.session_id
-    LEFT JOIN session_prices sp ON sls.session_id = sp.session_id;`,
-    [movieId, operationalDate, targetTimestamp]
-  );
-
-  const row = aggRes.rows[0] || {};
-  const showcountTotal = parseInt(row.showcount_total, 10) || 0;
-  const showsStarted = parseInt(row.shows_started, 10) || 0;
-  const showsCompleted = parseInt(row.shows_completed, 10) || 0;
-  const showsRemaining = parseInt(row.shows_remaining, 10) || 0;
-  const sellableCapacity = parseInt(row.sellable_capacity, 10) || 0;
-  const availableSeats = parseInt(row.available_seats, 10) || 0;
-  const unavailableSeats = parseInt(row.unavailable_seats, 10) || 0;
-  const newlyUnavailable = parseInt(row.newly_unavailable, 10) || 0;
-  const newlyAvailable = parseInt(row.newly_available, 10) || 0;
-  const salesVelocity = parseFloat(row.sales_velocity) || 0.0;
-  const estimatedRevenue = Math.round((parseFloat(row.estimated_revenue) || 0.0) * 100) / 100;
-  const estimatedAdmissions = unavailableSeats;
-  const occupancyProxy = sellableCapacity > 0 ? unavailableSeats / sellableCapacity : 0.0;
-  const revenuePerShow = showcountTotal > 0 ? Math.round((estimatedRevenue / showcountTotal) * 100) / 100 : 0.0;
-  const admissionsPerShow = showcountTotal > 0 ? Math.round((estimatedAdmissions / showcountTotal) * 10) / 10 : 0.0;
-
-  // Write-through caching for historical points:
-  // If targetTimestamp is in the past relative to now (> 45 minutes ago),
-  // insert the computed result into movie_performance_snapshots so subsequent requests hit the cache.
-  const nowMs = Date.now();
-  const targetMs = targetTimestamp.getTime();
-  const fortyFiveMinMs = 45 * 60 * 1000;
-
-  if (nowMs - targetMs > fortyFiveMinMs) {
-    try {
-      await query(
-        `INSERT INTO movie_performance_snapshots (
-          movie_id, operational_date, snapshot_timestamp,
-          showcount_total, shows_started, shows_completed, shows_remaining,
-          sellable_capacity, available_seats, unavailable_seats, occupancy_proxy,
-          estimated_admissions, estimated_revenue, revenue_per_show, admissions_per_show,
-          newly_unavailable, newly_available, sales_velocity
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18);`,
-        [
-          movieId,
-          operationalDate,
-          targetTimestamp,
-          showcountTotal,
-          showsStarted,
-          showsCompleted,
-          showsRemaining,
-          sellableCapacity,
-          availableSeats,
-          unavailableSeats,
-          occupancyProxy,
-          estimatedAdmissions,
-          estimatedRevenue,
-          revenuePerShow,
-          admissionsPerShow,
-          newlyUnavailable,
-          newlyAvailable,
-          salesVelocity,
-        ]
-      );
-    } catch (cacheErr) {
-      console.warn("[Cache Write-Through] Failed to write snapshot to movie_performance_snapshots:", cacheErr);
-    }
-  }
-
-  return {
-    date: operationalDate,
-    timestamp: targetTimestamp.toISOString(),
-    time: targetTimestamp.toLocaleTimeString("pt-PT", {
-      hour: "2-digit",
-      minute: "2-digit",
-      timeZone: "Europe/Lisbon",
-    }),
-    showcount_total: showcountTotal,
-    shows_started: showsStarted,
-    shows_completed: showsCompleted,
-    shows_remaining: showsRemaining,
-    sellable_capacity: sellableCapacity,
-    available_seats: availableSeats,
-    unavailable_seats: unavailableSeats,
-    occupancy_proxy: occupancyProxy,
-    estimated_admissions: estimatedAdmissions,
-    estimated_revenue: estimatedRevenue,
-    revenue_per_show: revenuePerShow,
-    admissions_per_show: admissionsPerShow,
-    newly_unavailable: newlyUnavailable,
-    newly_available: newlyAvailable,
-    sales_velocity: salesVelocity,
-    is_fallback: true,
-  };
+  const snaps = await getOrComputeMovieSnapshotsBatch(movieId, [
+    { date: operationalDate, targetTs: targetTimestamp },
+  ]);
+  return snaps[0];
 }
 
 // 1. Fetch available historical operational dates for a movie
