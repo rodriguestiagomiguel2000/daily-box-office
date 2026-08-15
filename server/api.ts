@@ -1215,7 +1215,7 @@ apiRouter.get("/movies/:id/intraday-progression", async (req, res) => {
       return res.json({ date: dateStr, items });
     }
 
-    // Fallback if no pre-stored snapshots exist for this date
+    // Fallback if no pre-stored snapshots exist for this date: batch calculate for all distinct collected_at timestamps
     const timestampsRes = await query(
       `SELECT DISTINCT ss.collected_at
        FROM seat_snapshots ss
@@ -1226,11 +1226,16 @@ apiRouter.get("/movies/:id/intraday-progression", async (req, res) => {
       [movieId, dateStr]
     );
 
-    const items = [];
-    for (const row of timestampsRes.rows) {
-      const snap = await getOrComputeMovieSnapshotAtTime(movieId, dateStr, new Date(row.collected_at));
-      items.push(snap);
+    if (timestampsRes.rows.length === 0) {
+      return res.json({ date: dateStr, items: [] });
     }
+
+    const targets = timestampsRes.rows.map((row) => ({
+      date: dateStr,
+      targetTs: new Date(row.collected_at),
+    }));
+
+    const items = await getOrComputeMovieSnapshotsBatch(movieId, targets);
 
     res.json({ date: dateStr, items });
   } catch (err: any) {
@@ -1264,11 +1269,13 @@ apiRouter.get("/movies/:id/intraday-comparison", async (req, res) => {
     const yesterdayTs = parseLisbonLocalToUTC(yesterdayStr, targetTimeStr);
     const lastWeekTs = parseLisbonLocalToUTC(lastWeekStr, targetTimeStr);
 
-    const [todaySnap, yesterdaySnap, lastWeekSnap] = await Promise.all([
-      getOrComputeMovieSnapshotAtTime(movieId, targetDateStr, targetTs),
-      getOrComputeMovieSnapshotAtTime(movieId, yesterdayStr, yesterdayTs),
-      getOrComputeMovieSnapshotAtTime(movieId, lastWeekStr, lastWeekTs),
-    ]);
+    const targets = [
+      { date: targetDateStr, targetTs },
+      { date: yesterdayStr, targetTs: yesterdayTs },
+      { date: lastWeekStr, targetTs: lastWeekTs },
+    ];
+
+    const [todaySnap, yesterdaySnap, lastWeekSnap] = await getOrComputeMovieSnapshotsBatch(movieId, targets);
 
     res.json({
       target_date: targetDateStr,
@@ -1310,43 +1317,45 @@ apiRouter.get("/movies/:id/intraday-curves", async (req, res) => {
       "05:59",
     ];
 
-    const points = await Promise.all(
-      hours.map(async (h) => {
-        const targetTs = parseLisbonLocalToUTC(targetDateStr, h);
-        const yesterdayTs = parseLisbonLocalToUTC(yesterdayStr, h);
-        const lastWeekTs = parseLisbonLocalToUTC(lastWeekStr, h);
+    // Build the full batch of 33 targets (11 hours * 3 dates)
+    const targets: { date: string; targetTs: Date }[] = [];
+    for (const h of hours) {
+      targets.push({ date: targetDateStr, targetTs: parseLisbonLocalToUTC(targetDateStr, h) });
+      targets.push({ date: yesterdayStr, targetTs: parseLisbonLocalToUTC(yesterdayStr, h) });
+      targets.push({ date: lastWeekStr, targetTs: parseLisbonLocalToUTC(lastWeekStr, h) });
+    }
 
-        const [todaySnap, yesterdaySnap, lastWeekSnap] = await Promise.all([
-          getOrComputeMovieSnapshotAtTime(movieId, targetDateStr, targetTs),
-          getOrComputeMovieSnapshotAtTime(movieId, yesterdayStr, yesterdayTs),
-          getOrComputeMovieSnapshotAtTime(movieId, lastWeekStr, lastWeekTs),
-        ]);
+    const batchedResults = await getOrComputeMovieSnapshotsBatch(movieId, targets);
 
-        return {
-          time: h === "05:59" ? "05:59 (EOD)" : h === "02:00" ? "02:00 (+1d)" : h,
-          today_revenue: todaySnap.estimated_revenue,
-          today_admissions: todaySnap.estimated_admissions,
-          today_occupancy: Math.round(todaySnap.occupancy_proxy * 1000) / 10,
-          today_velocity: Math.round(todaySnap.sales_velocity * 10) / 10,
-          today_shows: todaySnap.showcount_total,
-          today_completed: todaySnap.shows_completed,
+    const points = hours.map((h, i) => {
+      const todaySnap = batchedResults[i * 3];
+      const yesterdaySnap = batchedResults[i * 3 + 1];
+      const lastWeekSnap = batchedResults[i * 3 + 2];
 
-          yesterday_revenue: yesterdaySnap.estimated_revenue,
-          yesterday_admissions: yesterdaySnap.estimated_admissions,
-          yesterday_occupancy: Math.round(yesterdaySnap.occupancy_proxy * 1000) / 10,
-          yesterday_velocity: Math.round(yesterdaySnap.sales_velocity * 10) / 10,
-          yesterday_shows: yesterdaySnap.showcount_total,
-          yesterday_completed: yesterdaySnap.shows_completed,
+      return {
+        time: h === "05:59" ? "05:59 (EOD)" : h === "02:00" ? "02:00 (+1d)" : h,
+        today_revenue: todaySnap?.estimated_revenue || 0,
+        today_admissions: todaySnap?.estimated_admissions || 0,
+        today_occupancy: Math.round((todaySnap?.occupancy_proxy || 0) * 1000) / 10,
+        today_velocity: Math.round((todaySnap?.sales_velocity || 0) * 10) / 10,
+        today_shows: todaySnap?.showcount_total || 0,
+        today_completed: todaySnap?.shows_completed || 0,
 
-          last_week_revenue: lastWeekSnap.estimated_revenue,
-          last_week_admissions: lastWeekSnap.estimated_admissions,
-          last_week_occupancy: Math.round(lastWeekSnap.occupancy_proxy * 1000) / 10,
-          last_week_velocity: Math.round(lastWeekSnap.sales_velocity * 10) / 10,
-          last_week_shows: lastWeekSnap.showcount_total,
-          last_week_completed: lastWeekSnap.shows_completed,
-        };
-      })
-    );
+        yesterday_revenue: yesterdaySnap?.estimated_revenue || 0,
+        yesterday_admissions: yesterdaySnap?.estimated_admissions || 0,
+        yesterday_occupancy: Math.round((yesterdaySnap?.occupancy_proxy || 0) * 1000) / 10,
+        yesterday_velocity: Math.round((yesterdaySnap?.sales_velocity || 0) * 10) / 10,
+        yesterday_shows: yesterdaySnap?.showcount_total || 0,
+        yesterday_completed: yesterdaySnap?.shows_completed || 0,
+
+        last_week_revenue: lastWeekSnap?.estimated_revenue || 0,
+        last_week_admissions: lastWeekSnap?.estimated_admissions || 0,
+        last_week_occupancy: Math.round((lastWeekSnap?.occupancy_proxy || 0) * 1000) / 10,
+        last_week_velocity: Math.round((lastWeekSnap?.sales_velocity || 0) * 10) / 10,
+        last_week_shows: lastWeekSnap?.showcount_total || 0,
+        last_week_completed: lastWeekSnap?.shows_completed || 0,
+      };
+    });
 
     res.json({
       target_date: targetDateStr,

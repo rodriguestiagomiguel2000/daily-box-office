@@ -68,12 +68,15 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
   const todayDefaultStr = getLisbonOperationalDate();
   const [historyDates, setHistoryDates] = useState<string[]>([]);
   const [selectedDate, setSelectedDate] = useState<string>(todayDefaultStr);
+  const [datesLoaded, setDatesLoaded] = useState<boolean>(false);
   const [targetTime, setTargetTime] = useState<string>("05:59");
   const [comparisonData, setComparisonData] = useState<IntradayComparisonResponse | null>(null);
   const [curvesData, setCurvesData] = useState<IntradayCurvesResponse | null>(null);
   const [progressionData, setProgressionData] = useState<IntradaySnapshot[]>([]);
   const [curveMetric, setCurveMetric] = useState<"revenue" | "admissions" | "occupancy" | "velocity" | "shows">("revenue");
-  const [isLoadingIntraday, setIsLoadingIntraday] = useState<boolean>(false);
+  const [isLoadingComparison, setIsLoadingComparison] = useState<boolean>(false);
+  const [isLoadingCurves, setIsLoadingCurves] = useState<boolean>(false);
+  const isLoadingIntraday = isLoadingComparison || isLoadingCurves;
 
   // Session table filtering & sorting
   const [sessionSearch, setSessionSearch] = useState("");
@@ -83,44 +86,68 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
   const [sortBy, setSortBy] = useState<"occupancy" | "time" | "unavailable">("occupancy");
   const [selectedSessionId, setSelectedSessionId] = useState<number | null>(null);
 
-  // Fetch available dates on mount
+  // Fetch available dates on mount / movie change
   useEffect(() => {
+    let isMounted = true;
     async function fetchDates() {
       try {
         const res = await fetch(`/api/movies/${movie.id}/history-dates`);
-        if (res.ok) {
+        if (res.ok && isMounted) {
           const json = await res.json();
-          if (json.dates && json.dates.length > 0) {
-            setHistoryDates(json.dates);
-            if (!json.dates.includes(selectedDate)) {
-              setSelectedDate(json.dates[0]);
-            }
+          const dates: string[] = json.dates || [];
+          setHistoryDates(dates);
+          if (dates.length > 0 && !dates.includes(selectedDate)) {
+            setSelectedDate(dates[0]);
           }
         }
       } catch (err) {
         console.error("Error fetching historical dates:", err);
+      } finally {
+        if (isMounted) {
+          setDatesLoaded(true);
+        }
       }
     }
+    setDatesLoaded(false);
     fetchDates();
+    return () => {
+      isMounted = false;
+    };
   }, [movie.id]);
 
-  // Fetch intraday comparison & curves whenever selectedDate or targetTime changes
-  const fetchIntradayPerformance = useCallback(async () => {
-    setIsLoadingIntraday(true);
+  // Fetch intraday comparison alone — only re-runs when targetTime, selectedDate, or movie.id changes
+  const fetchComparison = useCallback(async () => {
+    if (!datesLoaded) return;
+    setIsLoadingComparison(true);
     try {
       const dateParam = selectedDate || todayDefaultStr;
       const timeParam = targetTime || "13:00";
+      const res = await fetch(`/api/movies/${movie.id}/intraday-comparison?date=${dateParam}&time=${timeParam}`);
+      if (res.ok) {
+        const json = await res.json();
+        setComparisonData(json);
+      }
+    } catch (err) {
+      console.error("Error fetching intraday comparison:", err);
+    } finally {
+      setIsLoadingComparison(false);
+    }
+  }, [movie.id, selectedDate, targetTime, todayDefaultStr, datesLoaded]);
 
-      const [compRes, curvesRes, progRes] = await Promise.all([
-        fetch(`/api/movies/${movie.id}/intraday-comparison?date=${dateParam}&time=${timeParam}`),
+  useEffect(() => {
+    fetchComparison();
+  }, [fetchComparison]);
+
+  // Fetch intraday curves & progression together — ONLY depends on [movie.id, selectedDate], NOT targetTime
+  const fetchCurvesAndProgression = useCallback(async () => {
+    if (!datesLoaded) return;
+    setIsLoadingCurves(true);
+    try {
+      const dateParam = selectedDate || todayDefaultStr;
+      const [curvesRes, progRes] = await Promise.all([
         fetch(`/api/movies/${movie.id}/intraday-curves?date=${dateParam}`),
         fetch(`/api/movies/${movie.id}/intraday-progression?date=${dateParam}`),
       ]);
-
-      if (compRes.ok) {
-        const json = await compRes.json();
-        setComparisonData(json);
-      }
       if (curvesRes.ok) {
         const json = await curvesRes.json();
         setCurvesData(json);
@@ -130,15 +157,15 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
         setProgressionData(json.items || []);
       }
     } catch (err) {
-      console.error("Error fetching intraday performance:", err);
+      console.error("Error fetching intraday curves and progression:", err);
     } finally {
-      setIsLoadingIntraday(false);
+      setIsLoadingCurves(false);
     }
-  }, [movie.id, selectedDate, targetTime, todayDefaultStr]);
+  }, [movie.id, selectedDate, todayDefaultStr, datesLoaded]);
 
   useEffect(() => {
-    fetchIntradayPerformance();
-  }, [fetchIntradayPerformance]);
+    fetchCurvesAndProgression();
+  }, [fetchCurvesAndProgression]);
 
   // Filter & Sort Sessions
   const filteredSessions = sessions
@@ -205,7 +232,8 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
           id="detail-refresh-btn"
           onClick={() => {
             onRefresh();
-            fetchIntradayPerformance();
+            fetchComparison();
+            fetchCurvesAndProgression();
           }}
           disabled={isRefreshing || isLoadingIntraday}
           className="inline-flex items-center space-x-2 px-4 py-2 rounded-xl bg-slate-800 border border-slate-700 hover:bg-slate-700 text-slate-200 text-sm font-medium transition"
