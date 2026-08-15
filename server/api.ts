@@ -948,6 +948,49 @@ async function getOrComputeMovieSnapshotAtTime(
   const revenuePerShow = showcountTotal > 0 ? Math.round((estimatedRevenue / showcountTotal) * 100) / 100 : 0.0;
   const admissionsPerShow = showcountTotal > 0 ? Math.round((estimatedAdmissions / showcountTotal) * 10) / 10 : 0.0;
 
+  // Write-through caching for historical points:
+  // If targetTimestamp is in the past relative to now (> 45 minutes ago),
+  // insert the computed result into movie_performance_snapshots so subsequent requests hit the cache.
+  const nowMs = Date.now();
+  const targetMs = targetTimestamp.getTime();
+  const fortyFiveMinMs = 45 * 60 * 1000;
+
+  if (nowMs - targetMs > fortyFiveMinMs) {
+    try {
+      await query(
+        `INSERT INTO movie_performance_snapshots (
+          movie_id, operational_date, snapshot_timestamp,
+          showcount_total, shows_started, shows_completed, shows_remaining,
+          sellable_capacity, available_seats, unavailable_seats, occupancy_proxy,
+          estimated_admissions, estimated_revenue, revenue_per_show, admissions_per_show,
+          newly_unavailable, newly_available, sales_velocity
+        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18);`,
+        [
+          movieId,
+          operationalDate,
+          targetTimestamp,
+          showcountTotal,
+          showsStarted,
+          showsCompleted,
+          showsRemaining,
+          sellableCapacity,
+          availableSeats,
+          unavailableSeats,
+          occupancyProxy,
+          estimatedAdmissions,
+          estimatedRevenue,
+          revenuePerShow,
+          admissionsPerShow,
+          newlyUnavailable,
+          newlyAvailable,
+          salesVelocity,
+        ]
+      );
+    } catch (cacheErr) {
+      console.warn("[Cache Write-Through] Failed to write snapshot to movie_performance_snapshots:", cacheErr);
+    }
+  }
+
   return {
     date: operationalDate,
     timestamp: targetTimestamp.toISOString(),

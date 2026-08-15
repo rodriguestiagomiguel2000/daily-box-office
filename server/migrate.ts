@@ -85,6 +85,8 @@ export async function runMigrations(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_sessions_cinema_id ON sessions(cinema_id);
     CREATE INDEX IF NOT EXISTS idx_sessions_external_id ON sessions(external_session_id);
     CREATE INDEX IF NOT EXISTS idx_sessions_starts_at ON sessions(starts_at);
+    CREATE INDEX IF NOT EXISTS idx_sessions_movie_starts ON sessions(movie_id, starts_at);
+    CREATE INDEX IF NOT EXISTS idx_sessions_movie_opdate ON sessions(movie_id, operational_date);
 
     -- 5. Collection Runs
     CREATE TABLE IF NOT EXISTS collection_runs (
