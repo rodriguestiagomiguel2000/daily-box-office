@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from "react";
+import React, { useState, useEffect, useCallback, useRef } from "react";
 import {
   ArrowLeft,
   Film,
@@ -76,7 +76,13 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
   const [curveMetric, setCurveMetric] = useState<"revenue" | "admissions" | "occupancy" | "velocity" | "shows">("revenue");
   const [isLoadingComparison, setIsLoadingComparison] = useState<boolean>(false);
   const [isLoadingCurves, setIsLoadingCurves] = useState<boolean>(false);
-  const isLoadingIntraday = isLoadingComparison || isLoadingCurves;
+  const [isManualRefreshing, setIsManualRefreshing] = useState<boolean>(false);
+
+  // Guard refs to prevent out-of-order async response race conditions
+  const comparisonRequestIdRef = useRef<number>(0);
+  const comparisonAbortControllerRef = useRef<AbortController | null>(null);
+  const curvesRequestIdRef = useRef<number>(0);
+  const curvesAbortControllerRef = useRef<AbortController | null>(null);
 
   // Session table filtering & sorting
   const [sessionSearch, setSessionSearch] = useState("");
@@ -85,6 +91,14 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
   const [statusFilter, setStatusFilter] = useState<"ALL" | "CURRENT" | "HISTORICAL">("ALL");
   const [sortBy, setSortBy] = useState<"occupancy" | "time" | "unavailable">("occupancy");
   const [selectedSessionId, setSelectedSessionId] = useState<number | null>(null);
+
+  // Cleanup abort controllers on unmount
+  useEffect(() => {
+    return () => {
+      comparisonAbortControllerRef.current?.abort();
+      curvesAbortControllerRef.current?.abort();
+    };
+  }, []);
 
   // Fetch available dates on mount / movie change
   useEffect(() => {
@@ -115,22 +129,43 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
     };
   }, [movie.id]);
 
-  // Fetch intraday comparison alone — only re-runs when targetTime, selectedDate, or movie.id changes
+  // Fetch intraday comparison alone with race condition protection
   const fetchComparison = useCallback(async () => {
     if (!datesLoaded) return;
+
+    // Abort previous in-flight request
+    if (comparisonAbortControllerRef.current) {
+      comparisonAbortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    comparisonAbortControllerRef.current = controller;
+
+    // Increment request counter to ignore stale out-of-order resolutions
+    const currentRequestId = ++comparisonRequestIdRef.current;
+
     setIsLoadingComparison(true);
     try {
       const dateParam = selectedDate || todayDefaultStr;
       const timeParam = targetTime || "13:00";
-      const res = await fetch(`/api/movies/${movie.id}/intraday-comparison?date=${dateParam}&time=${timeParam}`);
+      const res = await fetch(
+        `/api/movies/${movie.id}/intraday-comparison?date=${dateParam}&time=${timeParam}`,
+        { signal: controller.signal }
+      );
       if (res.ok) {
         const json = await res.json();
-        setComparisonData(json);
+        // Only update state if this is still the most recent request
+        if (currentRequestId === comparisonRequestIdRef.current) {
+          setComparisonData(json);
+        }
       }
-    } catch (err) {
-      console.error("Error fetching intraday comparison:", err);
+    } catch (err: any) {
+      if (err?.name !== "AbortError") {
+        console.error("Error fetching intraday comparison:", err);
+      }
     } finally {
-      setIsLoadingComparison(false);
+      if (currentRequestId === comparisonRequestIdRef.current) {
+        setIsLoadingComparison(false);
+      }
     }
   }, [movie.id, selectedDate, targetTime, todayDefaultStr, datesLoaded]);
 
@@ -138,34 +173,65 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
     fetchComparison();
   }, [fetchComparison]);
 
-  // Fetch intraday curves & progression together — ONLY depends on [movie.id, selectedDate], NOT targetTime
+  // Fetch intraday curves & progression together with race condition protection
   const fetchCurvesAndProgression = useCallback(async () => {
     if (!datesLoaded) return;
+
+    // Abort previous in-flight request
+    if (curvesAbortControllerRef.current) {
+      curvesAbortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    curvesAbortControllerRef.current = controller;
+
+    const currentRequestId = ++curvesRequestIdRef.current;
     setIsLoadingCurves(true);
     try {
       const dateParam = selectedDate || todayDefaultStr;
       const [curvesRes, progRes] = await Promise.all([
-        fetch(`/api/movies/${movie.id}/intraday-curves?date=${dateParam}`),
-        fetch(`/api/movies/${movie.id}/intraday-progression?date=${dateParam}`),
+        fetch(`/api/movies/${movie.id}/intraday-curves?date=${dateParam}`, { signal: controller.signal }),
+        fetch(`/api/movies/${movie.id}/intraday-progression?date=${dateParam}`, { signal: controller.signal }),
       ]);
       if (curvesRes.ok) {
         const json = await curvesRes.json();
-        setCurvesData(json);
+        if (currentRequestId === curvesRequestIdRef.current) {
+          setCurvesData(json);
+        }
       }
       if (progRes.ok) {
         const json = await progRes.json();
-        setProgressionData(json.items || []);
+        if (currentRequestId === curvesRequestIdRef.current) {
+          setProgressionData(json.items || []);
+        }
       }
-    } catch (err) {
-      console.error("Error fetching intraday curves and progression:", err);
+    } catch (err: any) {
+      if (err?.name !== "AbortError") {
+        console.error("Error fetching intraday curves and progression:", err);
+      }
     } finally {
-      setIsLoadingCurves(false);
+      if (currentRequestId === curvesRequestIdRef.current) {
+        setIsLoadingCurves(false);
+      }
     }
   }, [movie.id, selectedDate, todayDefaultStr, datesLoaded]);
 
   useEffect(() => {
     fetchCurvesAndProgression();
   }, [fetchCurvesAndProgression]);
+
+  // Manual refresh handler triggered only by explicit button click
+  const handleManualRefresh = async () => {
+    setIsManualRefreshing(true);
+    try {
+      await Promise.all([
+        onRefresh(),
+        fetchComparison(),
+        fetchCurvesAndProgression(),
+      ]);
+    } finally {
+      setIsManualRefreshing(false);
+    }
+  };
 
   // Filter & Sort Sessions
   const filteredSessions = sessions
@@ -230,16 +296,12 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
 
         <button
           id="detail-refresh-btn"
-          onClick={() => {
-            onRefresh();
-            fetchComparison();
-            fetchCurvesAndProgression();
-          }}
-          disabled={isRefreshing || isLoadingIntraday}
-          className="inline-flex items-center space-x-2 px-4 py-2 rounded-xl bg-slate-800 border border-slate-700 hover:bg-slate-700 text-slate-200 text-sm font-medium transition"
+          onClick={handleManualRefresh}
+          disabled={isManualRefreshing}
+          className="inline-flex items-center space-x-2 px-4 py-2 rounded-xl bg-slate-800 border border-slate-700 hover:bg-slate-700 text-slate-200 text-sm font-medium transition disabled:opacity-60 cursor-pointer"
         >
-          <RefreshCw className={`w-4 h-4 ${(isRefreshing || isLoadingIntraday) ? "animate-spin" : ""}`} />
-          <span>{isRefreshing || isLoadingIntraday ? "Updating..." : "Refresh Metrics"}</span>
+          <RefreshCw className={`w-4 h-4 ${isManualRefreshing ? "animate-spin text-amber-400" : "text-slate-400"}`} />
+          <span>{isManualRefreshing ? "Refreshing..." : "Refresh Metrics"}</span>
         </button>
       </div>
 
@@ -429,7 +491,7 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
 
           {/* Intraday Comparison Cards: TODAY vs YESTERDAY vs SAME WEEKDAY LAST WEEK */}
           {comparisonData && (
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+            <div className={`grid grid-cols-1 md:grid-cols-3 gap-5 transition-opacity duration-150 ${isLoadingComparison ? "opacity-60 pointer-events-none" : "opacity-100"}`}>
               {/* TODAY / Target Day Card */}
               <div id="card-comparison-today" className="bg-slate-900 border-2 border-amber-500/40 rounded-2xl p-5 shadow-lg relative overflow-hidden">
                 <div className="absolute top-0 right-0 bg-amber-500/20 text-amber-300 px-3 py-1 rounded-bl-xl text-[10px] font-bold uppercase tracking-wider border-b border-l border-amber-500/30">

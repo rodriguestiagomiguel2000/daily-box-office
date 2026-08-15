@@ -24,8 +24,8 @@ export function App() {
   const [isStatusOpen, setIsStatusOpen] = useState(false);
 
   // Fetch Dashboard Summary
-  const fetchSummary = useCallback(async () => {
-    setIsLoadingSummary(true);
+  const fetchSummary = useCallback(async (isManual = false) => {
+    if (isManual) setIsLoadingSummary(true);
     try {
       const res = await fetch("/api/dashboard/summary");
       const contentType = res.headers.get("content-type");
@@ -36,7 +36,7 @@ export function App() {
     } catch (err) {
       console.error("Failed to fetch dashboard summary:", err);
     } finally {
-      setIsLoadingSummary(false);
+      if (isManual) setIsLoadingSummary(false);
     }
   }, []);
 
@@ -55,8 +55,8 @@ export function App() {
   }, []);
 
   // Fetch Movie Detail
-  const fetchMovieDetail = useCallback(async (id: number) => {
-    setIsLoadingDetail(true);
+  const fetchMovieDetail = useCallback(async (id: number, isManual = false) => {
+    if (isManual) setIsLoadingDetail(true);
     try {
       const res = await fetch(`/api/movies/${id}/detail`);
       const contentType = res.headers.get("content-type");
@@ -67,7 +67,7 @@ export function App() {
     } catch (err) {
       console.error("Failed to fetch movie detail:", err);
     } finally {
-      setIsLoadingDetail(false);
+      if (isManual) setIsLoadingDetail(false);
     }
   }, []);
 
@@ -88,21 +88,23 @@ export function App() {
     }
   }, []);
 
-  // Initial load and periodic polling
+  // Initial load and periodic background polling
   useEffect(() => {
-    fetchSummary();
+    fetchSummary(true);
     fetchStatus();
 
     const isCollectingNow = Boolean(
       collectorStatus?.is_collecting || collectorStatus?.scheduler?.isCollecting
     );
-    const pollIntervalMs = isCollectingNow ? 2000 : 15000;
+    // Background polling: 60s when idle, 3s only during active collection sweep
+    const pollIntervalMs = isCollectingNow ? 3000 : 60000;
 
     const interval = setInterval(() => {
-      fetchSummary();
+      // Silent background refresh without setting manual loading spinners
+      fetchSummary(false);
       fetchStatus();
       if (selectedMovieId) {
-        fetchMovieDetail(selectedMovieId);
+        fetchMovieDetail(selectedMovieId, false);
       }
     }, pollIntervalMs);
 
@@ -174,7 +176,7 @@ export function App() {
   // Select Movie for Detail View
   const handleSelectMovie = (id: number) => {
     setSelectedMovieId(id);
-    fetchMovieDetail(id);
+    fetchMovieDetail(id, true);
   };
 
   // Trigger manual collection sweep
@@ -183,9 +185,9 @@ export function App() {
     try {
       await fetch("/api/collector/trigger", { method: "POST" });
       await fetchStatus();
-      await fetchSummary();
+      await fetchSummary(true);
       if (selectedMovieId) {
-        await fetchMovieDetail(selectedMovieId);
+        await fetchMovieDetail(selectedMovieId, true);
       }
     } catch (err) {
       console.error("Failed to trigger collection run:", err);
@@ -250,7 +252,7 @@ export function App() {
               setSelectedMovieId(null);
               setMovieDetail(null);
             }}
-            onRefresh={() => fetchMovieDetail(selectedMovieId)}
+            onRefresh={() => fetchMovieDetail(selectedMovieId, true)}
             isRefreshing={isLoadingDetail}
           />
         ) : isDailyHistoryView ? (
@@ -264,7 +266,7 @@ export function App() {
             onSelectMovie={handleSelectMovie}
             onUntrackMovie={handleUntrack}
             onOpenCatalog={handleOpenCatalog}
-            onRefreshMovies={fetchSummary}
+            onRefreshMovies={() => fetchSummary(true)}
             isLoading={isLoadingSummary}
           />
         )}
