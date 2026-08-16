@@ -292,7 +292,11 @@ export const TrackedMoviesView: React.FC<TrackedMoviesViewProps> = ({
                         <div className="text-lg font-bold text-emerald-400 mt-0.5">
                           €{movie.estimated_revenue.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
                         </div>
-                        <div className="text-[11px] text-slate-500">Real ticket proxy</div>
+                        <div className="text-[11px] text-slate-500">
+                          {movie.unavailable_seats > 0
+                            ? `ATP €${(movie.estimated_revenue / movie.unavailable_seats).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                            : "—"}
+                        </div>
                       </div>
                     </div>
 

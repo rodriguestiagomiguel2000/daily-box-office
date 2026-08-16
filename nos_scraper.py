@@ -387,8 +387,8 @@ class NOSScraper:
             log.warning(f"Could not create booking for session {session_uuid}: {e}")
             return None
 
-    def get_ticket_types(self, session_uuid: str) -> List[Tuple[str, float]]:
-        """Fetches available ticket types and prices (e.g., Bilhete Normal, IMAX, 3D)."""
+    def get_ticket_types(self, session_uuid: str) -> List[Dict[str, Any]]:
+        """Fetches available ticket types and prices normalized per seat."""
         url = f"{BASE_TICKET}/Cinemas/screenservices/Cinemas/MainFlow/Ticket/DataActionDT04_Get_SessionTicketTypes"
         headers = self._get_ticket_headers(session_uuid)
         body = json.dumps({
@@ -401,7 +401,21 @@ class NOSScraper:
         with self.opener.open(req, timeout=12) as resp:
             data = json.loads(resp.read().decode("utf-8", errors="replace"))
             types = data.get("data", {}).get("LocalTicketTypes_All", {}).get("List", [])
-            return [(t.get("Description") or "Bilhete", float(t.get("Price") or 0)) for t in types]
+            results = []
+            for t in types:
+                desc = t.get("Description") or "Bilhete"
+                raw_price = float(t.get("Price") or 0)
+                seats_count = max(1, int(t.get("SeatsCount") or 1))
+                is_default = bool(t.get("IsDefault") or False)
+                price_per_seat = round(raw_price / seats_count, 2)
+                results.append({
+                    "ticket_type": desc,
+                    "price": price_per_seat,
+                    "raw_price": raw_price,
+                    "seats_count": seats_count,
+                    "is_default": is_default,
+                })
+            return results
 
     def get_seats_raw(
         self,

@@ -24,23 +24,28 @@ class RevenueEstimator:
 
     @staticmethod
     def get_effective_ticket_price(
-        ticket_types: List[Tuple[str, float]],
+        ticket_types: List[Any],
         format_hint: str = ""
     ) -> float:
         """
         Determines the representative ticket price from collected ticket types,
-        excluding promotional discount vouchers (price <= 0.0).
+        normalizing and deduplicating distinct non-zero price points.
         """
-        # Filter non-zero paid tickets
-        paid_tickets = [(name, price) for name, price in ticket_types if price > 0.0]
+        paid_prices: List[float] = []
+        for item in ticket_types:
+            if isinstance(item, dict):
+                p = float(item.get("price", 0))
+            elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                p = float(item[1])
+            else:
+                continue
+            if p > 0.0:
+                paid_prices.append(round(p, 2))
         
-        if paid_tickets:
-            # Look for standard base ticket
-            base_ticket = next((price for name, price in paid_tickets if "normal" in name.lower() or "bilhete" in name.lower()), None)
-            if base_ticket:
-                return base_ticket
-            # Otherwise use mean of non-zero paid tickets
-            return sum(p for _, p in paid_tickets) / len(paid_tickets)
+        if paid_prices:
+            # Deduplicate distinct prices
+            distinct_prices = list(set(paid_prices))
+            return round(sum(distinct_prices) / len(distinct_prices), 2)
 
         # Fallbacks based on format
         format_lower = format_hint.lower()

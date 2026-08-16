@@ -609,10 +609,15 @@ export async function persistSingleSession(
     // 9. Insert ticket prices
     const prices = snap.ticket_prices || [];
     for (const tp of prices) {
+      const seatsCount = Math.max(1, Number(tp.seats_count || 1));
+      const rawPrice = Number(tp.raw_price !== undefined ? tp.raw_price : tp.price);
+      const normalizedPrice = Number((rawPrice / seatsCount).toFixed(2));
+      const isDefault = Boolean(tp.is_default);
+
       await client.query(
-        `INSERT INTO session_ticket_prices (session_id, collected_at, ticket_type, price, source)
-         VALUES ($1, $2, $3, $4, $5);`,
-        [sessionId, snap.collected_at, tp.ticket_type, tp.price, "NOS"]
+        `INSERT INTO session_ticket_prices (session_id, collected_at, ticket_type, price, seats_count, raw_price, is_default, source)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8);`,
+        [sessionId, snap.collected_at, tp.ticket_type, normalizedPrice, seatsCount, rawPrice, isDefault, "NOS"]
       );
     }
 
@@ -814,9 +819,15 @@ export async function generateMoviePerformanceSnapshots(collectionRunDbId: numbe
           ORDER BY st.session_id, st.transition_timestamp DESC
         ),
         session_prices AS (
-          SELECT session_id, AVG(price) as avg_price
+          SELECT 
+            session_id,
+            COALESCE(
+              AVG(price) FILTER (WHERE is_default = true AND price > 0),
+              AVG(price) FILTER (WHERE price > 0 AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND (seats_count IS NULL OR seats_count = 1)),
+              AVG(price) FILTER (WHERE price > 0)
+            ) as avg_price
           FROM session_ticket_prices
-          WHERE session_id IN (SELECT session_id FROM session_latest_snaps) AND price > 0
+          WHERE session_id IN (SELECT session_id FROM session_latest_snaps)
           GROUP BY session_id
         )
         SELECT 
@@ -830,7 +841,7 @@ export async function generateMoviePerformanceSnapshots(collectionRunDbId: numbe
           COALESCE(SUM(st.newly_unavailable), 0) as newly_unavailable,
           COALESCE(SUM(st.newly_available), 0) as newly_available,
           COALESCE(SUM(st.sales_velocity_proxy), 0.0) as sales_velocity,
-          COALESCE(SUM(sls.unavailable_seats * COALESCE(sp.avg_price, CASE WHEN sls.format ILIKE '%IMAX%' THEN 13.50 ELSE 7.60 END)), 0.0) as estimated_revenue
+          COALESCE(SUM(sls.unavailable_seats * COALESCE(sp.avg_price, CASE WHEN sls.format ILIKE '%IMAX%' THEN 13.50 WHEN sls.format ILIKE '%3D%' THEN 9.50 ELSE 8.75 END)), 0.0) as estimated_revenue
         FROM session_latest_snaps sls
         LEFT JOIN session_transitions st ON sls.session_id = st.session_id
         LEFT JOIN session_prices sp ON sls.session_id = sp.session_id;`,

@@ -3,6 +3,7 @@ import { spawn } from "child_process";
 import { query } from "./db";
 import { scheduler } from "./scheduler";
 import { executeCollectionRun, getActiveProgress, prepareCollectionRun, executeCollectionRunFromPrepared } from "./collector";
+import { resolveSessionUnitPriceJs, recalculateAllPerformanceSnapshots } from "./revenue";
 
 export const apiRouter = Router();
 
@@ -225,27 +226,22 @@ apiRouter.get("/dashboard/summary", async (req, res) => {
       if (latestSnapshots.length > 0) {
         const sessionIds = latestSnapshots.map((s) => s.session_id);
         const pricesRes = await query(
-          `SELECT session_id, price FROM session_ticket_prices
+          `SELECT session_id, ticket_type, price, is_default, seats_count FROM session_ticket_prices
            WHERE session_id = ANY($1::int[]) AND price > 0;`,
           [sessionIds]
         );
 
-        const pricesBySession = new Map<number, number[]>();
+        const pricesBySession = new Map<number, any[]>();
         for (const p of pricesRes.rows) {
           if (!pricesBySession.has(p.session_id)) {
             pricesBySession.set(p.session_id, []);
           }
-          pricesBySession.get(p.session_id)!.push(Number(p.price));
+          pricesBySession.get(p.session_id)!.push(p);
         }
 
         for (const snap of latestSnapshots) {
           const sPrices = pricesBySession.get(snap.session_id) || [];
-          let avgTicket = 7.60;
-          if (sPrices.length > 0) {
-            avgTicket = sPrices.reduce((a, b) => a + b, 0) / sPrices.length;
-          } else if (snap.format && snap.format.toUpperCase().includes("IMAX")) {
-            avgTicket = 13.50;
-          }
+          const avgTicket = resolveSessionUnitPriceJs(snap.format, sPrices);
           estimatedRevenue += snap.unavailable_seats * avgTicket;
         }
       }
@@ -373,7 +369,7 @@ apiRouter.get("/movies/:id/detail", async (req, res) => {
 
     // 4. Ticket prices for sessions
     const ticketPricesRes = await query(
-      `SELECT session_id, ticket_type, price FROM session_ticket_prices
+      `SELECT session_id, ticket_type, price, is_default, seats_count FROM session_ticket_prices
        WHERE session_id = ANY($1::int[]) AND price > 0;`,
       [sessionIds]
     );
@@ -413,13 +409,8 @@ apiRouter.get("/movies/:id/detail", async (req, res) => {
         latestUpdate = new Date(snapTime);
       }
 
-      // Ticket prices calculation
-      let avgPrice = 7.60;
-      if (prices.length > 0) {
-        avgPrice = prices.reduce((acc, p) => acc + Number(p.price), 0) / prices.length;
-      } else if (sess.format && sess.format.toUpperCase().includes("IMAX")) {
-        avgPrice = 13.50;
-      }
+      // Ticket prices calculation via canonical resolver
+      const avgPrice = resolveSessionUnitPriceJs(sess.format, prices);
       const sessionRev = unavailable * avgPrice;
 
       if (isCurrent) {
@@ -770,7 +761,7 @@ export function getOperationalDateStr(date: Date = new Date()): string {
   return shifted.toLocaleDateString("en-CA", { timeZone: "Europe/Lisbon" });
 }
 
-function parseLisbonLocalToUTC(operationalDateStr: string, timeStr: string): Date {
+export function parseLisbonLocalToUTC(operationalDateStr: string, timeStr: string): Date {
   const parts = timeStr.split(":");
   const hour = parseInt(parts[0], 10) || 0;
   const minute = parseInt(parts[1], 10) || 0;
@@ -831,7 +822,7 @@ function getPreviousDateStr(dateStr: string, daysBack: number): string {
 }
 
 // Helper function to get or aggregate movie performance snapshots for multiple target points in time in batch
-async function getOrComputeMovieSnapshotsBatch(
+export async function getOrComputeMovieSnapshotsBatch(
   movieId: number,
   targets: Array<{ date: string; targetTs: Date }>
 ) {
@@ -881,8 +872,8 @@ async function getOrComputeMovieSnapshotsBatch(
       WHERE movie_id = $1
         AND operational_date = t.op_date
         AND snapshot_timestamp >= t.target_ts - INTERVAL '45 minutes'
-        AND snapshot_timestamp <= t.target_ts + INTERVAL '45 minutes'
-      ORDER BY ABS(EXTRACT(EPOCH FROM (snapshot_timestamp - t.target_ts))) ASC
+        AND snapshot_timestamp <= t.target_ts
+      ORDER BY snapshot_timestamp DESC
       LIMIT 1
     ) mps ON true;`,
     [movieId, JSON.stringify(formattedTargets)]
@@ -974,9 +965,15 @@ async function getOrComputeMovieSnapshotsBatch(
           ORDER BY st.session_id, st.transition_timestamp DESC
         ),
         session_prices AS (
-          SELECT session_id, AVG(price) as avg_price
+          SELECT 
+            session_id,
+            COALESCE(
+              AVG(price) FILTER (WHERE is_default = true AND price > 0),
+              AVG(price) FILTER (WHERE price > 0 AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND (seats_count IS NULL OR seats_count = 1)),
+              AVG(price) FILTER (WHERE price > 0)
+            ) as avg_price
           FROM session_ticket_prices
-          WHERE session_id IN (SELECT session_id FROM session_latest_snaps) AND price > 0
+          WHERE session_id IN (SELECT session_id FROM session_latest_snaps)
           GROUP BY session_id
         )
         SELECT 
@@ -990,7 +987,7 @@ async function getOrComputeMovieSnapshotsBatch(
           COALESCE(SUM(st.newly_unavailable), 0) as newly_unavailable,
           COALESCE(SUM(st.newly_available), 0) as newly_available,
           COALESCE(SUM(st.sales_velocity_proxy), 0.0) as sales_velocity,
-          COALESCE(SUM(sls.unavailable_seats * COALESCE(sp.avg_price, CASE WHEN sls.format ILIKE '%IMAX%' THEN 13.50 ELSE 7.60 END)), 0.0) as estimated_revenue
+          COALESCE(SUM(sls.unavailable_seats * COALESCE(sp.avg_price, CASE WHEN sls.format ILIKE '%IMAX%' THEN 13.50 WHEN sls.format ILIKE '%3D%' THEN 9.50 ELSE 8.75 END)), 0.0) as estimated_revenue
         FROM session_latest_snaps sls
         LEFT JOIN session_transitions st ON sls.session_id = st.session_id
         LEFT JOIN session_prices sp ON sls.session_id = sp.session_id
@@ -1368,6 +1365,387 @@ apiRouter.get("/movies/:id/intraday-curves", async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 });
+
+// 5. Hourly Breakdown & Date Comparison (Hourly tickets sold & revenue across the theatrical day)
+apiRouter.get("/movies/:id/hourly-breakdown", async (req, res) => {
+  try {
+    const movieId = parseInt(req.params.id, 10);
+    if (isNaN(movieId)) return res.status(400).json({ error: "Invalid movie ID" });
+
+    const todayStr = getOperationalDateStr();
+    const dateStr = (req.query.date as string) || todayStr;
+    const compareDateStr = (req.query.compare_date as string) || null;
+
+    const standardHours = [
+      { hour: 9, label: "09:00" },
+      { hour: 10, label: "10:00" },
+      { hour: 11, label: "11:00" },
+      { hour: 12, label: "12:00" },
+      { hour: 13, label: "13:00" },
+      { hour: 14, label: "14:00" },
+      { hour: 15, label: "15:00" },
+      { hour: 16, label: "16:00" },
+      { hour: 17, label: "17:00" },
+      { hour: 18, label: "18:00" },
+      { hour: 19, label: "19:00" },
+      { hour: 20, label: "20:00" },
+      { hour: 21, label: "21:00" },
+      { hour: 22, label: "22:00" },
+      { hour: 23, label: "23:00" },
+      { hour: 0, label: "00:00 (+1d)" },
+      { hour: 1, label: "01:00 (+1d)" },
+    ];
+
+    async function fetchHourlyDataForDate(d: string) {
+      // 1. Fetch final snapshot total for this date (The single source of truth for the entire theatrical day)
+      const finalSnapRes = await query(
+        `WITH session_latest AS (
+          SELECT DISTINCT ON (s.id)
+            s.id as session_id,
+            s.starts_at,
+            s.format,
+            ss.unavailable_seats,
+            ss.sellable_seats,
+            ss.collected_at
+          FROM sessions s
+          JOIN seat_snapshots ss ON ss.session_id = s.id
+          WHERE s.movie_id = $1
+            AND (s.operational_date = $2 OR TO_CHAR((s.starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD') = $2)
+          ORDER BY s.id, ss.collected_at DESC
+        ),
+        session_prices AS (
+          SELECT 
+            session_id,
+            COALESCE(
+              AVG(price) FILTER (WHERE is_default = true AND price > 0),
+              AVG(price) FILTER (WHERE price > 0 AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND (seats_count IS NULL OR seats_count = 1)),
+              AVG(price) FILTER (WHERE price > 0)
+            ) as avg_price
+          FROM session_ticket_prices
+          GROUP BY session_id
+        )
+        SELECT 
+          COUNT(*) as total_sessions,
+          COALESCE(SUM(sl.unavailable_seats), 0)::int as total_admissions,
+          COALESCE(SUM(sl.unavailable_seats * COALESCE(sp.avg_price, CASE WHEN s.format ILIKE '%IMAX%' THEN 13.50 WHEN s.format ILIKE '%3D%' THEN 9.50 ELSE 8.75 END)), 0.0)::numeric as total_revenue
+        FROM session_latest sl
+        JOIN sessions s ON sl.session_id = s.id
+        LEFT JOIN session_prices sp ON sl.session_id = sp.session_id;`,
+        [movieId, d]
+      );
+
+      const finalAdmissions = parseInt(finalSnapRes.rows[0]?.total_admissions, 10) || 0;
+      const finalRevenue = parseFloat(finalSnapRes.rows[0]?.total_revenue) || 0.0;
+      const totalSessions = parseInt(finalSnapRes.rows[0]?.total_sessions, 10) || 0;
+
+      // 2. Fetch baseline presales (seats unavailable at the first tracked sweep of the day)
+      const baselineRes = await query(
+        `WITH session_first AS (
+          SELECT DISTINCT ON (s.id)
+            s.id as session_id,
+            s.starts_at,
+            s.format,
+            ss.unavailable_seats,
+            ss.sellable_seats,
+            ss.collected_at
+          FROM sessions s
+          JOIN seat_snapshots ss ON ss.session_id = s.id
+          WHERE s.movie_id = $1
+            AND (s.operational_date = $2 OR TO_CHAR((s.starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD') = $2)
+          ORDER BY s.id, ss.collected_at ASC
+        ),
+        session_prices AS (
+          SELECT 
+            session_id,
+            COALESCE(
+              AVG(price) FILTER (WHERE is_default = true AND price > 0),
+              AVG(price) FILTER (WHERE price > 0 AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND (seats_count IS NULL OR seats_count = 1)),
+              AVG(price) FILTER (WHERE price > 0)
+            ) as avg_price
+          FROM session_ticket_prices
+          GROUP BY session_id
+        )
+        SELECT 
+          COUNT(*) as total_sessions,
+          COALESCE(SUM(sf.unavailable_seats), 0)::int as baseline_seats,
+          COALESCE(SUM(sf.unavailable_seats * COALESCE(sp.avg_price, CASE WHEN s.format ILIKE '%IMAX%' THEN 13.50 WHEN s.format ILIKE '%3D%' THEN 9.50 ELSE 8.75 END)), 0.0)::numeric as baseline_revenue
+        FROM session_first sf
+        JOIN sessions s ON sf.session_id = s.id
+        LEFT JOIN session_prices sp ON sf.session_id = sp.session_id;`,
+        [movieId, d]
+      );
+
+      const baselineSeats = parseInt(baselineRes.rows[0]?.baseline_seats, 10) || 0;
+      const baselineRevenue = parseFloat(baselineRes.rows[0]?.baseline_revenue) || 0.0;
+
+      // 3. Fetch hourly seat transitions with both NET and GROSS metrics
+      const transRes = await query(
+        `WITH session_prices AS (
+          SELECT 
+            session_id,
+            COALESCE(
+              AVG(price) FILTER (WHERE is_default = true AND price > 0),
+              AVG(price) FILTER (WHERE price > 0 AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND (seats_count IS NULL OR seats_count = 1)),
+              AVG(price) FILTER (WHERE price > 0)
+            ) as avg_price
+          FROM session_ticket_prices
+          GROUP BY session_id
+        )
+        SELECT 
+          EXTRACT(HOUR FROM st.transition_timestamp AT TIME ZONE 'Europe/Lisbon')::int as lisbon_hour,
+          COALESCE(SUM(st.newly_unavailable), 0)::int as gross_tickets,
+          COALESCE(SUM(st.newly_unavailable * COALESCE(sp.avg_price, CASE WHEN s.format ILIKE '%IMAX%' THEN 13.50 WHEN s.format ILIKE '%3D%' THEN 9.50 ELSE 8.75 END)), 0.0)::numeric as gross_revenue,
+          COALESCE(SUM(st.newly_available), 0)::int as returns_tickets,
+          COALESCE(SUM(st.newly_available * COALESCE(sp.avg_price, CASE WHEN s.format ILIKE '%IMAX%' THEN 13.50 WHEN s.format ILIKE '%3D%' THEN 9.50 ELSE 8.75 END)), 0.0)::numeric as returns_revenue,
+          COALESCE(SUM(st.newly_unavailable - st.newly_available), 0)::int as net_tickets,
+          COALESCE(SUM((st.newly_unavailable - st.newly_available) * COALESCE(sp.avg_price, CASE WHEN s.format ILIKE '%IMAX%' THEN 13.50 WHEN s.format ILIKE '%3D%' THEN 9.50 ELSE 8.75 END)), 0.0)::numeric as net_revenue
+        FROM seat_transitions st
+        JOIN sessions s ON st.session_id = s.id
+        LEFT JOIN session_prices sp ON s.id = sp.session_id
+        WHERE s.movie_id = $1 
+          AND (
+            st.transition_timestamp >= (($2::text || ' 06:00:00')::timestamp AT TIME ZONE 'Europe/Lisbon')
+            AND st.transition_timestamp < ((($2::date + 1)::text || ' 06:00:00')::timestamp AT TIME ZONE 'Europe/Lisbon')
+          )
+        GROUP BY lisbon_hour;`,
+        [movieId, d]
+      );
+
+      const transMap = new Map<number, {
+        gross_tickets: number;
+        gross_revenue: number;
+        returns_tickets: number;
+        returns_revenue: number;
+        net_tickets: number;
+        net_revenue: number;
+      }>();
+
+      let totalGrossTickets = 0;
+      let totalGrossRev = 0;
+      let totalReturnsTickets = 0;
+      let totalReturnsRev = 0;
+      let totalNetTickets = 0;
+      let totalNetRev = 0;
+
+      let peakHour: string | null = null;
+      let peakTickets = 0;
+      let peakRevenue = 0;
+
+      for (const r of transRes.rows) {
+        const grossT = parseInt(r.gross_tickets, 10) || 0;
+        const grossR = parseFloat(r.gross_revenue) || 0;
+        const retT = parseInt(r.returns_tickets, 10) || 0;
+        const retR = parseFloat(r.returns_revenue) || 0;
+        const netT = parseInt(r.net_tickets, 10) || 0;
+        const netR = parseFloat(r.net_revenue) || 0;
+
+        transMap.set(r.lisbon_hour, {
+          gross_tickets: grossT,
+          gross_revenue: grossR,
+          returns_tickets: retT,
+          returns_revenue: retR,
+          net_tickets: netT,
+          net_revenue: netR,
+        });
+
+        totalGrossTickets += grossT;
+        totalGrossRev += grossR;
+        totalReturnsTickets += retT;
+        totalReturnsRev += retR;
+        totalNetTickets += netT;
+        totalNetRev += netR;
+
+        if (netT > peakTickets) {
+          peakTickets = netT;
+          peakRevenue = netR;
+          const matched = standardHours.find((h) => h.hour === r.lisbon_hour);
+          peakHour = matched ? matched.label : `${r.lisbon_hour}:00`;
+        }
+      }
+
+      const hourly: any[] = [];
+      let cumTickets = 0;
+      let cumRev = 0;
+
+      // 1. Add "Pre-Sales / Opening Baseline" bucket at start of theatrical day (before 09:00)
+      cumTickets += baselineSeats;
+      cumRev += baselineRevenue;
+
+      hourly.push({
+        hour: "Pre-Sales (Baseline)",
+        raw_hour: 8,
+        is_baseline: true,
+        tickets_sold: baselineSeats,
+        estimated_revenue: Math.round(baselineRevenue * 100) / 100,
+        gross_tickets_sold: baselineSeats,
+        gross_revenue: Math.round(baselineRevenue * 100) / 100,
+        returns_tickets: 0,
+        returns_revenue: 0,
+        cumulative_tickets: cumTickets,
+        cumulative_revenue: Math.round(cumRev * 100) / 100,
+      });
+
+      // 2. Add each standard hour using NET flow (newly_unavailable - newly_available)
+      let rawHourlySumTickets = 0;
+      let rawHourlySumRev = 0;
+      for (const h of standardHours) {
+        const data = transMap.get(h.hour);
+        if (data) {
+          rawHourlySumTickets += data.net_tickets;
+          rawHourlySumRev += data.net_revenue;
+        }
+      }
+
+      // Calculate residual discrepancy
+      const residualTickets = finalAdmissions - (baselineSeats + rawHourlySumTickets);
+      const residualRev = Math.round((finalRevenue - (baselineRevenue + rawHourlySumRev)) * 100) / 100;
+
+      // Identify active hours with observed transitions
+      const activeHourIndices: number[] = [];
+      for (let i = 0; i < standardHours.length; i++) {
+        const data = transMap.get(standardHours[i].hour);
+        if (data && (data.net_tickets !== 0 || data.net_revenue !== 0)) {
+          activeHourIndices.push(i);
+        }
+      }
+
+      let allocatedResidualRev = 0;
+      let allocatedResidualTickets = 0;
+
+      for (let i = 0; i < standardHours.length; i++) {
+        const h = standardHours[i];
+        const data = transMap.get(h.hour) || {
+          gross_tickets: 0,
+          gross_revenue: 0,
+          returns_tickets: 0,
+          returns_revenue: 0,
+          net_tickets: 0,
+          net_revenue: 0,
+        };
+
+        let itemResidualRev = 0;
+        let itemResidualTickets = 0;
+
+        // Distribute residual proportionally across active hours rather than dumping into midnight
+        if (activeHourIndices.includes(i) && rawHourlySumRev > 0) {
+          const isLastActive = i === activeHourIndices[activeHourIndices.length - 1];
+          if (isLastActive) {
+            itemResidualRev = Math.round((residualRev - allocatedResidualRev) * 100) / 100;
+            itemResidualTickets = residualTickets - allocatedResidualTickets;
+          } else {
+            const share = data.net_revenue / rawHourlySumRev;
+            itemResidualRev = Math.round(residualRev * share * 100) / 100;
+            allocatedResidualRev += itemResidualRev;
+
+            const tShare = rawHourlySumTickets > 0 ? data.net_tickets / rawHourlySumTickets : 0;
+            itemResidualTickets = Math.round(residualTickets * tShare);
+            allocatedResidualTickets += itemResidualTickets;
+          }
+        }
+
+        const itemNetTickets = data.net_tickets + itemResidualTickets;
+        const itemNetRev = Math.round((data.net_revenue + itemResidualRev) * 100) / 100;
+        const itemGrossTickets = data.gross_tickets + Math.max(0, itemResidualTickets);
+        const itemGrossRev = Math.round((data.gross_revenue + Math.max(0, itemResidualRev)) * 100) / 100;
+
+        cumTickets += itemNetTickets;
+        cumRev += itemNetRev;
+
+        hourly.push({
+          hour: h.label,
+          raw_hour: h.hour,
+          tickets_sold: itemNetTickets,
+          estimated_revenue: itemNetRev,
+          gross_tickets_sold: itemGrossTickets,
+          gross_revenue: itemGrossRev,
+          returns_tickets: data.returns_tickets,
+          returns_revenue: Math.round(data.returns_revenue * 100) / 100,
+          cumulative_tickets: cumTickets,
+          cumulative_revenue: Math.round(cumRev * 100) / 100,
+        });
+      }
+
+      const walkupTickets = Math.max(0, finalAdmissions - baselineSeats);
+      const walkupRevenue = Math.max(0, Math.round((finalRevenue - baselineRevenue) * 100) / 100);
+      const baselinePct = finalAdmissions > 0 ? Math.round((baselineSeats / finalAdmissions) * 1000) / 10 : 0;
+      const walkupPct = finalAdmissions > 0 ? Math.round((walkupTickets / finalAdmissions) * 1000) / 10 : 0;
+
+      return {
+        has_data: totalSessions > 0 || finalAdmissions > 0 || totalGrossTickets > 0,
+        summary: {
+          total_tickets: finalAdmissions,
+          total_revenue: Math.round(finalRevenue * 100) / 100,
+          baseline_tickets: baselineSeats,
+          baseline_revenue: Math.round(baselineRevenue * 100) / 100,
+          baseline_pct: baselinePct,
+          walkup_tickets: walkupTickets,
+          walkup_revenue: walkupRevenue,
+          walkup_pct: walkupPct,
+          gross_tickets: totalGrossTickets,
+          gross_revenue: Math.round(totalGrossRev * 100) / 100,
+          returns_tickets: totalReturnsTickets,
+          returns_revenue: Math.round(totalReturnsRev * 100) / 100,
+          peak_hour: peakHour,
+          peak_tickets: peakTickets,
+          peak_revenue: Math.round(peakRevenue * 100) / 100,
+          avg_hourly_tickets: walkupTickets > 0 ? Math.round((walkupTickets / standardHours.length) * 10) / 10 : 0,
+        },
+        hourly,
+      };
+    }
+
+    const primaryData = await fetchHourlyDataForDate(dateStr);
+    let compareData: Awaited<ReturnType<typeof fetchHourlyDataForDate>> | null = null;
+
+    if (compareDateStr && compareDateStr !== dateStr) {
+      compareData = await fetchHourlyDataForDate(compareDateStr);
+    }
+
+    // Build a map of compareData hourly items by hour name for robust matching
+    const compareMap = new Map<string, any>();
+    if (compareData) {
+      for (const cItem of compareData.hourly) {
+        compareMap.set(cItem.hour, cItem);
+      }
+    }
+
+    const combinedHourly = primaryData.hourly.map((item) => {
+      const compItem = compareMap.get(item.hour);
+      return {
+        ...item,
+        ...(compItem
+          ? {
+              compare_tickets_sold: compItem.tickets_sold,
+              compare_estimated_revenue: compItem.estimated_revenue,
+              compare_gross_tickets_sold: compItem.gross_tickets_sold,
+              compare_gross_revenue: compItem.gross_revenue,
+              compare_cumulative_tickets: compItem.cumulative_tickets,
+              compare_cumulative_revenue: compItem.cumulative_revenue,
+              delta_tickets: item.tickets_sold - compItem.tickets_sold,
+              delta_revenue: Math.round((item.estimated_revenue - compItem.estimated_revenue) * 100) / 100,
+              delta_cumulative_tickets: item.cumulative_tickets - compItem.cumulative_tickets,
+              delta_cumulative_revenue: Math.round((item.cumulative_revenue - compItem.cumulative_revenue) * 100) / 100,
+            }
+          : {}),
+      };
+    });
+
+    res.json({
+      movie_id: movieId,
+      date: dateStr,
+      compare_date: compareDateStr,
+      has_data: primaryData.has_data,
+      compare_has_data: compareData ? compareData.has_data : undefined,
+      summary: primaryData.summary,
+      compare_summary: compareData ? compareData.summary : null,
+      hourly: combinedHourly,
+    });
+  } catch (err: any) {
+    console.error("Error generating hourly breakdown:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 
 // GET /api/boxoffice/daily-history
 apiRouter.get("/boxoffice/daily-history", async (req, res) => {

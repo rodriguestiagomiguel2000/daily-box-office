@@ -22,6 +22,7 @@ import {
   ArrowDownRight,
   Sparkles,
   Ticket,
+  BarChart3,
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -42,6 +43,7 @@ import {
   IntradaySnapshot,
 } from "../types";
 import { SessionDetailModal } from "./SessionDetailModal";
+import { HourlyBreakdownView } from "./HourlyBreakdownView";
 
 interface MovieDetailViewProps {
   data: MovieDetailResponse;
@@ -58,7 +60,7 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
 }) => {
   const { movie, overview, timeline, sessions, cinemas } = data;
 
-  const [activeTab, setActiveTab] = useState<"boxoffice" | "timeline" | "sessions" | "cinemas">("boxoffice");
+  const [activeTab, setActiveTab] = useState<"boxoffice" | "hourly" | "timeline" | "sessions" | "cinemas">("boxoffice");
   
   // Theatrical Operational Date calculation (6:00 AM Lisbon cutoff)
   const getLisbonOperationalDate = () => {
@@ -361,7 +363,7 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
         </div>
       </div>
 
-      {/* Navigation Tabs: Box Office vs Timeline vs Sessions vs Cinemas */}
+      {/* Navigation Tabs: Box Office vs Hourly vs Timeline vs Sessions vs Cinemas */}
       <div className="flex border-b border-slate-800 space-x-6 text-sm font-medium overflow-x-auto">
         <button
           id="tab-boxoffice-btn"
@@ -374,6 +376,19 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
         >
           <BarChart2 className="w-4 h-4 text-amber-400" />
           <span>Box Office & Intraday Comparison</span>
+        </button>
+
+        <button
+          id="tab-hourly-btn"
+          onClick={() => setActiveTab("hourly")}
+          className={`pb-3 transition border-b-2 flex items-center gap-2 whitespace-nowrap ${
+            activeTab === "hourly"
+              ? "border-amber-500 text-amber-400 font-semibold"
+              : "border-transparent text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          <Clock className="w-4 h-4 text-amber-400" />
+          <span>Hourly Breakdown</span>
         </button>
 
         <button
@@ -549,14 +564,26 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-3 pt-2 border-t border-slate-800 text-xs">
+                  <div className="grid grid-cols-3 gap-2 pt-2 border-t border-slate-800 text-xs">
                     <div>
-                      <div className="text-slate-400">Revenue / Show</div>
-                      <div className="font-bold text-slate-200">€{comparisonData.today.revenue_per_show.toFixed(2)}</div>
+                      <div className="text-slate-400 text-[11px]">Revenue / Show</div>
+                      <div className="font-bold text-slate-200">
+                        {comparisonData.today.showcount_total > 0 ? `€${comparisonData.today.revenue_per_show.toFixed(2)}` : "—"}
+                      </div>
                     </div>
                     <div>
-                      <div className="text-slate-400">Admissions / Show</div>
-                      <div className="font-bold text-slate-200">{comparisonData.today.admissions_per_show.toFixed(1)} seats</div>
+                      <div className="text-slate-400 text-[11px]">Admissions / Show</div>
+                      <div className="font-bold text-slate-200">
+                        {comparisonData.today.showcount_total > 0 ? `${comparisonData.today.admissions_per_show.toFixed(1)} seats` : "—"}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-slate-400 text-[11px]">ATP</div>
+                      <div className="font-bold text-slate-200">
+                        {comparisonData.today.estimated_admissions > 0
+                          ? `€${(comparisonData.today.estimated_revenue / comparisonData.today.estimated_admissions).toFixed(2)}`
+                          : "—"}
+                      </div>
                     </div>
                   </div>
 
@@ -632,14 +659,26 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-3 pt-2 border-t border-slate-800 text-xs">
+                  <div className="grid grid-cols-3 gap-2 pt-2 border-t border-slate-800 text-xs">
                     <div>
-                      <div className="text-slate-400">Revenue / Show</div>
-                      <div className="font-bold text-slate-200">€{comparisonData.yesterday.revenue_per_show.toFixed(2)}</div>
+                      <div className="text-slate-400 text-[11px]">Revenue / Show</div>
+                      <div className="font-bold text-slate-200">
+                        {comparisonData.yesterday.showcount_total > 0 ? `€${comparisonData.yesterday.revenue_per_show.toFixed(2)}` : "—"}
+                      </div>
                     </div>
                     <div>
-                      <div className="text-slate-400">Admissions / Show</div>
-                      <div className="font-bold text-slate-200">{comparisonData.yesterday.admissions_per_show.toFixed(1)} seats</div>
+                      <div className="text-slate-400 text-[11px]">Admissions / Show</div>
+                      <div className="font-bold text-slate-200">
+                        {comparisonData.yesterday.showcount_total > 0 ? `${comparisonData.yesterday.admissions_per_show.toFixed(1)} seats` : "—"}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-slate-400 text-[11px]">ATP</div>
+                      <div className="font-bold text-slate-200">
+                        {comparisonData.yesterday.estimated_admissions > 0
+                          ? `€${(comparisonData.yesterday.estimated_revenue / comparisonData.yesterday.estimated_admissions).toFixed(2)}`
+                          : "—"}
+                      </div>
                     </div>
                   </div>
 
@@ -714,14 +753,26 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-3 pt-2 border-t border-slate-800 text-xs">
+                  <div className="grid grid-cols-3 gap-2 pt-2 border-t border-slate-800 text-xs">
                     <div>
-                      <div className="text-slate-400">Revenue / Show</div>
-                      <div className="font-bold text-slate-200">€{comparisonData.last_week.revenue_per_show.toFixed(2)}</div>
+                      <div className="text-slate-400 text-[11px]">Revenue / Show</div>
+                      <div className="font-bold text-slate-200">
+                        {comparisonData.last_week.showcount_total > 0 ? `€${comparisonData.last_week.revenue_per_show.toFixed(2)}` : "—"}
+                      </div>
                     </div>
                     <div>
-                      <div className="text-slate-400">Admissions / Show</div>
-                      <div className="font-bold text-slate-200">{comparisonData.last_week.admissions_per_show.toFixed(1)} seats</div>
+                      <div className="text-slate-400 text-[11px]">Admissions / Show</div>
+                      <div className="font-bold text-slate-200">
+                        {comparisonData.last_week.showcount_total > 0 ? `${comparisonData.last_week.admissions_per_show.toFixed(1)} seats` : "—"}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-slate-400 text-[11px]">ATP</div>
+                      <div className="font-bold text-slate-200">
+                        {comparisonData.last_week.estimated_admissions > 0
+                          ? `€${(comparisonData.last_week.estimated_revenue / comparisonData.last_week.estimated_admissions).toFixed(2)}`
+                          : "—"}
+                      </div>
                     </div>
                   </div>
 
@@ -953,6 +1004,16 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
             </div>
           </div>
         </div>
+      )}
+
+      {/* TAB: HOURLY BREAKDOWN & COMPARISON */}
+      {activeTab === "hourly" && (
+        <HourlyBreakdownView
+          movieId={movie.id}
+          movieTitle={movie.title}
+          historyDates={historyDates}
+          defaultDate={selectedDate}
+        />
       )}
 
       {/* TAB 2: TIMELINE & GROWTH CURVES (Historical Sweeps) */}

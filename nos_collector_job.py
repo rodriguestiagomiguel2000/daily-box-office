@@ -334,10 +334,24 @@ def collect_data(
                             "state": seat.state
                         })
 
-                    prices_list = [
-                        {"ticket_type": desc, "price": pr}
-                        for desc, pr in snap.ticket_types
-                    ]
+                    prices_list = []
+                    for item in snap.ticket_types:
+                        if isinstance(item, dict):
+                            prices_list.append({
+                                "ticket_type": item.get("ticket_type", "Bilhete"),
+                                "price": float(item.get("price", 0)),
+                                "raw_price": float(item.get("raw_price", item.get("price", 0))),
+                                "seats_count": int(item.get("seats_count", 1)),
+                                "is_default": bool(item.get("is_default", False))
+                            })
+                        elif isinstance(item, (list, tuple)) and len(item) >= 2:
+                            prices_list.append({
+                                "ticket_type": item[0],
+                                "price": float(item[1]),
+                                "raw_price": float(item[1]),
+                                "seats_count": 1,
+                                "is_default": False
+                            })
 
                     snapshot_data = {
                         "collected_at": snap.collected_at.isoformat() + "Z",

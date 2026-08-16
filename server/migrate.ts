@@ -1,4 +1,5 @@
 import { query } from "./db";
+import { recalculateAllPerformanceSnapshots } from "./revenue";
 
 export async function runMigrations(): Promise<void> {
   console.log("Applying official Phase 2 PostgreSQL schema migrations...");
@@ -177,9 +178,17 @@ export async function runMigrations(): Promise<void> {
       collected_at TIMESTAMPTZ NOT NULL,
       ticket_type TEXT NOT NULL,
       price NUMERIC(6, 2) NOT NULL,
+      seats_count INT NOT NULL DEFAULT 1,
+      raw_price NUMERIC(6, 2),
+      is_default BOOLEAN DEFAULT FALSE,
       source VARCHAR(50) DEFAULT 'NOS'
     );
     CREATE INDEX IF NOT EXISTS idx_ticket_prices_session ON session_ticket_prices(session_id, collected_at DESC);
+
+    -- Ensure schema updates for existing tables
+    ALTER TABLE session_ticket_prices ADD COLUMN IF NOT EXISTS seats_count INT NOT NULL DEFAULT 1;
+    ALTER TABLE session_ticket_prices ADD COLUMN IF NOT EXISTS raw_price NUMERIC(6, 2);
+    ALTER TABLE session_ticket_prices ADD COLUMN IF NOT EXISTS is_default BOOLEAN DEFAULT FALSE;
 
     -- 10. Movie Performance Snapshots (Intraday & Historical Time-Series Aggregations)
     CREATE TABLE IF NOT EXISTS movie_performance_snapshots (
@@ -211,4 +220,11 @@ export async function runMigrations(): Promise<void> {
 
   await query(migrationSQL);
   console.log("PostgreSQL schema migrations applied successfully.");
+
+  try {
+    const updated = await recalculateAllPerformanceSnapshots();
+    console.log(`Recalculated ${updated} performance snapshots using canonical pricing.`);
+  } catch (err) {
+    console.warn("Snapshot recalculation warning:", err);
+  }
 }

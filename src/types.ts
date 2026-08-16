@@ -303,3 +303,58 @@ export interface DailyBoxOfficeHistoryResponse {
   summary: DailyBoxOfficeSummary;
 }
 
+export interface HourlyBucketItem {
+  hour: string;
+  raw_hour: number;
+  tickets_sold: number;
+  estimated_revenue: number;
+  gross_tickets_sold?: number;
+  gross_revenue?: number;
+  returns_tickets?: number;
+  returns_revenue?: number;
+  cumulative_tickets: number;
+  cumulative_revenue: number;
+  is_baseline?: boolean;
+  is_reconciliation?: boolean;
+  compare_tickets_sold?: number;
+  compare_estimated_revenue?: number;
+  compare_gross_tickets_sold?: number;
+  compare_gross_revenue?: number;
+  compare_cumulative_tickets?: number;
+  compare_cumulative_revenue?: number;
+  delta_tickets?: number;
+  delta_revenue?: number;
+  delta_cumulative_tickets?: number;
+  delta_cumulative_revenue?: number;
+}
+
+export interface HourlyBreakdownSummary {
+  total_tickets: number;
+  total_revenue: number;
+  baseline_tickets?: number;
+  baseline_revenue?: number;
+  baseline_pct?: number;
+  walkup_tickets?: number;
+  walkup_revenue?: number;
+  walkup_pct?: number;
+  gross_tickets?: number;
+  gross_revenue?: number;
+  returns_tickets?: number;
+  returns_revenue?: number;
+  peak_hour: string | null;
+  peak_tickets: number;
+  peak_revenue?: number;
+  avg_hourly_tickets?: number;
+}
+
+export interface HourlyBreakdownResponse {
+  movie_id: number;
+  date: string;
+  compare_date?: string | null;
+  has_data: boolean;
+  compare_has_data?: boolean;
+  summary: HourlyBreakdownSummary;
+  compare_summary?: HourlyBreakdownSummary | null;
+  hourly: HourlyBucketItem[];
+}
+
