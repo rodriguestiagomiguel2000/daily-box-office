@@ -88,16 +88,44 @@ export function App() {
     }
   }, []);
 
-  // Initial load and periodic background polling
+  // Initial load on component mount
   useEffect(() => {
     fetchSummary(true);
     fetchStatus();
+  }, [fetchSummary, fetchStatus]);
+
+  // Track tab visibility
+  const [isTabVisible, setIsTabVisible] = useState(document.visibilityState === "visible");
+
+  useEffect(() => {
+    const handleVisibilityChange = () => {
+      const visible = document.visibilityState === "visible";
+      setIsTabVisible(visible);
+      if (visible) {
+        // Trigger one immediate fetch right away on resume (so the user isn't staring at stale data)
+        fetchSummary(false);
+        fetchStatus();
+        if (selectedMovieId) {
+          fetchMovieDetail(selectedMovieId, false);
+        }
+      }
+    };
+
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    return () => {
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [fetchSummary, fetchStatus, fetchMovieDetail, selectedMovieId]);
+
+  // Periodic background polling when visible
+  useEffect(() => {
+    if (!isTabVisible) return;
 
     const isCollectingNow = Boolean(
       collectorStatus?.is_collecting || collectorStatus?.scheduler?.isCollecting
     );
-    // Background polling: 60s when idle, 3s only during active collection sweep
-    const pollIntervalMs = isCollectingNow ? 3000 : 60000;
+    // Background polling: 60s when idle, 30s during active collection sweep (safety increased from aggressive 3s)
+    const pollIntervalMs = isCollectingNow ? 30000 : 60000;
 
     const interval = setInterval(() => {
       // Silent background refresh without setting manual loading spinners
@@ -109,7 +137,15 @@ export function App() {
     }, pollIntervalMs);
 
     return () => clearInterval(interval);
-  }, [fetchSummary, fetchStatus, fetchMovieDetail, selectedMovieId, collectorStatus?.is_collecting, collectorStatus?.scheduler?.isCollecting]);
+  }, [
+    isTabVisible,
+    fetchSummary,
+    fetchStatus,
+    fetchMovieDetail,
+    selectedMovieId,
+    collectorStatus?.is_collecting,
+    collectorStatus?.scheduler?.isCollecting
+  ]);
 
   // Open Catalog
   const handleOpenCatalog = () => {
