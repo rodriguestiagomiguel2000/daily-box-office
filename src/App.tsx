@@ -14,6 +14,7 @@ export function App() {
   const [collectorStatus, setCollectorStatus] = useState<CollectorStatusResponse | null>(null);
   const [catalogMovies, setCatalogMovies] = useState<Movie[]>([]);
   const [isDailyHistoryView, setIsDailyHistoryView] = useState<boolean>(false);
+  const [isOffline, setIsOffline] = useState<boolean>(false);
 
   const [isLoadingSummary, setIsLoadingSummary] = useState(true);
   const [isLoadingDetail, setIsLoadingDetail] = useState(false);
@@ -32,9 +33,13 @@ export function App() {
       if (res.ok && contentType && contentType.includes("application/json")) {
         const data = await res.json();
         setTrackedMovies(data.tracked_movies || []);
+        setIsOffline(false);
+      } else {
+        throw new Error(`Server returned status ${res.status}`);
       }
     } catch (err) {
-      console.error("Failed to fetch dashboard summary:", err);
+      setIsOffline(true);
+      console.warn("Could not fetch dashboard summary (server may be offline or restarting):", err);
     } finally {
       if (isManual) setIsLoadingSummary(false);
     }
@@ -48,9 +53,13 @@ export function App() {
       if (res.ok && contentType && contentType.includes("application/json")) {
         const data = await res.json();
         setCollectorStatus(data);
+        setIsOffline(false);
+      } else {
+        throw new Error(`Server returned status ${res.status}`);
       }
     } catch (err) {
-      console.error("Failed to fetch collector status:", err);
+      setIsOffline(true);
+      console.warn("Could not fetch collector status (server may be offline or restarting):", err);
     }
   }, []);
 
@@ -63,9 +72,13 @@ export function App() {
       if (res.ok && contentType && contentType.includes("application/json")) {
         const data = await res.json();
         setMovieDetail(data);
+        setIsOffline(false);
+      } else {
+        throw new Error(`Server returned status ${res.status}`);
       }
     } catch (err) {
-      console.error("Failed to fetch movie detail:", err);
+      setIsOffline(true);
+      console.warn("Could not fetch movie detail (server may be offline or restarting):", err);
     } finally {
       if (isManual) setIsLoadingDetail(false);
     }
@@ -80,9 +93,13 @@ export function App() {
       if (res.ok && contentType && contentType.includes("application/json")) {
         const data = await res.json();
         setCatalogMovies(data.movies || []);
+        setIsOffline(false);
+      } else {
+        throw new Error(`Server returned status ${res.status}`);
       }
     } catch (err) {
-      console.error("Failed to fetch catalog:", err);
+      setIsOffline(true);
+      console.warn("Could not fetch catalog (server may be offline or restarting):", err);
     } finally {
       setIsLoadingCatalog(false);
     }
@@ -278,6 +295,14 @@ export function App() {
             : "tracked"
         }
       />
+
+      {/* Connection Offline/Restart Indicator Banner */}
+      {isOffline && (
+        <div className="bg-amber-500/10 border-b border-amber-500/20 py-2 px-4 text-center text-xs text-amber-400 flex items-center justify-center gap-2">
+          <span className="w-2 h-2 rounded-full bg-amber-500 animate-pulse" />
+          <span>Server is temporarily unreachable. Attempting to reconnect automatically...</span>
+        </div>
+      )}
 
       {/* Main Container */}
       <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8">
