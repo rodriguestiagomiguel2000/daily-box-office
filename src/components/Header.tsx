@@ -7,6 +7,7 @@ import {
   Clock,
   PlusCircle,
   TrendingUp,
+  Calendar,
 } from "lucide-react";
 import { CollectorStatusResponse } from "../types";
 
@@ -18,7 +19,9 @@ interface HeaderProps {
   onOpenStatus: () => void;
   onHomeClick: () => void;
   onOpenDailyHistory: () => void;
-  activeView: "tracked" | "daily-history" | "detail";
+  onOpenWeekendHistory?: () => void;
+  onOpenWeeklyHistory?: () => void;
+  activeView: "tracked" | "daily-history" | "weekend-history" | "weekly-history" | "detail";
 }
 
 function formatNextRunTime(nextRunStr: string | null | undefined): string {
@@ -43,6 +46,8 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenStatus,
   onHomeClick,
   onOpenDailyHistory,
+  onOpenWeekendHistory,
+  onOpenWeeklyHistory,
   activeView,
 }) => {
   const isCollecting = status?.scheduler?.isCollecting || isTriggering;
@@ -144,6 +149,36 @@ export const Header: React.FC<HeaderProps> = ({
               <TrendingUp className="w-4 h-4 text-amber-400" />
               <span>Daily Box Office</span>
             </button>
+
+            {onOpenWeekendHistory && (
+              <button
+                id="nav-weekend-boxoffice-tab"
+                onClick={onOpenWeekendHistory}
+                className={`py-2.5 transition border-b-2 flex items-center gap-2 whitespace-nowrap ${
+                  activeView === "weekend-history"
+                    ? "border-amber-500 text-amber-400 font-semibold"
+                    : "border-transparent text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                <Calendar className="w-4 h-4 text-amber-400" />
+                <span>Weekend Box Office</span>
+              </button>
+            )}
+
+            {onOpenWeeklyHistory && (
+              <button
+                id="nav-weekly-boxoffice-tab"
+                onClick={onOpenWeeklyHistory}
+                className={`py-2.5 transition border-b-2 flex items-center gap-2 whitespace-nowrap ${
+                  activeView === "weekly-history"
+                    ? "border-amber-500 text-amber-400 font-semibold"
+                    : "border-transparent text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                <Calendar className="w-4 h-4 text-cyan-400" />
+                <span>Weekly Box Office</span>
+              </button>
+            )}
           </nav>
 
           {/* Right: De-emphasized Compact Status Badges */}

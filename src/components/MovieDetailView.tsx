@@ -43,6 +43,7 @@ import {
   IntradaySnapshot,
 } from "../types";
 import { SessionDetailModal } from "./SessionDetailModal";
+import { MovieDailyBreakdownView } from "./MovieDailyBreakdownView";
 import { HourlyBreakdownView } from "./HourlyBreakdownView";
 
 interface MovieDetailViewProps {
@@ -60,7 +61,7 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
 }) => {
   const { movie, overview, timeline, sessions, cinemas } = data;
 
-  const [activeTab, setActiveTab] = useState<"boxoffice" | "hourly" | "timeline" | "sessions" | "cinemas">("boxoffice");
+  const [activeTab, setActiveTab] = useState<"daily" | "boxoffice" | "hourly" | "timeline" | "sessions" | "cinemas">("daily");
   
   // Theatrical Operational Date calculation (6:00 AM Lisbon cutoff)
   const getLisbonOperationalDate = () => {
@@ -363,8 +364,21 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
         </div>
       </div>
 
-      {/* Navigation Tabs: Box Office vs Hourly vs Timeline vs Sessions vs Cinemas */}
+      {/* Navigation Tabs: Daily Breakdown vs Box Office vs Hourly vs Timeline vs Sessions vs Cinemas */}
       <div className="flex border-b border-slate-800 space-x-6 text-sm font-medium overflow-x-auto">
+        <button
+          id="tab-daily-breakdown-btn"
+          onClick={() => setActiveTab("daily")}
+          className={`pb-3 transition border-b-2 flex items-center gap-2 whitespace-nowrap ${
+            activeTab === "daily"
+              ? "border-amber-500 text-amber-400 font-semibold"
+              : "border-transparent text-slate-400 hover:text-slate-200"
+          }`}
+        >
+          <Calendar className="w-4 h-4 text-amber-400" />
+          <span>Daily Breakdown</span>
+        </button>
+
         <button
           id="tab-boxoffice-btn"
           onClick={() => setActiveTab("boxoffice")}
@@ -430,6 +444,11 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
           <span>Cinema Venues ({cinemas.length})</span>
         </button>
       </div>
+
+      {/* TAB 0: DAILY BOX OFFICE BREAKDOWN */}
+      {activeTab === "daily" && (
+        <MovieDailyBreakdownView movieId={movie.id} movieTitle={movie.title} />
+      )}
 
       {/* TAB 1: BOX OFFICE & INTRADAY PERFORMANCE */}
       {activeTab === "boxoffice" && (

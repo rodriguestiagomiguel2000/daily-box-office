@@ -358,3 +358,109 @@ export interface HourlyBreakdownResponse {
   hourly: HourlyBucketItem[];
 }
 
+export interface MovieDailyBreakdownDay {
+  operational_date: string;
+  run_day: number;
+  run_day_label?: string;
+  day_of_week: string;
+  day_of_week_short: string;
+  is_weekend: boolean;
+  is_today: boolean;
+  is_live: boolean;
+  revenue: number;
+  admissions: number;
+  cinemas_count: number;
+  sessions_count: number;
+  prev_day_date: string | null;
+  revenue_change_pct: number | null;
+  admissions_change_pct: number | null;
+  cinemas_change_pct: number | null;
+  sessions_change_pct: number | null;
+  prev_week_date: string | null;
+  prev_week_revenue_change_pct: number | null;
+  prev_week_admissions_change_pct: number | null;
+}
+
+export interface MovieDailyBreakdownResponse {
+  movie: Movie;
+  days: MovieDailyBreakdownDay[];
+  summary: {
+    total_days: number;
+    total_revenue: number;
+    total_admissions: number;
+    total_sessions: number;
+    max_cinemas: number;
+  };
+}
+
+export interface WeekendBoxOfficeMovieItem {
+  movie_id: number;
+  title: string;
+  poster_url: string;
+  release_date: string;
+  tracking_enabled: boolean;
+  weekend_number: number;
+  weekend_number_label?: string;
+  revenue: number;
+  admissions: number;
+  cinemas_count: number;
+  sessions_count: number;
+  days_with_data_count: number;
+  prev_weekend_revenue_change_pct: number | null;
+  prev_weekend_admissions_change_pct: number | null;
+  prev_weekend_cinemas_change_pct: number | null;
+  prev_weekend_sessions_change_pct: number | null;
+}
+
+export interface WeekendBoxOfficePeriod {
+  weekend_id: string;
+  start_date: string;
+  end_date: string;
+  label: string;
+  is_live: boolean;
+  total_revenue: number;
+  total_admissions: number;
+  total_sessions: number;
+  movies: WeekendBoxOfficeMovieItem[];
+}
+
+export interface WeekendBoxOfficeResponse {
+  weekends: WeekendBoxOfficePeriod[];
+}
+
+export interface WeeklyBoxOfficeMovieItem {
+  movie_id: number;
+  title: string;
+  poster_url: string;
+  release_date: string;
+  tracking_enabled: boolean;
+  week_number: number;
+  week_number_label?: string;
+  revenue: number;
+  admissions: number;
+  cinemas_count: number;
+  sessions_count: number;
+  days_with_data_count: number;
+  prev_week_revenue_change_pct: number | null;
+  prev_week_admissions_change_pct: number | null;
+  prev_week_cinemas_change_pct: number | null;
+  prev_week_sessions_change_pct: number | null;
+}
+
+export interface WeeklyBoxOfficePeriod {
+  week_id: string;
+  start_date: string;
+  end_date: string;
+  label: string;
+  is_live: boolean;
+  total_revenue: number;
+  total_admissions: number;
+  total_sessions: number;
+  movies: WeeklyBoxOfficeMovieItem[];
+}
+
+export interface WeeklyBoxOfficeResponse {
+  weeks: WeeklyBoxOfficePeriod[];
+}
+
+

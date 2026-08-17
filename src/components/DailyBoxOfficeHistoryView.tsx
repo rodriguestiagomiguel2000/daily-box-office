@@ -21,6 +21,7 @@ import {
 interface DailyBoxOfficeHistoryViewProps {
   onSelectMovie: (movieId: number) => void;
   onBackToDashboard: () => void;
+  onSelectView?: (view: "daily" | "weekend" | "weekly") => void;
 }
 
 // Calculate release day number: (operational_date - release_date) + 1
@@ -78,6 +79,7 @@ type SortOrder = "asc" | "desc";
 export const DailyBoxOfficeHistoryView: React.FC<DailyBoxOfficeHistoryViewProps> = ({
   onSelectMovie,
   onBackToDashboard,
+  onSelectView,
 }) => {
   const [data, setData] = useState<DailyBoxOfficeHistoryResponse | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
@@ -337,6 +339,33 @@ export const DailyBoxOfficeHistoryView: React.FC<DailyBoxOfficeHistoryViewProps>
 
         {/* View Mode & Actions */}
         <div className="flex flex-wrap items-center gap-3">
+          {/* Box Office Period Tabs */}
+          {onSelectView && (
+            <div className="bg-slate-950 border border-slate-800 p-1 rounded-xl flex items-center text-xs font-semibold">
+              <button
+                id="daily-tab-btn"
+                onClick={() => onSelectView("daily")}
+                className="px-3.5 py-1.5 rounded-lg bg-amber-500 text-slate-950 shadow font-bold cursor-pointer"
+              >
+                Daily
+              </button>
+              <button
+                id="weekend-tab-btn"
+                onClick={() => onSelectView("weekend")}
+                className="px-3.5 py-1.5 rounded-lg text-slate-400 hover:text-slate-200 transition cursor-pointer"
+              >
+                Weekend (Thu–Sun)
+              </button>
+              <button
+                id="weekly-tab-btn"
+                onClick={() => onSelectView("weekly")}
+                className="px-3.5 py-1.5 rounded-lg text-slate-400 hover:text-slate-200 transition cursor-pointer"
+              >
+                Weekly (Thu–Wed)
+              </button>
+            </div>
+          )}
+
           {/* Calendar vs Release Day View Mode */}
           <div className="bg-slate-950 border border-slate-800 p-1 rounded-xl flex items-center text-xs font-semibold">
             <button

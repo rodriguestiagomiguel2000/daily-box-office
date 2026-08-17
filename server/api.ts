@@ -1,5 +1,10 @@
 import { Router } from "express";
 import { spawn } from "child_process";
+import { 
+  getMovieDailyBreakdown, 
+  getWeekendBoxOffice, 
+  getWeeklyBoxOffice 
+} from "./boxoffice";
 import { query } from "./db";
 import { scheduler } from "./scheduler";
 import { executeCollectionRun, getActiveProgress, prepareCollectionRun, executeCollectionRunFromPrepared } from "./collector";
@@ -1113,7 +1118,7 @@ export async function getOrComputeMovieSnapshotsBatch(
 }
 
 // Single snapshot helper wrapping batch calculation for backwards compatibility
-async function getOrComputeMovieSnapshotAtTime(
+export async function getOrComputeMovieSnapshotAtTime(
   movieId: number,
   operationalDate: string,
   targetTimestamp: Date
@@ -1902,6 +1907,48 @@ apiRouter.get("/boxoffice/daily-history", async (req, res) => {
     });
   } catch (err: any) {
     console.error("Error fetching daily box office history:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/movies/:id/daily-breakdown
+apiRouter.get("/movies/:id/daily-breakdown", async (req, res) => {
+  try {
+    const movieId = parseInt(req.params.id, 10);
+    if (isNaN(movieId)) {
+      return res.status(400).json({ error: "Invalid movie ID" });
+    }
+
+    const data = await getMovieDailyBreakdown(movieId);
+    if (!data) {
+      return res.status(404).json({ error: "Movie not found" });
+    }
+
+    res.json(data);
+  } catch (err: any) {
+    console.error(`Error fetching daily breakdown for movie ${req.params.id}:`, err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/boxoffice/weekends
+apiRouter.get("/boxoffice/weekends", async (req, res) => {
+  try {
+    const data = await getWeekendBoxOffice();
+    res.json(data);
+  } catch (err: any) {
+    console.error("Error fetching weekend box office:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/boxoffice/weeks
+apiRouter.get("/boxoffice/weeks", async (req, res) => {
+  try {
+    const data = await getWeeklyBoxOffice();
+    res.json(data);
+  } catch (err: any) {
+    console.error("Error fetching weekly box office:", err);
     res.status(500).json({ error: err.message });
   }
 });

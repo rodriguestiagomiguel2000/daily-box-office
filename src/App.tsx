@@ -3,9 +3,13 @@ import { Header } from "./components/Header";
 import { TrackedMoviesView } from "./components/TrackedMoviesView";
 import { MovieDetailView } from "./components/MovieDetailView";
 import { DailyBoxOfficeHistoryView } from "./components/DailyBoxOfficeHistoryView";
+import { WeekendBoxOfficeView } from "./components/WeekendBoxOfficeView";
+import { WeeklyBoxOfficeView } from "./components/WeeklyBoxOfficeView";
 import { CatalogModal } from "./components/CatalogModal";
 import { CollectorStatusModal } from "./components/CollectorStatusModal";
 import { TrackedMovieSummary, MovieDetailResponse, CollectorStatusResponse, Movie } from "./types";
+
+type ActiveDashboardView = "tracked" | "daily-history" | "weekend-history" | "weekly-history";
 
 export function App() {
   const [trackedMovies, setTrackedMovies] = useState<TrackedMovieSummary[]>([]);
@@ -13,7 +17,7 @@ export function App() {
   const [movieDetail, setMovieDetail] = useState<MovieDetailResponse | null>(null);
   const [collectorStatus, setCollectorStatus] = useState<CollectorStatusResponse | null>(null);
   const [catalogMovies, setCatalogMovies] = useState<Movie[]>([]);
-  const [isDailyHistoryView, setIsDailyHistoryView] = useState<boolean>(false);
+  const [dashboardView, setDashboardView] = useState<ActiveDashboardView>("tracked");
   const [isOffline, setIsOffline] = useState<boolean>(false);
 
   const [isLoadingSummary, setIsLoadingSummary] = useState(true);
@@ -280,19 +284,27 @@ export function App() {
         onOpenDailyHistory={() => {
           setSelectedMovieId(null);
           setMovieDetail(null);
-          setIsDailyHistoryView(true);
+          setDashboardView("daily-history");
+        }}
+        onOpenWeekendHistory={() => {
+          setSelectedMovieId(null);
+          setMovieDetail(null);
+          setDashboardView("weekend-history");
+        }}
+        onOpenWeeklyHistory={() => {
+          setSelectedMovieId(null);
+          setMovieDetail(null);
+          setDashboardView("weekly-history");
         }}
         onHomeClick={() => {
           setSelectedMovieId(null);
           setMovieDetail(null);
-          setIsDailyHistoryView(false);
+          setDashboardView("tracked");
         }}
         activeView={
           selectedMovieId
             ? "detail"
-            : isDailyHistoryView
-            ? "daily-history"
-            : "tracked"
+            : dashboardView
         }
       />
 
@@ -316,10 +328,47 @@ export function App() {
             onRefresh={() => fetchMovieDetail(selectedMovieId, true)}
             isRefreshing={isLoadingDetail}
           />
-        ) : isDailyHistoryView ? (
+        ) : dashboardView === "daily-history" ? (
           <DailyBoxOfficeHistoryView
             onSelectMovie={handleSelectMovie}
-            onBackToDashboard={() => setIsDailyHistoryView(false)}
+            onBackToDashboard={() => setDashboardView("tracked")}
+            onSelectView={(v) =>
+              setDashboardView(
+                v === "daily"
+                  ? "daily-history"
+                  : v === "weekend"
+                  ? "weekend-history"
+                  : "weekly-history"
+              )
+            }
+          />
+        ) : dashboardView === "weekend-history" ? (
+          <WeekendBoxOfficeView
+            onSelectMovie={handleSelectMovie}
+            onBackToDashboard={() => setDashboardView("tracked")}
+            onSelectView={(v) =>
+              setDashboardView(
+                v === "daily"
+                  ? "daily-history"
+                  : v === "weekend"
+                  ? "weekend-history"
+                  : "weekly-history"
+              )
+            }
+          />
+        ) : dashboardView === "weekly-history" ? (
+          <WeeklyBoxOfficeView
+            onSelectMovie={handleSelectMovie}
+            onBackToDashboard={() => setDashboardView("tracked")}
+            onSelectView={(v) =>
+              setDashboardView(
+                v === "daily"
+                  ? "daily-history"
+                  : v === "weekend"
+                  ? "weekend-history"
+                  : "weekly-history"
+              )
+            }
           />
         ) : (
           <TrackedMoviesView
