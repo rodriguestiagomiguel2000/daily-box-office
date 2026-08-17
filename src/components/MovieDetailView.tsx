@@ -23,6 +23,7 @@ import {
   Sparkles,
   Ticket,
   BarChart3,
+  ChevronDown,
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -44,6 +45,7 @@ import {
 } from "../types";
 import { SessionDetailModal } from "./SessionDetailModal";
 import { MovieDailyBreakdownView } from "./MovieDailyBreakdownView";
+import { MoviePresaleCurveView } from "./MoviePresaleCurveView";
 import { HourlyBreakdownView } from "./HourlyBreakdownView";
 
 interface MovieDetailViewProps {
@@ -61,7 +63,32 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
 }) => {
   const { movie, overview, timeline, sessions, cinemas } = data;
 
-  const [activeTab, setActiveTab] = useState<"daily" | "boxoffice" | "hourly" | "timeline" | "sessions" | "cinemas">("daily");
+  const [activeTab, setActiveTab] = useState<"daily" | "presale" | "boxoffice" | "hourly" | "timeline" | "sessions" | "cinemas">("daily");
+  const [isMoreMenuOpen, setIsMoreMenuOpen] = useState<boolean>(false);
+  const moreMenuRef = useRef<HTMLDivElement>(null);
+
+  // Close More overflow menu when clicking outside or pressing Escape
+  useEffect(() => {
+    const handleClickOutside = (event: MouseEvent) => {
+      if (moreMenuRef.current && !moreMenuRef.current.contains(event.target as Node)) {
+        setIsMoreMenuOpen(false);
+      }
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setIsMoreMenuOpen(false);
+      }
+    };
+
+    if (isMoreMenuOpen) {
+      document.addEventListener("mousedown", handleClickOutside);
+      document.addEventListener("keydown", handleKeyDown);
+    }
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [isMoreMenuOpen]);
   
   // Theatrical Operational Date calculation (6:00 AM Lisbon cutoff)
   const getLisbonOperationalDate = () => {
@@ -364,90 +391,160 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
         </div>
       </div>
 
-      {/* Navigation Tabs: Daily Breakdown vs Box Office vs Hourly vs Timeline vs Sessions vs Cinemas */}
-      <div className="flex border-b border-slate-800 space-x-6 text-sm font-medium overflow-x-auto">
-        <button
-          id="tab-daily-breakdown-btn"
-          onClick={() => setActiveTab("daily")}
-          className={`pb-3 transition border-b-2 flex items-center gap-2 whitespace-nowrap ${
-            activeTab === "daily"
-              ? "border-amber-500 text-amber-400 font-semibold"
-              : "border-transparent text-slate-400 hover:text-slate-200"
-          }`}
-        >
-          <Calendar className="w-4 h-4 text-amber-400" />
-          <span>Daily Breakdown</span>
-        </button>
+      {/* Navigation Tabs: Most used tabs visible + "More ▾" overflow menu */}
+      {(() => {
+        const isOverflowActive = activeTab === "presale" || activeTab === "timeline" || activeTab === "cinemas";
+        const overflowLabel =
+          activeTab === "presale"
+            ? "More: Pre-Sale (T-Curve)"
+            : activeTab === "timeline"
+            ? "More: Timeline"
+            : activeTab === "cinemas"
+            ? "More: Cinemas"
+            : "More";
 
-        <button
-          id="tab-boxoffice-btn"
-          onClick={() => setActiveTab("boxoffice")}
-          className={`pb-3 transition border-b-2 flex items-center gap-2 whitespace-nowrap ${
-            activeTab === "boxoffice"
-              ? "border-amber-500 text-amber-400 font-semibold"
-              : "border-transparent text-slate-400 hover:text-slate-200"
-          }`}
-        >
-          <BarChart2 className="w-4 h-4 text-amber-400" />
-          <span>Box Office & Intraday Comparison</span>
-        </button>
+        return (
+          <div className="flex border-b border-slate-800 space-x-6 text-sm font-medium overflow-visible relative">
+            <button
+              id="tab-daily-breakdown-btn"
+              onClick={() => setActiveTab("daily")}
+              className={`pb-3 transition border-b-2 flex items-center gap-2 whitespace-nowrap ${
+                activeTab === "daily"
+                  ? "border-amber-500 text-amber-400 font-semibold"
+                  : "border-transparent text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              <Calendar className="w-4 h-4 text-amber-400" />
+              <span>Daily Breakdown</span>
+            </button>
 
-        <button
-          id="tab-hourly-btn"
-          onClick={() => setActiveTab("hourly")}
-          className={`pb-3 transition border-b-2 flex items-center gap-2 whitespace-nowrap ${
-            activeTab === "hourly"
-              ? "border-amber-500 text-amber-400 font-semibold"
-              : "border-transparent text-slate-400 hover:text-slate-200"
-          }`}
-        >
-          <Clock className="w-4 h-4 text-amber-400" />
-          <span>Hourly Breakdown</span>
-        </button>
+            <button
+              id="tab-boxoffice-btn"
+              onClick={() => setActiveTab("boxoffice")}
+              className={`pb-3 transition border-b-2 flex items-center gap-2 whitespace-nowrap ${
+                activeTab === "boxoffice"
+                  ? "border-amber-500 text-amber-400 font-semibold"
+                  : "border-transparent text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              <BarChart2 className="w-4 h-4 text-amber-400" />
+              <span>Box Office & Intraday Comparison</span>
+            </button>
 
-        <button
-          id="tab-timeline-btn"
-          onClick={() => setActiveTab("timeline")}
-          className={`pb-3 transition border-b-2 flex items-center gap-2 whitespace-nowrap ${
-            activeTab === "timeline"
-              ? "border-amber-500 text-amber-400 font-semibold"
-              : "border-transparent text-slate-400 hover:text-slate-200"
-          }`}
-        >
-          <Activity className="w-4 h-4 text-cyan-400" />
-          <span>Timeline & Growth Sweeps ({timeline.length})</span>
-        </button>
+            <button
+              id="tab-hourly-btn"
+              onClick={() => setActiveTab("hourly")}
+              className={`pb-3 transition border-b-2 flex items-center gap-2 whitespace-nowrap ${
+                activeTab === "hourly"
+                  ? "border-amber-500 text-amber-400 font-semibold"
+                  : "border-transparent text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              <Clock className="w-4 h-4 text-amber-400" />
+              <span>Hourly Breakdown</span>
+            </button>
 
-        <button
-          id="tab-sessions-btn"
-          onClick={() => setActiveTab("sessions")}
-          className={`pb-3 transition border-b-2 flex items-center gap-2 whitespace-nowrap ${
-            activeTab === "sessions"
-              ? "border-amber-500 text-amber-400 font-semibold"
-              : "border-transparent text-slate-400 hover:text-slate-200"
-          }`}
-        >
-          <Ticket className="w-4 h-4 text-emerald-400" />
-          <span>Individual Sessions ({sessions.length})</span>
-        </button>
+            <button
+              id="tab-sessions-btn"
+              onClick={() => setActiveTab("sessions")}
+              className={`pb-3 transition border-b-2 flex items-center gap-2 whitespace-nowrap ${
+                activeTab === "sessions"
+                  ? "border-amber-500 text-amber-400 font-semibold"
+                  : "border-transparent text-slate-400 hover:text-slate-200"
+              }`}
+            >
+              <Ticket className="w-4 h-4 text-emerald-400" />
+              <span>Individual Sessions ({sessions.length})</span>
+            </button>
 
-        <button
-          id="tab-cinemas-btn"
-          onClick={() => setActiveTab("cinemas")}
-          className={`pb-3 transition border-b-2 flex items-center gap-2 whitespace-nowrap ${
-            activeTab === "cinemas"
-              ? "border-amber-500 text-amber-400 font-semibold"
-              : "border-transparent text-slate-400 hover:text-slate-200"
-          }`}
-        >
-          <Building className="w-4 h-4 text-purple-400" />
-          <span>Cinema Venues ({cinemas.length})</span>
-        </button>
-      </div>
+            {/* Overflow "More ▾" Menu */}
+            <div className="relative" ref={moreMenuRef}>
+              <button
+                id="tab-more-menu-btn"
+                onClick={() => setIsMoreMenuOpen((prev) => !prev)}
+                className={`pb-3 transition border-b-2 flex items-center gap-1.5 whitespace-nowrap cursor-pointer ${
+                  isOverflowActive
+                    ? "border-amber-500 text-amber-400 font-semibold"
+                    : "border-transparent text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                <span>{overflowLabel}</span>
+                <ChevronDown className={`w-4 h-4 transition-transform duration-200 ${isMoreMenuOpen ? "rotate-180 text-amber-400" : ""}`} />
+              </button>
+
+              {isMoreMenuOpen && (
+                <div className="absolute left-0 top-full mt-1 w-64 bg-slate-900 border border-slate-700/80 rounded-xl shadow-2xl py-1.5 z-50 animate-in fade-in slide-in-from-top-1 duration-150">
+                  <button
+                    id="tab-more-presale-btn"
+                    onClick={() => {
+                      setActiveTab("presale");
+                      setIsMoreMenuOpen(false);
+                    }}
+                    className={`w-full text-left px-3.5 py-2.5 flex items-center justify-between text-xs transition cursor-pointer ${
+                      activeTab === "presale"
+                        ? "bg-amber-500/10 text-amber-400 font-semibold"
+                        : "text-slate-300 hover:bg-slate-800 hover:text-white"
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <Sparkles className="w-4 h-4 text-amber-400 shrink-0" />
+                      <span>Opening Day Pre-Sale</span>
+                    </div>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 font-medium">T-Curve</span>
+                  </button>
+
+                  <button
+                    id="tab-more-timeline-btn"
+                    onClick={() => {
+                      setActiveTab("timeline");
+                      setIsMoreMenuOpen(false);
+                    }}
+                    className={`w-full text-left px-3.5 py-2.5 flex items-center justify-between text-xs transition cursor-pointer ${
+                      activeTab === "timeline"
+                        ? "bg-amber-500/10 text-amber-400 font-semibold"
+                        : "text-slate-300 hover:bg-slate-800 hover:text-white"
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <Activity className="w-4 h-4 text-cyan-400 shrink-0" />
+                      <span>Timeline & Growth Sweeps</span>
+                    </div>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 font-mono">{timeline.length}</span>
+                  </button>
+
+                  <button
+                    id="tab-more-cinemas-btn"
+                    onClick={() => {
+                      setActiveTab("cinemas");
+                      setIsMoreMenuOpen(false);
+                    }}
+                    className={`w-full text-left px-3.5 py-2.5 flex items-center justify-between text-xs transition cursor-pointer ${
+                      activeTab === "cinemas"
+                        ? "bg-amber-500/10 text-amber-400 font-semibold"
+                        : "text-slate-300 hover:bg-slate-800 hover:text-white"
+                    }`}
+                  >
+                    <div className="flex items-center gap-2.5">
+                      <Building className="w-4 h-4 text-purple-400 shrink-0" />
+                      <span>Cinema Venues</span>
+                    </div>
+                    <span className="text-[10px] px-1.5 py-0.5 rounded bg-slate-800 text-slate-400 font-mono">{cinemas.length}</span>
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* TAB 0: DAILY BOX OFFICE BREAKDOWN */}
       {activeTab === "daily" && (
         <MovieDailyBreakdownView movieId={movie.id} movieTitle={movie.title} />
+      )}
+
+      {/* TAB 0.5: OPENING DAY PRESALE CURVE */}
+      {activeTab === "presale" && (
+        <MoviePresaleCurveView movieId={movie.id} movieTitle={movie.title} />
       )}
 
       {/* TAB 1: BOX OFFICE & INTRADAY PERFORMANCE */}

@@ -463,4 +463,55 @@ export interface WeeklyBoxOfficeResponse {
   weeks: WeeklyBoxOfficePeriod[];
 }
 
+export interface PresaleBucket {
+  days_before_release: number; // e.g. 7 for T-7, 0 for T-0
+  t_label: string; // "T-7", "T-6", ... "T-0"
+  calendar_date: string; // "YYYY-MM-DD"
+  cumulative_tickets: number;
+  cumulative_revenue: number;
+  sessions_count: number;
+  cinemas_count: number;
+  total_capacity: number;
+  occupancy_rate: number;
+  dod_tickets_growth: number;
+  dod_tickets_growth_pct: number | null;
+  dod_revenue_growth: number;
+  dod_revenue_growth_pct: number | null;
+}
+
+export interface PresaleCinemaSummary {
+  cinema_id: number;
+  cinema_name: string;
+  cinema_city: string;
+  sessions_count: number;
+  sellable_capacity: number;
+  unavailable_seats: number;
+  occupancy_proxy: number;
+  estimated_revenue: number;
+}
+
+export interface MoviePresaleCurveResponse {
+  movie: {
+    id: number;
+    title: string;
+    poster_url: string;
+    release_date: string;
+    opening_operational_date: string;
+    tracking_enabled: boolean;
+  };
+  opening_day: {
+    operational_date: string;
+    is_release_date_match: boolean;
+    total_opening_sessions: number;
+    total_opening_cinemas: number;
+    total_opening_capacity: number;
+  } | null;
+  has_presale_data: boolean;
+  min_t_days: number;
+  max_t_days: number;
+  tracking_start_bucket?: string;
+  buckets: PresaleBucket[];
+  cinemas_breakdown: PresaleCinemaSummary[];
+}
+
 

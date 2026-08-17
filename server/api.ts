@@ -5,6 +5,7 @@ import {
   getWeekendBoxOffice, 
   getWeeklyBoxOffice 
 } from "./boxoffice";
+import { getMoviePresaleCurve } from "./presale";
 import { query } from "./db";
 import { scheduler } from "./scheduler";
 import { executeCollectionRun, getActiveProgress, prepareCollectionRun, executeCollectionRunFromPrepared } from "./collector";
@@ -1927,6 +1928,26 @@ apiRouter.get("/movies/:id/daily-breakdown", async (req, res) => {
     res.json(data);
   } catch (err: any) {
     console.error(`Error fetching daily breakdown for movie ${req.params.id}:`, err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/movies/:id/presale-curve - Returns opening day cumulative presale curve (T-14, ... T-0)
+apiRouter.get("/movies/:id/presale-curve", async (req, res) => {
+  try {
+    const movieId = parseInt(req.params.id, 10);
+    if (isNaN(movieId)) {
+      return res.status(400).json({ error: "Invalid movie ID" });
+    }
+
+    const data = await getMoviePresaleCurve(movieId);
+    if (!data) {
+      return res.status(404).json({ error: "Movie not found" });
+    }
+
+    res.json(data);
+  } catch (err: any) {
+    console.error(`Error fetching presale curve for movie ${req.params.id}:`, err);
     res.status(500).json({ error: err.message });
   }
 });
