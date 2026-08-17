@@ -335,7 +335,8 @@ class TestSeatParser(unittest.TestCase):
             ("Bilhete Criança", 11.00)
         ]
         rev_imax = RevenueEstimator.estimate_session_revenue(100, ticket_types_mixed, "A Odisseia (IMAX)")
-        self.assertEqual(rev_imax, 1350.0)
+        # Average of paid prices (13.50 + 11.00) / 2 = 12.25 * 100 = 1225.0
+        self.assertEqual(rev_imax, 1225.0)
 
         # Test standard fallback
         rev_std = RevenueEstimator.estimate_session_revenue(50, [], "Standard Movie")

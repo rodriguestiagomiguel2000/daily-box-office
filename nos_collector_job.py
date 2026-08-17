@@ -337,21 +337,50 @@ def collect_data(
                     prices_list = []
                     for item in snap.ticket_types:
                         if isinstance(item, dict):
+                            # Explicit validation: require raw_price to avoid double-normalization
+                            if "raw_price" not in item or item.get("raw_price") is None:
+                                log.warning(
+                                    f"Ticket type entry missing required 'raw_price' (skipping item): {item}"
+                                )
+                                continue
+
+                            try:
+                                raw_price_val = float(item["raw_price"])
+                            except (ValueError, TypeError):
+                                log.warning(
+                                    f"Malformed 'raw_price' value in ticket type entry (skipping item): {item}"
+                                )
+                                continue
+
+                            seats_count_val = max(1, int(item.get("seats_count", 1)))
+                            price_val = float(item.get("price", round(raw_price_val / seats_count_val, 2)))
+
                             prices_list.append({
-                                "ticket_type": item.get("ticket_type", "Bilhete"),
-                                "price": float(item.get("price", 0)),
-                                "raw_price": float(item.get("raw_price", item.get("price", 0))),
-                                "seats_count": int(item.get("seats_count", 1)),
+                                "ticket_type": str(item.get("ticket_type", "Bilhete")),
+                                "price": price_val,
+                                "raw_price": raw_price_val,
+                                "seats_count": seats_count_val,
                                 "is_default": bool(item.get("is_default", False))
                             })
                         elif isinstance(item, (list, tuple)) and len(item) >= 2:
-                            prices_list.append({
-                                "ticket_type": item[0],
-                                "price": float(item[1]),
-                                "raw_price": float(item[1]),
-                                "seats_count": 1,
-                                "is_default": False
-                            })
+                            # Note: Legacy / test fixture tuple representation (ticket_type, price).
+                            # item[1] is assumed to be a PER-SEAT price (matching the ticket_types type hint
+                            # in nos_collector_models.py). seats_count=1 and raw_price=price are intentional
+                            # for this path.
+                            try:
+                                price_val = float(item[1])
+                                prices_list.append({
+                                    "ticket_type": str(item[0]),
+                                    "price": price_val,
+                                    "raw_price": price_val,
+                                    "seats_count": 1,
+                                    "is_default": False
+                                })
+                            except (ValueError, TypeError):
+                                log.warning(f"Malformed price value in tuple ticket item (skipping item): {item}")
+                                continue
+                        else:
+                            log.warning(f"Unrecognized ticket type item format (skipping item): {item}")
 
                     snapshot_data = {
                         "collected_at": snap.collected_at.isoformat() + "Z",

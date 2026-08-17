@@ -5,7 +5,7 @@ filtering out 0.0 EUR voucher placeholders and accounting for special formats (I
 """
 
 import logging
-from typing import List, Optional, Tuple
+from typing import Any, List, Optional, Tuple
 
 log = logging.getLogger("nos_revenue")
 
