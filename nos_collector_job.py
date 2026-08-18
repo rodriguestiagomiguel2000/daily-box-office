@@ -124,7 +124,8 @@ def collect_data(
     run_id: Optional[str] = None,
     movie_external_ids: Optional[List[str]] = None,
     limit_sessions_per_movie: Optional[int] = None,
-    lookback_minutes: int = 30
+    lookback_minutes: int = 30,
+    known_ticket_sessions: Optional[Set[str]] = None
 ) -> Dict[str, Any]:
     scraper = NOSScraper()
     run = CollectionRun()
@@ -165,6 +166,7 @@ def collect_data(
 
     collected_sessions: List[Dict[str, Any]] = []
     seen_session_uuids_in_run: Set[str] = set()
+    sessions_with_ticket_prices: Set[str] = set(known_ticket_sessions or [])
 
     # Cutoff time for historical session filtering (REQUIREMENT 2 & 7)
     cutoff_utc = start_time_dt - timedelta(minutes=lookback_minutes)
@@ -297,7 +299,14 @@ def collect_data(
                         raise TimeoutError("Terminated due to timeout")
 
                     cand_uuid = candidate["s_uuid"]
-                    snap = scraper.process_session(cand_uuid)
+                    with progress_lock:
+                        should_fetch_tickets = cand_uuid not in sessions_with_ticket_prices
+
+                    snap = scraper.process_session(cand_uuid, fetch_ticket_types=should_fetch_tickets)
+
+                    if should_fetch_tickets and snap.ticket_types:
+                        with progress_lock:
+                            sessions_with_ticket_prices.add(cand_uuid)
 
                     room_meta = {
                         "external_id": snap.theater_room_uuid or f"room-{snap.room_name}",
@@ -530,6 +539,7 @@ def main():
     parser.add_argument("--limit-sessions", type=int, default=None, help="Limit sessions per movie (for fast testing)")
     parser.add_argument("--lookback-minutes", type=int, default=30, help="Grace window lookback in minutes for historical sessions")
     parser.add_argument("--browse-all-movies", action="store_true", help="Fetch and return full catalog of current movies")
+    parser.add_argument("--known-ticket-sessions-file", type=str, default=None, help="Path to JSON file containing session UUIDs that already have ticket prices")
 
     args = parser.parse_args()
 
@@ -552,12 +562,23 @@ def main():
     run_id = args.run_id
     movie_ids = args.movie_ids
 
+    known_ticket_sessions: Set[str] = set()
+    if args.known_ticket_sessions_file and os.path.exists(args.known_ticket_sessions_file):
+        try:
+            with open(args.known_ticket_sessions_file, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+                if isinstance(loaded, list):
+                    known_ticket_sessions = set(str(x) for x in loaded if x)
+        except Exception as e:
+            log.warning(f"Could not load known ticket sessions from file {args.known_ticket_sessions_file}: {e}")
+
     try:
         result = collect_data(
             run_id=run_id,
             movie_external_ids=movie_ids,
             limit_sessions_per_movie=args.limit_sessions,
-            lookback_minutes=args.lookback_minutes
+            lookback_minutes=args.lookback_minutes,
+            known_ticket_sessions=known_ticket_sessions
         )
     except Exception as scrape_error:
         print(f"Scraper execution failed with unexpected error: {str(scrape_error)}", file=sys.stderr, flush=True)

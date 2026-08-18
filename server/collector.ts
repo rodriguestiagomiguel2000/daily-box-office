@@ -1,4 +1,7 @@
 import { spawn } from "child_process";
+import fs from "fs";
+import os from "os";
+import path from "path";
 import readline from "readline";
 import { pool, query } from "./db";
 
@@ -215,6 +218,7 @@ export async function executeCollectionRunFromPrepared(
   options: CollectorJobOptions = {}
 ): Promise<CollectorJobResult> {
   const { runId, collectionRunDbId, targetIds, startedAtIso, startTime } = prepared;
+  let knownSessionsFile: string | null = null;
 
   try {
     // 2. Build Python process CLI arguments
@@ -226,6 +230,25 @@ export async function executeCollectionRunFromPrepared(
       args.push("--limit-sessions", String(options.limitSessionsPerMovie));
     }
     args.push("--lookback-minutes", String(options.lookbackMinutes || 30));
+
+    // Pre-fetch sessions that already have ticket prices to avoid redundant NOS API calls
+    try {
+      const knownSessionsRes = await query<{ external_session_id: string }>(
+        `SELECT DISTINCT s.external_session_id 
+         FROM sessions s 
+         JOIN session_ticket_prices stp ON stp.session_id = s.id 
+         WHERE s.external_session_id IS NOT NULL;`
+      );
+      const knownUuids = knownSessionsRes.rows.map((r) => r.external_session_id).filter(Boolean);
+      if (knownUuids.length > 0) {
+        const tmpPath = path.join(os.tmpdir(), `known_ticket_sessions_${runId}.json`);
+        await fs.promises.writeFile(tmpPath, JSON.stringify(knownUuids));
+        knownSessionsFile = tmpPath;
+        args.push("--known-ticket-sessions-file", tmpPath);
+      }
+    } catch (knownErr) {
+      console.warn("Could not pre-fetch known ticket sessions from DB:", knownErr);
+    }
 
     // 3. Spawn Python process and parse line-by-line streaming JSON progress/sessions with 10-minute timeout protection
     let finalPayload: any = null;
@@ -357,6 +380,10 @@ export async function executeCollectionRunFromPrepared(
       console.error("Failed to mark collection_run as FAILED in database:", dbErr);
     }
     throw err;
+  } finally {
+    if (knownSessionsFile) {
+      fs.promises.unlink(knownSessionsFile).catch(() => {});
+    }
   }
 }
 
@@ -606,19 +633,51 @@ export async function persistSingleSession(
       );
     }
 
-    // 9. Insert ticket prices
+    // 9. Insert ticket prices (Only once per session, or if price changes occur)
     const prices = snap.ticket_prices || [];
-    for (const tp of prices) {
-      const seatsCount = Math.max(1, Number(tp.seats_count || 1));
-      const rawPrice = Number(tp.raw_price !== undefined ? tp.raw_price : tp.price);
-      const normalizedPrice = Number((rawPrice / seatsCount).toFixed(2));
-      const isDefault = Boolean(tp.is_default);
-
-      await client.query(
-        `INSERT INTO session_ticket_prices (session_id, collected_at, ticket_type, price, seats_count, raw_price, is_default, source)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8);`,
-        [sessionId, snap.collected_at, tp.ticket_type, normalizedPrice, seatsCount, rawPrice, isDefault, "NOS"]
+    if (prices.length > 0) {
+      const existingPricesRes = await client.query<{ ticket_type: string; raw_price: string; seats_count: number }>(
+        `SELECT ticket_type, raw_price, seats_count FROM session_ticket_prices WHERE session_id = $1;`,
+        [sessionId]
       );
+
+      let needsInsert = false;
+      if (existingPricesRes.rows.length === 0) {
+        needsInsert = true;
+      } else {
+        const existingMap = new Map<string, { raw_price: number; seats_count: number }>();
+        for (const row of existingPricesRes.rows) {
+          existingMap.set(row.ticket_type, {
+            raw_price: Number(row.raw_price),
+            seats_count: Number(row.seats_count || 1),
+          });
+        }
+
+        for (const tp of prices) {
+          const existing = existingMap.get(tp.ticket_type);
+          const incomingRaw = Number(tp.raw_price !== undefined ? tp.raw_price : tp.price);
+          const incomingSeats = Math.max(1, Number(tp.seats_count || 1));
+          if (!existing || existing.raw_price !== incomingRaw || existing.seats_count !== incomingSeats) {
+            needsInsert = true;
+            break;
+          }
+        }
+      }
+
+      if (needsInsert) {
+        for (const tp of prices) {
+          const seatsCount = Math.max(1, Number(tp.seats_count || 1));
+          const rawPrice = Number(tp.raw_price !== undefined ? tp.raw_price : tp.price);
+          const normalizedPrice = Number((rawPrice / seatsCount).toFixed(2));
+          const isDefault = Boolean(tp.is_default);
+
+          await client.query(
+            `INSERT INTO session_ticket_prices (session_id, collected_at, ticket_type, price, seats_count, raw_price, is_default, source)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8);`,
+            [sessionId, snap.collected_at, tp.ticket_type, normalizedPrice, seatsCount, rawPrice, isDefault, "NOS"]
+          );
+        }
+      }
     }
 
     await client.query("COMMIT");

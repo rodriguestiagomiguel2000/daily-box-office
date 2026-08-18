@@ -477,7 +477,8 @@ class NOSScraper:
     def process_session(
         self,
         session_uuid: str,
-        theater_room_uuid: Optional[str] = None
+        theater_room_uuid: Optional[str] = None,
+        fetch_ticket_types: bool = True
     ) -> SeatSnapshot:
         """
         Executes end-to-end collection for a single session:
@@ -485,7 +486,7 @@ class NOSScraper:
         2. DT03: Create booking context
         3. SeatsGet: Retrieve live seat grid
         4. Parse and validate seat classification invariant
-        5. DT04: Retrieve ticket prices
+        5. DT04: Retrieve ticket prices (optional, skipped if already known)
         6. Return immutable SeatSnapshot
         """
         config = self.get_session_config(session_uuid)
@@ -519,10 +520,11 @@ class NOSScraper:
         )
 
         ticket_types = []
-        try:
-            ticket_types = self.get_ticket_types(session_uuid)
-        except Exception as e:
-            log.warning(f"Could not fetch ticket types for session {session_uuid}: {e}")
+        if fetch_ticket_types:
+            try:
+                ticket_types = self.get_ticket_types(session_uuid)
+            except Exception as e:
+                log.warning(f"Could not fetch ticket types for session {session_uuid}: {e}")
 
         occupancy_proxy = calculate_occupancy_proxy(
             unavailable_seats=parsed_seats.unavailable_seats,
