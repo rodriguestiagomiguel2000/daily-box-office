@@ -55,3 +55,81 @@ export const formatToPortugal = (date: Date): string => {
     return date.toLocaleTimeString([], { timeZone: "Europe/Lisbon" });
   }
 };
+
+/**
+ * Extracts accurate Lisbon timezone date/time parts and calculates the
+ * Theatrical Operational Date (06:00 -> 05:59 Lisbon cutoff).
+ */
+export interface LisbonTimeInfo {
+  year: number;
+  month: number;
+  day: number;
+  hour: number;
+  minute: number;
+  second: number;
+  formattedTime: string; // "HH:mm"
+  calendarDate: string;  // "YYYY-MM-DD"
+  operationalDate: string; // "YYYY-MM-DD"
+}
+
+export const getLisbonTimeParts = (date: Date = new Date()): LisbonTimeInfo => {
+  const formatter = new Intl.DateTimeFormat("en-US", {
+    timeZone: "Europe/Lisbon",
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+    hour12: false,
+  });
+
+  const parts = formatter.formatToParts(date);
+  const partMap: Record<string, string> = {};
+  for (const p of parts) {
+    if (p.type !== "literal") {
+      partMap[p.type] = p.value;
+    }
+  }
+
+  let hour = parseInt(partMap.hour, 10);
+  if (hour === 24) hour = 0;
+  const minute = parseInt(partMap.minute, 10);
+  const second = parseInt(partMap.second, 10);
+  const year = parseInt(partMap.year, 10);
+  const month = parseInt(partMap.month, 10);
+  const day = parseInt(partMap.day, 10);
+
+  const formattedTime = `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+  const calendarDate = `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+
+  // Theatrical Operational Day:
+  // Theatrical day runs from 06:00:00 to 05:59:59 Lisbon time.
+  // If Lisbon local hour is < 6 (i.e. 00:00 - 05:59), the operational date belongs to the previous calendar day.
+  let operationalDate = calendarDate;
+  if (hour < 6) {
+    const prevDay = new Date(Date.UTC(year, month - 1, day - 1));
+    operationalDate = prevDay.toISOString().split("T")[0];
+  }
+
+  return {
+    year,
+    month,
+    day,
+    hour,
+    minute,
+    second,
+    formattedTime,
+    calendarDate,
+    operationalDate,
+  };
+};
+
+export const getCurrentLisbonTime = (date: Date = new Date()): string => {
+  return getLisbonTimeParts(date).formattedTime;
+};
+
+export const getCurrentTheatricalOperationalDate = (date: Date = new Date()): string => {
+  return getLisbonTimeParts(date).operationalDate;
+};
+

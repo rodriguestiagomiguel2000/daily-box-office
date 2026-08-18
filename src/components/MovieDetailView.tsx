@@ -36,17 +36,25 @@ import {
   Tooltip,
   CartesianGrid,
   Legend,
+  ComposedChart,
+  Area,
 } from "recharts";
 import {
   MovieDetailResponse,
   IntradayComparisonResponse,
   IntradayCurvesResponse,
   IntradaySnapshot,
+  MovieForecastResponse,
 } from "../types";
+import {
+  getLisbonTimeParts,
+  getCurrentTheatricalOperationalDate,
+} from "../utils/scheduling";
 import { SessionDetailModal } from "./SessionDetailModal";
 import { MovieDailyBreakdownView } from "./MovieDailyBreakdownView";
 import { MoviePresaleCurveView } from "./MoviePresaleCurveView";
 import { HourlyBreakdownView } from "./HourlyBreakdownView";
+import { IntradayForecastCard } from "./IntradayForecastCard";
 
 interface MovieDetailViewProps {
   data: MovieDetailResponse;
@@ -92,20 +100,22 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
   
   // Theatrical Operational Date calculation (6:00 AM Lisbon cutoff)
   const getLisbonOperationalDate = () => {
-    const shifted = new Date(Date.now() - 6 * 60 * 60 * 1000);
-    return shifted.toLocaleDateString("en-CA", { timeZone: "Europe/Lisbon" });
+    return getCurrentTheatricalOperationalDate();
   };
   const todayDefaultStr = getLisbonOperationalDate();
   const [historyDates, setHistoryDates] = useState<string[]>([]);
   const [selectedDate, setSelectedDate] = useState<string>(todayDefaultStr);
   const [datesLoaded, setDatesLoaded] = useState<boolean>(false);
   const [targetTime, setTargetTime] = useState<string>("05:59");
+  const [isNowActive, setIsNowActive] = useState<boolean>(false);
   const [comparisonData, setComparisonData] = useState<IntradayComparisonResponse | null>(null);
   const [curvesData, setCurvesData] = useState<IntradayCurvesResponse | null>(null);
+  const [forecastData, setForecastData] = useState<MovieForecastResponse | null>(null);
   const [progressionData, setProgressionData] = useState<IntradaySnapshot[]>([]);
   const [curveMetric, setCurveMetric] = useState<"revenue" | "admissions" | "occupancy" | "velocity" | "shows">("revenue");
   const [isLoadingComparison, setIsLoadingComparison] = useState<boolean>(false);
   const [isLoadingCurves, setIsLoadingCurves] = useState<boolean>(false);
+  const [isLoadingForecast, setIsLoadingForecast] = useState<boolean>(false);
   const [isManualRefreshing, setIsManualRefreshing] = useState<boolean>(false);
 
   // Guard refs to prevent out-of-order async response race conditions
@@ -113,6 +123,8 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
   const comparisonAbortControllerRef = useRef<AbortController | null>(null);
   const curvesRequestIdRef = useRef<number>(0);
   const curvesAbortControllerRef = useRef<AbortController | null>(null);
+  const forecastRequestIdRef = useRef<number>(0);
+  const forecastAbortControllerRef = useRef<AbortController | null>(null);
 
   // Session table filtering & sorting
   const [sessionSearch, setSessionSearch] = useState("");
@@ -123,11 +135,35 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
   const [sortBy, setSortBy] = useState<"occupancy" | "time" | "unavailable">("occupancy");
   const [selectedSessionId, setSelectedSessionId] = useState<number | null>(null);
 
+  // NOW button handler: captures current Lisbon time & theatrical operational date
+  const handleNowClick = () => {
+    const { formattedTime, operationalDate } = getLisbonTimeParts();
+    setTargetTime(formattedTime);
+    setSelectedDate(operationalDate);
+    setIsNowActive(true);
+  };
+
+  // Manual time input or preset button change
+  const handleTimeChange = (newTime: string) => {
+    setTargetTime(newTime);
+    setIsNowActive(false);
+  };
+
+  // Date selector change
+  const handleDateChange = (newDate: string) => {
+    setSelectedDate(newDate);
+    const currentOpDate = getCurrentTheatricalOperationalDate();
+    if (newDate !== currentOpDate) {
+      setIsNowActive(false);
+    }
+  };
+
   // Cleanup abort controllers on unmount
   useEffect(() => {
     return () => {
       comparisonAbortControllerRef.current?.abort();
       curvesAbortControllerRef.current?.abort();
+      forecastAbortControllerRef.current?.abort();
     };
   }, []);
 
@@ -250,6 +286,47 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
     fetchCurvesAndProgression();
   }, [fetchCurvesAndProgression]);
 
+  // Fetch intraday forecast with race condition protection
+  const fetchForecast = useCallback(async () => {
+    if (!datesLoaded) return;
+
+    // Abort previous in-flight request
+    if (forecastAbortControllerRef.current) {
+      forecastAbortControllerRef.current.abort();
+    }
+    const controller = new AbortController();
+    forecastAbortControllerRef.current = controller;
+
+    const currentRequestId = ++forecastRequestIdRef.current;
+    setIsLoadingForecast(true);
+    try {
+      const dateParam = selectedDate || todayDefaultStr;
+      const timeParam = targetTime || "13:00";
+      const res = await fetch(
+        `/api/movies/${movie.id}/intraday-forecast?date=${dateParam}&time=${timeParam}`,
+        { signal: controller.signal }
+      );
+      if (res.ok) {
+        const json = await res.json();
+        if (currentRequestId === forecastRequestIdRef.current) {
+          setForecastData(json);
+        }
+      }
+    } catch (err: any) {
+      if (err?.name !== "AbortError") {
+        console.error("Error fetching intraday forecast:", err);
+      }
+    } finally {
+      if (currentRequestId === forecastRequestIdRef.current) {
+        setIsLoadingForecast(false);
+      }
+    }
+  }, [movie.id, selectedDate, targetTime, todayDefaultStr, datesLoaded]);
+
+  useEffect(() => {
+    fetchForecast();
+  }, [fetchForecast]);
+
   // Manual refresh handler triggered only by explicit button click
   const handleManualRefresh = async () => {
     setIsManualRefreshing(true);
@@ -258,11 +335,36 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
         onRefresh(),
         fetchComparison(),
         fetchCurvesAndProgression(),
+        fetchForecast(),
       ]);
     } finally {
       setIsManualRefreshing(false);
     }
   };
+
+  // Merge intraday curves with forecast points for unified chart rendering
+  const mergedCurveData = React.useMemo(() => {
+    if (!curvesData?.curve) return [];
+    
+    // Map forecast points by time string
+    const forecastMap = new Map<string, any>();
+    if (forecastData?.curve) {
+      for (const pt of forecastData.curve) {
+        forecastMap.set(pt.time, pt);
+      }
+    }
+
+    return curvesData.curve.map((item) => {
+      const fc = forecastMap.get(item.time);
+      return {
+        ...item,
+        today_revenue_actual: fc ? fc.today_revenue : item.today_revenue,
+        forecast_revenue: fc ? fc.forecast_revenue : null,
+        forecast_low: fc ? fc.forecast_low : null,
+        forecast_high: fc ? fc.forecast_high : null,
+      };
+    });
+  }, [curvesData, forecastData]);
 
   // Filter & Sort Sessions
   const filteredSessions = sessions
@@ -307,12 +409,12 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
         />
       )}
 
-      {/* Prediction Notice Banner */}
-      <div className="bg-amber-500/10 border border-amber-500/20 rounded-xl p-3.5 flex items-start sm:items-center gap-3 text-amber-300 text-xs">
+      {/* Operational Notice Banner */}
+      <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3.5 flex items-start sm:items-center gap-3 text-slate-300 text-xs">
         <Info className="w-4 h-4 text-amber-400 shrink-0 mt-0.5 sm:mt-0" />
         <div>
-          <span className="font-semibold text-amber-200">Historical & Intraday Foundation for Future Forecasting: </span>
-          All completed sessions are permanently preserved in historical time-series observations. The actual ML forecasting model is not active yet, but complete intraday metrics (revenue, showcounts, velocity, capacity) are ready for future model training.
+          <span className="font-semibold text-amber-200">Theatrical Day Pipeline & Deterministic EOD Forecast: </span>
+          Theatrical day operates on 06:00 → 05:59 Lisbon time. Forecast models dynamically synthesize historical comparable trajectories (same weekday -7d, -1d, run-average) adjusted for live sales momentum and remaining scheduled session capacity.
         </div>
       </div>
 
@@ -560,7 +662,7 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
                 <select
                   id="intraday-date-select"
                   value={selectedDate}
-                  onChange={(e) => setSelectedDate(e.target.value)}
+                  onChange={(e) => handleDateChange(e.target.value)}
                   className="bg-slate-800 border border-slate-700 text-slate-100 text-xs rounded-xl px-3 py-2 font-medium focus:ring-1 focus:ring-amber-500 outline-none cursor-pointer"
                 >
                   {historyDates.length === 0 ? (
@@ -576,17 +678,46 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
               </div>
 
               <div>
-                <label className="block text-[11px] text-slate-400 uppercase tracking-wider mb-1 font-semibold">
-                  Intraday Comparison Time
-                </label>
-                <div className="flex items-center gap-2">
+                <div className="flex items-center justify-between mb-1">
+                  <label className="block text-[11px] text-slate-400 uppercase tracking-wider font-semibold">
+                    Intraday Comparison Time
+                  </label>
+                  {isNowActive && (
+                    <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                      <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                      LIVE LISBON TIME
+                    </span>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 flex-wrap">
                   <input
                     id="intraday-time-input"
                     type="time"
                     value={targetTime}
-                    onChange={(e) => setTargetTime(e.target.value)}
-                    className="bg-slate-800 border border-slate-700 text-slate-100 text-xs rounded-xl px-3 py-2 font-mono focus:ring-1 focus:ring-amber-500 outline-none"
+                    onChange={(e) => handleTimeChange(e.target.value)}
+                    className={`bg-slate-800 border text-xs rounded-xl px-3 py-2 font-mono outline-none transition ${
+                      isNowActive
+                        ? "border-amber-500 text-amber-300 ring-1 ring-amber-500/50"
+                        : "border-slate-700 text-slate-100 focus:ring-1 focus:ring-amber-500"
+                    }`}
                   />
+
+                  {/* NOW Button */}
+                  <button
+                    id="btn-now-time"
+                    type="button"
+                    onClick={handleNowClick}
+                    title="Instantly set comparison to exact current Lisbon time and theatrical date"
+                    className={`px-3 py-2 rounded-xl text-xs font-bold transition flex items-center gap-1.5 cursor-pointer shadow-sm ${
+                      isNowActive
+                        ? "bg-amber-500 text-slate-950 shadow-amber-500/20 font-black"
+                        : "bg-amber-500/15 hover:bg-amber-500/25 text-amber-400 border border-amber-500/30 hover:border-amber-500/50"
+                    }`}
+                  >
+                    <span className={`w-2 h-2 rounded-full ${isNowActive ? "bg-slate-950 animate-pulse" : "bg-amber-400"}`} />
+                    <span>NOW</span>
+                  </button>
+
                   <div className="flex items-center gap-1 flex-wrap">
                     {[
                       { t: "10:00", label: "10:00" },
@@ -598,11 +729,13 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
                     ].map(({ t, label }) => (
                       <button
                         key={t}
-                        onClick={() => setTargetTime(t)}
-                        className={`px-2 py-1 rounded-lg text-[11px] font-mono transition ${
-                          targetTime === t
-                            ? "bg-amber-500/20 text-amber-300 border border-amber-500/40"
-                            : "bg-slate-800/80 text-slate-400 hover:text-slate-200"
+                        id={`btn-preset-${t.replace(":", "")}`}
+                        type="button"
+                        onClick={() => handleTimeChange(t)}
+                        className={`px-2 py-1.5 rounded-lg text-[11px] font-mono transition cursor-pointer ${
+                          !isNowActive && targetTime === t
+                            ? "bg-amber-500/20 text-amber-300 border border-amber-500/40 font-semibold"
+                            : "bg-slate-800/80 text-slate-400 hover:text-slate-200 border border-transparent"
                         }`}
                       >
                         {label}
@@ -614,8 +747,18 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
             </div>
 
             <div className="text-right text-xs text-slate-400 space-y-0.5">
-              <div>
-                Comparing <span className="font-semibold text-amber-300">{selectedDate} @ {targetTime}</span> vs Previous Day & Previous Week
+              <div className="flex items-center justify-end gap-1.5 flex-wrap">
+                <span>Comparing</span>
+                <span className="font-semibold text-amber-300">
+                  {selectedDate} @ {targetTime}
+                </span>
+                {isNowActive && (
+                  <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                    <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
+                    LIVE NOW
+                  </span>
+                )}
+                <span>vs Previous Day & Previous Week</span>
               </div>
               <div className="text-[11px] text-slate-500">
                 Theatrical Day Cutoff: <span className="text-slate-400">06:00 AM Lisbon</span> (showtimes 00:00–05:59 count towards previous operational date)
@@ -632,12 +775,26 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
                   Target Date
                 </div>
 
-                <div className="flex items-center gap-2 text-amber-400 font-bold text-sm mb-1">
-                  <Calendar className="w-4 h-4" />
-                  <span>{comparisonData.today.date}</span>
-                  <span className="text-slate-400 text-xs font-normal">@ {comparisonData.today.time}</span>
+                <div className="flex items-center justify-between text-amber-400 font-bold text-sm mb-1">
+                  <div className="flex items-center gap-2">
+                    <Calendar className="w-4 h-4" />
+                    <span>{comparisonData.today.date}</span>
+                    <span className="text-slate-400 text-xs font-normal">@ {targetTime}</span>
+                    {isNowActive && (
+                      <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                        NOW
+                      </span>
+                    )}
+                  </div>
                 </div>
-                <div className="text-xs text-slate-400 mb-4">Intraday state at requested time</div>
+                <div className="flex items-center justify-between text-xs text-slate-400 mb-4">
+                  <span>Intraday state up to {targetTime}</span>
+                  {comparisonData.today.time && comparisonData.today.time !== targetTime && (
+                    <span className="text-[11px] text-slate-400 bg-slate-800/80 px-2 py-0.5 rounded border border-slate-700 font-mono" title="Latest available collector sweep before requested cutoff">
+                      Latest sweep: <span className="text-amber-300 font-semibold">{comparisonData.today.time}</span>
+                    </span>
+                  )}
+                </div>
 
                 <div className="space-y-4">
                   <div>
@@ -717,10 +874,17 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
                     <Calendar className="w-4 h-4" />
                     <span>Yesterday</span>
                     <span className="text-slate-400 text-xs font-normal">({comparisonData.yesterday.date})</span>
+                    <span className="text-slate-400 text-xs font-normal">@ {targetTime}</span>
                   </div>
-                  <span className="text-[10px] text-slate-500 font-mono">@ {comparisonData.yesterday.time}</span>
                 </div>
-                <div className="text-xs text-slate-400 mb-4">Previous calendar day at {targetTime}</div>
+                <div className="flex items-center justify-between text-xs text-slate-400 mb-4">
+                  <span>Previous day up to {targetTime}</span>
+                  {comparisonData.yesterday.time && comparisonData.yesterday.time !== targetTime && (
+                    <span className="text-[11px] text-slate-400 bg-slate-800/80 px-2 py-0.5 rounded border border-slate-700 font-mono" title="Latest available collector sweep before requested cutoff">
+                      Latest sweep: <span className="text-cyan-300 font-semibold">{comparisonData.yesterday.time}</span>
+                    </span>
+                  )}
+                </div>
 
                 <div className="space-y-4">
                   <div>
@@ -811,10 +975,18 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
                   <div className="flex items-center gap-2 text-purple-400 font-bold text-sm">
                     <Calendar className="w-4 h-4" />
                     <span>Same Weekday Last Week</span>
+                    <span className="text-slate-400 text-xs font-normal">({comparisonData.last_week.date})</span>
+                    <span className="text-slate-400 text-xs font-normal">@ {targetTime}</span>
                   </div>
-                  <span className="text-[10px] text-slate-500 font-mono">@ {comparisonData.last_week.time}</span>
                 </div>
-                <div className="text-xs text-slate-400 mb-4">Same day of week (-7 days) at {targetTime}</div>
+                <div className="flex items-center justify-between text-xs text-slate-400 mb-4">
+                  <span>Same day of week (-7d) up to {targetTime}</span>
+                  {comparisonData.last_week.time && comparisonData.last_week.time !== targetTime && (
+                    <span className="text-[11px] text-slate-400 bg-slate-800/80 px-2 py-0.5 rounded border border-slate-700 font-mono" title="Latest available collector sweep before requested cutoff">
+                      Latest sweep: <span className="text-purple-300 font-semibold">{comparisonData.last_week.time}</span>
+                    </span>
+                  )}
+                </div>
 
                 <div className="space-y-4">
                   <div>
@@ -901,6 +1073,15 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
             </div>
           )}
 
+          {/* Intraday End-of-Day Revenue Forecast Summary Card */}
+          <IntradayForecastCard
+            forecastData={forecastData}
+            isLoading={isLoadingForecast}
+            selectedDate={selectedDate}
+            targetTime={targetTime}
+            isNowActive={isNowActive}
+          />
+
           {/* Intraday Cumulative Time-Series Curves Chart */}
           {curvesData && curvesData.curve && (
             <div id="chart-intraday-curves" className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-xl">
@@ -911,9 +1092,16 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
                     <span className="text-xs px-2.5 py-0.5 rounded-full bg-amber-500/10 text-amber-300 border border-amber-500/30">
                       Hourly Time-Series
                     </span>
+                    {curveMetric === "revenue" && !forecastData?.is_day_complete && forecastData?.forecast && (
+                      <span className="text-xs px-2 py-0.5 rounded-full bg-amber-500/20 text-amber-200 border border-amber-500/40 font-mono font-bold">
+                        EOD Forecast Active
+                      </span>
+                    )}
                   </h3>
                   <p className="text-xs text-slate-400 mt-0.5">
-                    Cumulative trajectory for {selectedDate} (Gold) vs Yesterday ({curvesData.yesterday_date}, Cyan) vs Same Weekday Last Week ({curvesData.last_week_date}, Purple)
+                    {curveMetric === "revenue" && !forecastData?.is_day_complete
+                      ? `Actual tracked revenue (Solid Gold) & Projected EOD trajectory (Dashed Gold) for ${selectedDate} vs Yesterday (${curvesData.yesterday_date}, Cyan) vs Last Week (${curvesData.last_week_date}, Purple)`
+                      : `Cumulative trajectory for ${selectedDate} (Gold) vs Yesterday (${curvesData.yesterday_date}, Cyan) vs Same Weekday Last Week (${curvesData.last_week_date}, Purple)`}
                   </p>
                 </div>
 
@@ -965,7 +1153,16 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
               {/* Chart */}
               <div className="h-80">
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={curvesData.curve} margin={{ top: 10, right: 30, left: 10, bottom: 0 }}>
+                  <ComposedChart
+                    data={mergedCurveData.length > 0 ? mergedCurveData : curvesData.curve}
+                    margin={{ top: 10, right: 30, left: 10, bottom: 0 }}
+                  >
+                    <defs>
+                      <linearGradient id="forecastAreaGrad" x1="0" y1="0" x2="0" y2="1">
+                        <stop offset="5%" stopColor="#f59e0b" stopOpacity={0.18} />
+                        <stop offset="95%" stopColor="#f59e0b" stopOpacity={0.02} />
+                      </linearGradient>
+                    </defs>
                     <CartesianGrid strokeDasharray="3 3" stroke="#334155" opacity={0.6} />
                     <XAxis dataKey="time" stroke="#94a3b8" fontSize={12} />
                     <YAxis
@@ -980,35 +1177,90 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
                       }
                     />
                     <Tooltip
-                      contentStyle={{ backgroundColor: "#0f172a", borderColor: "#334155", borderRadius: "12px", color: "#f8fafc" }}
-                      formatter={(value: any) =>
-                        curveMetric === "revenue"
-                          ? `€${Number(value).toLocaleString()}`
-                          : curveMetric === "occupancy"
-                          ? `${value}%`
-                          : value
-                      }
+                      contentStyle={{
+                        backgroundColor: "#0f172a",
+                        borderColor: "#334155",
+                        borderRadius: "12px",
+                        color: "#f8fafc",
+                      }}
+                      formatter={(value: any, name: any) => {
+                        if (value === null || value === undefined) return ["—", name];
+                        if (curveMetric === "revenue") {
+                          return [`€${Number(value).toLocaleString()}`, name];
+                        }
+                        if (curveMetric === "occupancy") {
+                          return [`${value}%`, name];
+                        }
+                        return [value, name];
+                      }}
                     />
                     <Legend wrapperStyle={{ paddingTop: "15px" }} />
 
-                    <Line
-                      type="monotone"
-                      dataKey={
-                        curveMetric === "revenue"
-                          ? "today_revenue"
-                          : curveMetric === "admissions"
-                          ? "today_admissions"
-                          : curveMetric === "occupancy"
-                          ? "today_occupancy"
-                          : "today_velocity"
-                      }
-                      name={`Target (${selectedDate})`}
-                      stroke="#f59e0b"
-                      strokeWidth={3.5}
-                      dot={{ r: 3, fill: "#f59e0b" }}
-                      activeDot={{ r: 6 }}
-                    />
+                    {/* Shaded Forecast Uncertainty Range Area */}
+                    {curveMetric === "revenue" && !forecastData?.is_day_complete && (
+                      <Area
+                        type="monotone"
+                        dataKey="forecast_high"
+                        stroke="none"
+                        fill="url(#forecastAreaGrad)"
+                        name="Forecast Range (Upper Bound)"
+                        legendType="none"
+                      />
+                    )}
 
+                    {/* Target Actual Line */}
+                    {curveMetric === "revenue" && !forecastData?.is_day_complete ? (
+                      <Line
+                        type="monotone"
+                        dataKey="today_revenue_actual"
+                        name={`Actual (${selectedDate})`}
+                        stroke="#f59e0b"
+                        strokeWidth={3.5}
+                        dot={{ r: 3, fill: "#f59e0b" }}
+                        activeDot={{ r: 6 }}
+                        connectNulls={false}
+                      />
+                    ) : (
+                      <Line
+                        type="monotone"
+                        dataKey={
+                          curveMetric === "revenue"
+                            ? "today_revenue"
+                            : curveMetric === "admissions"
+                            ? "today_admissions"
+                            : curveMetric === "occupancy"
+                            ? "today_occupancy"
+                            : "today_velocity"
+                        }
+                        name={`Target (${selectedDate})`}
+                        stroke="#f59e0b"
+                        strokeWidth={3.5}
+                        dot={{ r: 3, fill: "#f59e0b" }}
+                        activeDot={{ r: 6 }}
+                      />
+                    )}
+
+                    {/* Projected Forecast Trajectory Line (Dashed) */}
+                    {curveMetric === "revenue" && !forecastData?.is_day_complete && (
+                      <Line
+                        type="monotone"
+                        dataKey="forecast_revenue"
+                        name={`EOD Forecast (Exp: €${
+                          forecastData?.forecast?.expected
+                            ? forecastData.forecast.expected >= 1000
+                              ? (forecastData.forecast.expected / 1000).toFixed(1) + "k"
+                              : forecastData.forecast.expected.toLocaleString()
+                            : "—"
+                        })`}
+                        stroke="#f59e0b"
+                        strokeWidth={2.5}
+                        strokeDasharray="5 5"
+                        dot={{ r: 3, fill: "#fbbf24", strokeDasharray: "none" }}
+                        connectNulls={false}
+                      />
+                    )}
+
+                    {/* Yesterday Curve */}
                     <Line
                       type="monotone"
                       dataKey={
@@ -1027,6 +1279,7 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
                       dot={false}
                     />
 
+                    {/* Same Weekday Last Week Curve */}
                     <Line
                       type="monotone"
                       dataKey={
@@ -1044,7 +1297,7 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
                       strokeDasharray="6 6"
                       dot={false}
                     />
-                  </LineChart>
+                  </ComposedChart>
                 </ResponsiveContainer>
               </div>
             </div>

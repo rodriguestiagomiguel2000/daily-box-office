@@ -217,6 +217,25 @@ export async function runMigrations(): Promise<void> {
     );
     CREATE INDEX IF NOT EXISTS idx_mps_movie_date_time ON movie_performance_snapshots(movie_id, operational_date, snapshot_timestamp DESC);
     CREATE INDEX IF NOT EXISTS idx_mps_run ON movie_performance_snapshots(collection_run_id);
+
+    -- 11. Forecast Backtests (Walk-forward historical forecast evaluation & calibration)
+    CREATE TABLE IF NOT EXISTS forecast_backtests (
+      id SERIAL PRIMARY KEY,
+      movie_id INT NOT NULL REFERENCES movies(id) ON DELETE CASCADE,
+      operational_date VARCHAR(20) NOT NULL,
+      cutoff_time VARCHAR(10) NOT NULL,
+      forecast_low NUMERIC(12, 2) NOT NULL,
+      forecast_expected NUMERIC(12, 2) NOT NULL,
+      forecast_high NUMERIC(12, 2) NOT NULL,
+      actual_eod_revenue NUMERIC(12, 2) NOT NULL,
+      error_absolute NUMERIC(12, 2) NOT NULL,
+      error_percentage NUMERIC(8, 2),
+      model_version VARCHAR(50) NOT NULL DEFAULT 'curve_completion_v2',
+      created_at TIMESTAMPTZ DEFAULT NOW(),
+      UNIQUE(movie_id, operational_date, cutoff_time, model_version)
+    );
+    CREATE INDEX IF NOT EXISTS idx_forecast_backtests_movie ON forecast_backtests(movie_id, operational_date, cutoff_time);
+    CREATE INDEX IF NOT EXISTS idx_forecast_backtests_cutoff ON forecast_backtests(cutoff_time, model_version);
   `;
 
   await query(migrationSQL);

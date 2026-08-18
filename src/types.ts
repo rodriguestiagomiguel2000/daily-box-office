@@ -263,6 +263,127 @@ export interface IntradayCurvesResponse {
   curve: IntradayCurvePoint[];
 }
 
+export type ForecastConfidence = "High" | "Medium" | "Low";
+
+export interface ComparableCurveInfo {
+  date: string;
+  label: string;
+  weight: number;
+  eod_revenue: number;
+  cutoff_revenue: number;
+  fraction_achieved_at_cutoff: number;
+  remaining_ratio?: number;
+  momentum_ratio?: number;
+  projected_eod: number;
+  similarity_rank?: number;
+}
+
+export interface ForecastModelDiagnostics {
+  modelVersion: string;
+  currentRevenue: number;
+  latestDataTime: string;
+  cutoffTime: string;
+  runDay: number;
+  runDayLabel: string;
+  operationalDate: string;
+  
+  comparableDaysCount: number;
+  medianCompletionRatio: number;
+  completionRatioIQR: number;
+  minCompletionRatio: number;
+  maxCompletionRatio: number;
+  
+  baselineHistoricalCutoff: number;
+  performanceRatioVsComparable: number;
+  dampingFactor: number;
+  dampedMomentumFactor: number;
+  
+  remainingShows: number;
+  remainingCapacity: number;
+  avgUnitPrice: number;
+  inventoryConstraintApplied: boolean;
+  maxPlausibleRemainingRevenue: number;
+  
+  baselineRemainingRevenue: number;
+  finalRemainingRevenue: number;
+  
+  historicalCutoffCalibration?: {
+    cutoff_time: string;
+    mae: number | null;
+    mape: number | null;
+    medianAbsoluteError: number | null;
+    bias: number | null;
+    errorP15: number | null;
+    errorP85: number | null;
+  };
+}
+
+export interface ForecastPoint {
+  time: string;
+  today_revenue: number | null;
+  forecast_revenue: number | null;
+  forecast_low: number | null;
+  forecast_high: number | null;
+}
+
+export interface MovieForecastResponse {
+  movie_id: number;
+  movie_title?: string;
+  operational_date: string;
+  current_time_requested: string;
+  latest_data_time: string;
+  is_day_complete: boolean;
+  actual_revenue: number;
+  actual_admissions: number;
+  actual_occupancy: number;
+  actual_shows: number;
+  remaining_shows: number;
+  remaining_capacity: number;
+  forecast: {
+    low: number;
+    expected: number;
+    high: number;
+    confidence: ForecastConfidence;
+    confidence_reasons: string[];
+    uncertainty_pct: number;
+    median_completion_ratio?: number;
+    damped_momentum?: number;
+  } | null;
+  diagnostics?: ForecastModelDiagnostics | null;
+  comparisons: {
+    yesterday_eod_revenue: number | null;
+    yesterday_date: string | null;
+    change_vs_yesterday_eod: number | null;
+    last_week_eod_revenue: number | null;
+    last_week_date: string | null;
+    change_vs_last_week_eod: number | null;
+  };
+  comparable_curves: ComparableCurveInfo[];
+  curve: ForecastPoint[];
+}
+
+export interface BacktestCutoffMetric {
+  cutoff_time: string;
+  forecast_count: number;
+  mae: number;
+  mape: number;
+  median_absolute_error: number;
+  mean_bias: number;
+  error_p15: number | null;
+  error_p85: number | null;
+}
+
+export interface ForecastBacktestSummaryResponse {
+  overall: {
+    total_forecasts: number;
+    mae: number;
+    mape: number;
+    median_absolute_error: number;
+    mean_bias: number;
+  };
+  by_cutoff: BacktestCutoffMetric[];
+}
+
 export interface HistoryDatesResponse {
   dates: string[];
 }

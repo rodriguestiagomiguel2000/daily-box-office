@@ -10,6 +10,7 @@ import { query } from "./db";
 import { scheduler } from "./scheduler";
 import { executeCollectionRun, getActiveProgress, prepareCollectionRun, executeCollectionRunFromPrepared } from "./collector";
 import { resolveSessionUnitPriceJs, recalculateAllPerformanceSnapshots } from "./revenue";
+import { computeMovieEODForecast, runHistoricalBacktests, getBacktestSummaryMetrics } from "./forecast";
 
 export const apiRouter = Router();
 
@@ -1368,6 +1369,59 @@ apiRouter.get("/movies/:id/intraday-curves", async (req, res) => {
     });
   } catch (err: any) {
     console.error("Error generating intraday curves:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// 4b. Intraday End-of-Day Revenue Forecast (Deterministic, weighted curve-based projection)
+const handleIntradayForecast = async (req: any, res: any) => {
+  try {
+    const movieId = parseInt(req.params.id, 10);
+    if (isNaN(movieId)) return res.status(400).json({ error: "Invalid movie ID" });
+
+    const todayStr = getOperationalDateStr();
+    const targetDateStr = (req.query.date as string) || (req.query.operationalDate as string) || todayStr;
+
+    let targetTimeStr = (req.query.time as string) || (req.query.cutoff as string) || new Date().toLocaleTimeString("pt-PT", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+      timeZone: "Europe/Lisbon",
+    });
+
+    if (targetTimeStr.length === 4) targetTimeStr = "0" + targetTimeStr;
+
+    const forecastData = await computeMovieEODForecast(movieId, targetDateStr, targetTimeStr);
+    res.json(forecastData);
+  } catch (err: any) {
+    console.error("Error computing intraday EOD forecast:", err);
+    res.status(500).json({ error: err.message });
+  }
+};
+
+apiRouter.get("/movies/:id/forecast", handleIntradayForecast);
+apiRouter.get("/movies/:id/intraday-forecast", handleIntradayForecast);
+apiRouter.get("/movies/:id/intraday/forecast", handleIntradayForecast);
+
+// Backtest metrics & execution endpoints
+apiRouter.get("/forecast/backtest-results", async (req, res) => {
+  try {
+    const movieId = req.query.movieId ? parseInt(req.query.movieId as string, 10) : undefined;
+    const data = await getBacktestSummaryMetrics(movieId);
+    res.json(data);
+  } catch (err: any) {
+    console.error("Error fetching backtest metrics:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+apiRouter.post("/forecast/run-backtests", async (req, res) => {
+  try {
+    const { movieIds, overwrite } = req.body || {};
+    const results = await runHistoricalBacktests({ movieIds, overwrite });
+    res.json({ success: true, results });
+  } catch (err: any) {
+    console.error("Error running backtests:", err);
     res.status(500).json({ error: err.message });
   }
 });
