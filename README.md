@@ -34,11 +34,25 @@ Aplicação full-stack para acompanhar a bilheteira de cinema em Portugal — fi
 
 ---
 
-## Recolha de Dados (Scheduling)
+## Recolha de Dados
 
-A recolha de dados corre a cada 15 minutos, acionada por um **Render Cron Job** que faz `POST` autenticado ao endpoint `/api/collector/cron` do backend. O scheduler interno em Node (`setInterval`) existe como alternativa, mas vem **desativado em produção** — o Render Cron é a fonte de verdade.
+### Como os dados são extraídos do site da NOS
 
-Existe também um workflow de GitHub Actions (`.github/workflows/nos-collector.yml`) no repositório, usado numa fase inicial do projeto como alternativa de scheduling; a versão em produção usa o Render Cron.
+O site da NOS Cinemas é construído sobre **OutSystems** (uma plataforma low-code) e não expõe nenhuma API pública de bilheteira ou vendas. O scraper (`nos_scraper.py`) funciona replicando, via pedidos HTTP diretos, os mesmos passos que um browser executa quando um utilizador navega até ao ecrã de escolha de lugares — sem nunca chegar a finalizar uma compra:
+
+1. **Catálogo e sessões** — os filmes em exibição e os horários de sessões são obtidos através dos endpoints GraphQL públicos do site (`getMoviesInTheaters`, `getMovieSessions`, etc.)
+2. **Início de sessão** — é feito um pedido inicial que faz o backend da NOS emitir cookies de sessão, das quais é extraído um token CSRF necessário para os pedidos seguintes
+3. **Contexto de reserva** — é criado um contexto de reserva temporário (o mesmo passo que o site faz quando alguém começa a escolher lugares), o que desbloqueia o acesso ao mapa de lugares dessa sessão
+4. **Mapa de lugares em tempo real** — o scraper lê o estado atual de cada lugar (disponível, indisponível, etc.) para essa sessão específica
+5. **Preços dos bilhetes** — são obtidos os preços por tipo de bilhete (Normal, IMAX, 3D, etc.) para essa sessão
+
+Como a NOS não publica o número de bilhetes vendidos diretamente, o tracker usa o **número de lugares marcados como indisponíveis** no mapa de lugares como proxy da bilheteira, e estima a receita multiplicando esse valor pelos preços de bilhete recolhidos. Cada leitura resulta num "seat snapshot" imutável e datado, que é o que alimenta os rankings, curvas de pré-venda e previsão de receita.
+
+O scraper inclui lógica de resiliência (retries com backoff exponencial, timeouts alargados) e validação dos dados recolhidos antes de serem guardados, para evitar snapshots inconsistentes.
+
+### Scheduling
+
+A recolha corre a cada 15 minutos, acionada por um **Render Cron Job** que faz `POST` autenticado ao endpoint `/api/collector/cron` do backend. O scheduler interno em Node (`setInterval`) existe como alternativa, mas vem **desativado em produção** — o Render Cron é a fonte de verdade.
 
 ---
 

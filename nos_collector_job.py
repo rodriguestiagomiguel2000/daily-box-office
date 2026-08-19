@@ -553,7 +553,7 @@ def main():
     standalone_mode = database_url is not None and args.run_id is None
 
     if standalone_mode:
-        print("Standalone Database Orchestration Mode Detected (GHA or CLI) -> Delegating to streaming Node runner", flush=True)
+        print("Standalone Database Orchestration Mode Detected (CLI) -> Delegating to streaming Node runner", flush=True)
         cmd = ["npx", "tsx", "server/execute_run_cli.ts"]
         env = os.environ.copy()
         proc = subprocess.run(cmd, env=env)

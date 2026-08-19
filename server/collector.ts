@@ -10,7 +10,7 @@ export interface CollectorJobOptions {
   movieExternalIds?: string[];
   limitSessionsPerMovie?: number;
   lookbackMinutes?: number;
-  triggerSource?: "MANUAL" | "SCHEDULED" | "CRON" | "GITHUB_ACTIONS";
+  triggerSource?: "MANUAL" | "SCHEDULED" | "CRON" | "CLI";
 }
 
 export interface CollectorJobResult {
@@ -79,7 +79,7 @@ export async function prepareCollectionRun(options: CollectorJobOptions = {}): P
     console.error("Failed to perform auto-recovery of stale runs:", err);
   }
 
-  // 2. Database-backed concurrency lock to prevent overlapping runs across different nodes/environments (e.g. GHA vs Cloud Run)
+  // 2. Database-backed concurrency lock to prevent overlapping runs across different nodes/processes
   try {
     const activeCheck = await query<{ run_id: string; started_at: Date; elapsed_seconds: number }>(
       `SELECT run_id, started_at, EXTRACT(EPOCH FROM (NOW() - started_at)) AS elapsed_seconds 

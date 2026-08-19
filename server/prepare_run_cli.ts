@@ -3,9 +3,7 @@ import { pool, query } from "./db";
 
 async function main() {
   try {
-    // Determine the trigger source. GHA sets GITHUB_ACTIONS=true in environment by default
-    const isGha = process.env.GITHUB_ACTIONS === "true";
-    const triggerSource = isGha ? "GITHUB_ACTIONS" : "MANUAL";
+    const triggerSource: "MANUAL" | "SCHEDULED" | "CRON" | "CLI" = (process.env.TRIGGER_SOURCE as any) || "CLI";
 
     const prepared = await prepareCollectionRun({ triggerSource });
     if (!prepared) {

@@ -39,29 +39,6 @@ async function main() {
       result.errors.forEach((e) => console.log(`- ${e}`));
     }
 
-    const stepSummaryPath = process.env.GITHUB_STEP_SUMMARY;
-    if (stepSummaryPath) {
-      try {
-        const md = `
-### 🎬 NOS Collector Session Run Summary
-- **Run ID**: \`${envelope.prepared.runId}\`
-- **Trigger Source**: \`GITHUB_ACTIONS\`
-- **Status**: ${result.status === "SUCCESS" ? "🟢 **SUCCESS**" : result.status === "PARTIAL" ? "🟡 **PARTIAL**" : "🔴 **FAILED**"}
-- **Movies Discovered**: \`${result.moviesFound}\`
-- **Sessions Attempted**: \`${result.sessionsAttempted}\`
-- **Sessions Successful**: \`${result.sessionsSuccessful}\`
-- **Sessions Failed**: \`${result.sessionsFailed}\`
-- **Seat Snapshots Created**: \`${result.snapshotsCreated}\`
-- **Duration**: \`${(result.durationMs / 1000).toFixed(2)}s\`
-
-${result.errors && result.errors.length > 0 ? `#### ⚠️ Errors Captured:\n${result.errors.map((e) => `- \`${e}\``).join("\n")}` : ""}
-`;
-        fs.appendFileSync(stepSummaryPath, md);
-      } catch (err) {
-        console.error("Failed to write to GITHUB_STEP_SUMMARY:", err);
-      }
-    }
-
     if (result.status === "FAILED") {
       process.exit(1);
     }

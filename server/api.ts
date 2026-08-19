@@ -710,7 +710,7 @@ apiRouter.post("/collector/trigger", async (req, res) => {
   }
 });
 
-// Secure HTTP collection trigger endpoint for Cloud Scheduler or external cron
+// Secure HTTP collection trigger endpoint for Render Cron or external scheduler
 apiRouter.post("/collector/cron", async (req, res) => {
   try {
     const authHeader = req.headers.authorization || (req.headers["authorization"] as string | undefined);
