@@ -77,10 +77,13 @@ class BoxOfficeAggregator:
             total_safety += s.safety_seats
             total_unknown += s.unknown_seats
             
-            # Revenue calculation (derived estimate)
+            # Revenue calculation (derived estimate with category gamma calibration)
             effective_sold = s.estimated_sold_seats if s.estimated_sold_seats > 0 else s.unavailable_seats
             total_revenue += RevenueEstimator.estimate_session_revenue(
-                effective_sold, s.ticket_types, s.movie_title
+                sold_seats=effective_sold,
+                ticket_types=s.ticket_types,
+                format_hint="",
+                movie_title=s.movie_title
             )
             if s.theater_name:
                 unique_theaters.add(s.theater_name)

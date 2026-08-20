@@ -1,0 +1,25 @@
+{
+  "category_factors": {
+    "Family / Animation": 0.822,
+    "Action / General": 0.983,
+    "Drama / Adult": 0.93
+  },
+  "movie_specific_factors": {
+    "homem aranha um novo dia": 0.986,
+    "a odisseia": 1.204,
+    "patrulha pata o filme dos dinossauros": 0.826,
+    "ooh la la 2": 0.9,
+    "minimos e monstros": 0.834,
+    "o fim de oak street": 0.914,
+    "apenas uma noite": 0.899,
+    "playback": 0.899,
+    "toy story 5": 0.842,
+    "vaiana": 0.842
+  },
+  "sample_counts": {
+    "Family / Animation": 3,
+    "Action / General": 7,
+    "Drama / Adult": 0
+  },
+  "last_updated": "2026-08-20T14:23:31.379544"
+}

@@ -635,4 +635,14 @@ export interface MoviePresaleCurveResponse {
   cinemas_breakdown: PresaleCinemaSummary[];
 }
 
+export interface RawIngestionLog {
+  id: string;
+  source: "ICA" | "NOS";
+  collectedAt: string;
+  fileName: string;
+  recordCount: number;
+  status: "SUCCESS" | "FAILED" | "PENDING";
+  rawDetails: Record<string, any>;
+}
+
 

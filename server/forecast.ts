@@ -697,8 +697,9 @@ export async function computeMovieEODForecast(
        SELECT 
          s.id as session_id,
          COALESCE(
-           AVG(stp.price) FILTER (WHERE stp.is_default = true AND stp.price > 0),
-           AVG(stp.price) FILTER (WHERE stp.price > 0 AND stp.ticket_type NOT ILIKE '%fam%' AND stp.ticket_type NOT ILIKE '%pax%' AND (stp.seats_count IS NULL OR stp.seats_count = 1)),
+           MIN(stp.price) FILTER (WHERE stp.is_default = true AND stp.price > 0),
+           MIN(stp.price) FILTER (WHERE stp.price > 0 AND (stp.ticket_type ILIKE '%normal%' OR stp.ticket_type ILIKE '%adulto%' OR stp.ticket_type ILIKE '%inteiro%' OR stp.ticket_type ILIKE '%standard%') AND stp.ticket_type NOT ILIKE '%fam%' AND stp.ticket_type NOT ILIKE '%pax%' AND (stp.seats_count IS NULL OR stp.seats_count = 1)),
+           MIN(stp.price) FILTER (WHERE stp.price > 0 AND stp.ticket_type NOT ILIKE '%fam%' AND stp.ticket_type NOT ILIKE '%pax%' AND stp.ticket_type NOT ILIKE '%crian%' AND stp.ticket_type NOT ILIKE '%estud%' AND stp.ticket_type NOT ILIKE '%sénior%' AND stp.ticket_type NOT ILIKE '%senior%' AND (stp.seats_count IS NULL OR stp.seats_count = 1)),
            AVG(stp.price) FILTER (WHERE stp.price > 0),
            8.75
          ) as resolved_unit_price
@@ -1050,8 +1051,9 @@ export async function runHistoricalBacktests(options?: { movieIds?: number[]; ov
          SELECT 
            session_id,
            COALESCE(
-             AVG(price) FILTER (WHERE is_default = true AND price > 0),
-             AVG(price) FILTER (WHERE price > 0 AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND (seats_count IS NULL OR seats_count = 1)),
+             MIN(price) FILTER (WHERE is_default = true AND price > 0),
+             MIN(price) FILTER (WHERE price > 0 AND (ticket_type ILIKE '%normal%' OR ticket_type ILIKE '%adulto%' OR ticket_type ILIKE '%inteiro%' OR ticket_type ILIKE '%standard%') AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND (seats_count IS NULL OR seats_count = 1)),
+             MIN(price) FILTER (WHERE price > 0 AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND ticket_type NOT ILIKE '%crian%' AND ticket_type NOT ILIKE '%estud%' AND ticket_type NOT ILIKE '%sénior%' AND ticket_type NOT ILIKE '%senior%' AND (seats_count IS NULL OR seats_count = 1)),
              AVG(price) FILTER (WHERE price > 0),
              8.75
            ) as resolved_unit_price

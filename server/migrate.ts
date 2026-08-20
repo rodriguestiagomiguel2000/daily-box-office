@@ -236,6 +236,20 @@ export async function runMigrations(): Promise<void> {
     );
     CREATE INDEX IF NOT EXISTS idx_forecast_backtests_movie ON forecast_backtests(movie_id, operational_date, cutoff_time);
     CREATE INDEX IF NOT EXISTS idx_forecast_backtests_cutoff ON forecast_backtests(cutoff_time, model_version);
+
+    -- 12. Raw Ingestion Logs (ICA official reports & NOS collector payloads)
+    CREATE TABLE IF NOT EXISTS raw_ingestion_logs (
+      id VARCHAR(100) PRIMARY KEY,
+      source VARCHAR(50) NOT NULL,
+      collected_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      file_name TEXT NOT NULL,
+      record_count INT NOT NULL DEFAULT 0,
+      status VARCHAR(50) NOT NULL DEFAULT 'SUCCESS',
+      raw_details JSONB NOT NULL DEFAULT '{}'::jsonb,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_raw_ingestion_logs_source ON raw_ingestion_logs(source, collected_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_raw_ingestion_logs_collected ON raw_ingestion_logs(collected_at DESC);
   `;
 
   await query(migrationSQL);

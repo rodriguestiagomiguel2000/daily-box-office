@@ -5,11 +5,12 @@ import { MovieDetailView } from "./components/MovieDetailView";
 import { DailyBoxOfficeHistoryView } from "./components/DailyBoxOfficeHistoryView";
 import { WeekendBoxOfficeView } from "./components/WeekendBoxOfficeView";
 import { WeeklyBoxOfficeView } from "./components/WeeklyBoxOfficeView";
+import { RawIngestionTab } from "./components/RawIngestionTab";
 import { CatalogModal } from "./components/CatalogModal";
 import { CollectorStatusModal } from "./components/CollectorStatusModal";
 import { TrackedMovieSummary, MovieDetailResponse, CollectorStatusResponse, Movie } from "./types";
 
-type ActiveDashboardView = "tracked" | "daily-history" | "weekend-history" | "weekly-history";
+type ActiveDashboardView = "tracked" | "daily-history" | "weekend-history" | "weekly-history" | "raw-ingestion";
 
 export function App() {
   const [trackedMovies, setTrackedMovies] = useState<TrackedMovieSummary[]>([]);
@@ -296,6 +297,11 @@ export function App() {
           setMovieDetail(null);
           setDashboardView("weekly-history");
         }}
+        onOpenRawIngestion={() => {
+          setSelectedMovieId(null);
+          setMovieDetail(null);
+          setDashboardView("raw-ingestion");
+        }}
         onHomeClick={() => {
           setSelectedMovieId(null);
           setMovieDetail(null);
@@ -327,6 +333,11 @@ export function App() {
             }}
             onRefresh={() => fetchMovieDetail(selectedMovieId, true)}
             isRefreshing={isLoadingDetail}
+          />
+        ) : dashboardView === "raw-ingestion" ? (
+          <RawIngestionTab
+            onTriggerNosRun={handleTriggerRun}
+            isNosCollecting={isTriggeringRun || Boolean(collectorStatus?.is_collecting || collectorStatus?.scheduler?.isCollecting)}
           />
         ) : dashboardView === "daily-history" ? (
           <DailyBoxOfficeHistoryView

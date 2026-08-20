@@ -328,19 +328,59 @@ class TestSeatParser(unittest.TestCase):
         self.assertAlmostEqual(agg.overall_occupancy_proxy, 245 / 450, places=3)
 
     def test_revenue_estimation(self):
-        """Test revenue calculation with standard, IMAX, 3D, and filtering 0.0 EUR vouchers."""
+        """Test revenue calculation with standard adult ticket priority, is_default flag, and filtering 0.0 EUR vouchers."""
+        # Case 1: Standard adult ticket type ("Bilhete IMAX" vs "Bilhete Criança" vs "Vale de Descontos")
+        # Priority selects the standard adult ticket (13.50), avoiding distortion from discounted child tickets.
         ticket_types_mixed = [
-            ("Bilhete IMAX", 13.50),
-            ("Vale de Descontos", 0.00),
-            ("Bilhete Criança", 11.00)
+            {"ticket_type": "Bilhete IMAX", "price": 13.50, "is_default": False},
+            {"ticket_type": "Vale de Descontos", "price": 0.00, "is_default": False},
+            {"ticket_type": "Bilhete Criança", "price": 11.00, "is_default": False}
         ]
-        rev_imax = RevenueEstimator.estimate_session_revenue(100, ticket_types_mixed, "A Odisseia (IMAX)")
-        # Average of paid prices (13.50 + 11.00) / 2 = 12.25 * 100 = 1225.0
-        self.assertEqual(rev_imax, 1225.0)
+        # Raw baseline price without category calibration
+        rev_imax_raw = RevenueEstimator.estimate_session_revenue(100, ticket_types_mixed, "IMAX", apply_calibration=False)
+        self.assertEqual(rev_imax_raw, 1350.0)
 
-        # Test standard fallback
-        rev_std = RevenueEstimator.estimate_session_revenue(50, [], "Standard Movie")
-        self.assertEqual(rev_std, 50 * 7.60)
+        # With category gamma calibration: Action / General
+        gamma_action = RevenueEstimator.estimate_session_revenue(100, ticket_types_mixed, "IMAX", category="Action / General")
+        from calibration_service import get_calibration_factor, CATEGORY_ACTION_GENERAL, CATEGORY_FAMILY_ANIMATION, CATEGORY_DRAMA_ADULT
+        self.assertEqual(gamma_action, round(100 * 13.50 * get_calibration_factor(category=CATEGORY_ACTION_GENERAL), 2))
+
+        # Case 2: Explicit is_default flag overrides other ticket types
+        ticket_types_default = [
+            {"ticket_type": "Bilhete Normal", "price": 7.60, "is_default": True},
+            {"ticket_type": "Bilhete Estudante", "price": 6.10, "is_default": False},
+            {"ticket_type": "Bilhete Sénior", "price": 6.10, "is_default": False},
+            {"ticket_type": "Bilhete Família (4 pax)", "price": 24.00, "is_default": False, "seats_count": 4}
+        ]
+        rev_default_raw = RevenueEstimator.estimate_session_revenue(50, ticket_types_default, "Standard Movie", apply_calibration=False)
+        self.assertEqual(rev_default_raw, 50 * 7.60)
+
+        # Case 3: Test format fallback when no ticket types collected
+        rev_std_raw = RevenueEstimator.estimate_session_revenue(50, [], "Standard Movie", apply_calibration=False)
+        self.assertEqual(rev_std_raw, 50 * 7.60)
+
+        # Case 4: Category discount calibration factors (Family / Animation vs Drama)
+        # Family movie e.g. "Patrulha Pata"
+        rev_family = RevenueEstimator.estimate_session_revenue(100, ticket_types_default, category=CATEGORY_FAMILY_ANIMATION)
+        self.assertEqual(rev_family, round(100 * 7.60 * get_calibration_factor(category=CATEGORY_FAMILY_ANIMATION), 2))
+
+        # Drama / Adult movie e.g. "O Fim de Oak Street"
+        rev_drama = RevenueEstimator.estimate_session_revenue(100, ticket_types_default, category=CATEGORY_DRAMA_ADULT)
+        self.assertEqual(rev_drama, round(100 * 7.60 * get_calibration_factor(category=CATEGORY_DRAMA_ADULT), 2))
+
+        # Case 4: Diagnostic method metadata testing (Clean Default vs Fallback Average path)
+        price_clean, method_clean = RevenueEstimator.get_effective_ticket_price_with_metadata(ticket_types_default, "2D")
+        self.assertEqual(price_clean, 7.60)
+        self.assertEqual(method_clean, "DEFAULT_FLAG")
+
+        # Mixed concessions only without default/standard/single non-concession names falls back to unweighted non-zero average
+        ticket_types_fallback = [
+            {"ticket_type": "Bilhete Estudante", "price": 6.00, "is_default": False},
+            {"ticket_type": "Bilhete Sénior", "price": 8.00, "is_default": False}
+        ]
+        price_fallback, method_fallback = RevenueEstimator.get_effective_ticket_price_with_metadata(ticket_types_fallback, "2D")
+        self.assertEqual(price_fallback, 7.00)
+        self.assertEqual(method_fallback, "NON_ZERO_AVERAGE")
 
 
 if __name__ == "__main__":

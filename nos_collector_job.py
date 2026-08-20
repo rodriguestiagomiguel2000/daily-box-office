@@ -27,6 +27,7 @@ from nos_collector_models import (
     CollectionRun,
     SeatSnapshot,
 )
+from nos_collector_revenue import RevenueEstimator
 
 logging.basicConfig(level=logging.WARNING, format="%(asctime)s [%(levelname)s] %(message)s")
 log = logging.getLogger("collector_job")
@@ -187,6 +188,10 @@ def collect_data(
     last_err: Optional[str] = None
     timed_out = False
     progress_lock = threading.Lock()
+
+    # Diagnostic pricing resolution telemetry per movie
+    # Format: movie_title -> {"clean_default_prices": List[float], "fallback_avg_prices": List[float]}
+    pricing_diagnostics: Dict[str, Dict[str, List[float]]] = {}
 
     emit_progress(
         run_id=run.collection_run_id,
@@ -488,6 +493,26 @@ def collect_data(
                             with progress_lock:
                                 run.sessions_successful += 1
                                 run.seat_snapshots_created += 1
+
+                                # Track diagnostic price resolution telemetry per movie
+                                snap_prices = res_item.get("snapshot", {}).get("ticket_prices", [])
+                                sess_fmt = res_item.get("session", {}).get("format", "")
+                                if snap_prices:
+                                    eff_price, res_method = RevenueEstimator.get_effective_ticket_price_with_metadata(
+                                        snap_prices,
+                                        sess_fmt
+                                    )
+                                    m_title = cand["movie_title"]
+                                    if m_title not in pricing_diagnostics:
+                                        pricing_diagnostics[m_title] = {
+                                            "clean_default_prices": [],
+                                            "fallback_avg_prices": []
+                                        }
+                                    if res_method == "NON_ZERO_AVERAGE":
+                                        pricing_diagnostics[m_title]["fallback_avg_prices"].append(eff_price)
+                                    else:
+                                        pricing_diagnostics[m_title]["clean_default_prices"].append(eff_price)
+
                                 # Immediately stream individual session to parent supervisor for incremental DB persistence
                                 emit_session(run.collection_run_id, res_item)
                                 del res_item
@@ -582,6 +607,7 @@ def collect_data(
             "errors": run.errors,
             "collector_version": run.collector_version
         },
+        "pricing_diagnostics": pricing_diagnostics,
         "sessions": []
     }
     return final_payload

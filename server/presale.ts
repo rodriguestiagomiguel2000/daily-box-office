@@ -197,8 +197,9 @@ export async function getMoviePresaleCurve(movieId: number): Promise<MoviePresal
         s.operational_date,
         s.format,
         COALESCE(
-          AVG(stp.price) FILTER (WHERE stp.is_default = true AND stp.price > 0),
-          AVG(stp.price) FILTER (WHERE stp.price > 0 AND stp.ticket_type NOT ILIKE '%fam%' AND stp.ticket_type NOT ILIKE '%pax%' AND (stp.seats_count IS NULL OR stp.seats_count = 1)),
+          MIN(stp.price) FILTER (WHERE stp.is_default = true AND stp.price > 0),
+          MIN(stp.price) FILTER (WHERE stp.price > 0 AND (stp.ticket_type ILIKE '%normal%' OR stp.ticket_type ILIKE '%adulto%' OR stp.ticket_type ILIKE '%inteiro%' OR stp.ticket_type ILIKE '%standard%') AND stp.ticket_type NOT ILIKE '%fam%' AND stp.ticket_type NOT ILIKE '%pax%' AND (stp.seats_count IS NULL OR stp.seats_count = 1)),
+          MIN(stp.price) FILTER (WHERE stp.price > 0 AND stp.ticket_type NOT ILIKE '%fam%' AND stp.ticket_type NOT ILIKE '%pax%' AND stp.ticket_type NOT ILIKE '%crian%' AND stp.ticket_type NOT ILIKE '%estud%' AND stp.ticket_type NOT ILIKE '%sénior%' AND stp.ticket_type NOT ILIKE '%senior%' AND (stp.seats_count IS NULL OR stp.seats_count = 1)),
           AVG(stp.price) FILTER (WHERE stp.price > 0),
           CASE 
             WHEN s.format ILIKE '%IMAX%' THEN 13.50 
@@ -330,8 +331,9 @@ export async function getMoviePresaleCurve(movieId: number): Promise<MoviePresal
         s.operational_date,
         s.format,
         COALESCE(
-          AVG(stp.price) FILTER (WHERE stp.is_default = true AND stp.price > 0),
-          AVG(stp.price) FILTER (WHERE stp.price > 0 AND stp.ticket_type NOT ILIKE '%fam%' AND stp.ticket_type NOT ILIKE '%pax%' AND (stp.seats_count IS NULL OR stp.seats_count = 1)),
+          MIN(stp.price) FILTER (WHERE stp.is_default = true AND stp.price > 0),
+          MIN(stp.price) FILTER (WHERE stp.price > 0 AND (stp.ticket_type ILIKE '%normal%' OR stp.ticket_type ILIKE '%adulto%' OR stp.ticket_type ILIKE '%inteiro%' OR stp.ticket_type ILIKE '%standard%') AND stp.ticket_type NOT ILIKE '%fam%' AND stp.ticket_type NOT ILIKE '%pax%' AND (stp.seats_count IS NULL OR stp.seats_count = 1)),
+          MIN(stp.price) FILTER (WHERE stp.price > 0 AND stp.ticket_type NOT ILIKE '%fam%' AND stp.ticket_type NOT ILIKE '%pax%' AND stp.ticket_type NOT ILIKE '%crian%' AND stp.ticket_type NOT ILIKE '%estud%' AND stp.ticket_type NOT ILIKE '%sénior%' AND stp.ticket_type NOT ILIKE '%senior%' AND (stp.seats_count IS NULL OR stp.seats_count = 1)),
           AVG(stp.price) FILTER (WHERE stp.price > 0),
           CASE 
             WHEN s.format ILIKE '%IMAX%' THEN 13.50 

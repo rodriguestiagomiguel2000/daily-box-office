@@ -975,8 +975,9 @@ export async function getOrComputeMovieSnapshotsBatch(
           SELECT 
             session_id,
             COALESCE(
-              AVG(price) FILTER (WHERE is_default = true AND price > 0),
-              AVG(price) FILTER (WHERE price > 0 AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND (seats_count IS NULL OR seats_count = 1)),
+              MIN(price) FILTER (WHERE is_default = true AND price > 0),
+              MIN(price) FILTER (WHERE price > 0 AND (ticket_type ILIKE '%normal%' OR ticket_type ILIKE '%adulto%' OR ticket_type ILIKE '%inteiro%' OR ticket_type ILIKE '%standard%') AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND (seats_count IS NULL OR seats_count = 1)),
+              MIN(price) FILTER (WHERE price > 0 AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND ticket_type NOT ILIKE '%crian%' AND ticket_type NOT ILIKE '%estud%' AND ticket_type NOT ILIKE '%sénior%' AND ticket_type NOT ILIKE '%senior%' AND (seats_count IS NULL OR seats_count = 1)),
               AVG(price) FILTER (WHERE price > 0)
             ) as avg_price
           FROM session_ticket_prices
@@ -1479,8 +1480,9 @@ apiRouter.get("/movies/:id/hourly-breakdown", async (req, res) => {
           SELECT 
             session_id,
             COALESCE(
-              AVG(price) FILTER (WHERE is_default = true AND price > 0),
-              AVG(price) FILTER (WHERE price > 0 AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND (seats_count IS NULL OR seats_count = 1)),
+              MIN(price) FILTER (WHERE is_default = true AND price > 0),
+              MIN(price) FILTER (WHERE price > 0 AND (ticket_type ILIKE '%normal%' OR ticket_type ILIKE '%adulto%' OR ticket_type ILIKE '%inteiro%' OR ticket_type ILIKE '%standard%') AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND (seats_count IS NULL OR seats_count = 1)),
+              MIN(price) FILTER (WHERE price > 0 AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND ticket_type NOT ILIKE '%crian%' AND ticket_type NOT ILIKE '%estud%' AND ticket_type NOT ILIKE '%sénior%' AND ticket_type NOT ILIKE '%senior%' AND (seats_count IS NULL OR seats_count = 1)),
               AVG(price) FILTER (WHERE price > 0)
             ) as avg_price
           FROM session_ticket_prices
@@ -1520,8 +1522,9 @@ apiRouter.get("/movies/:id/hourly-breakdown", async (req, res) => {
           SELECT 
             session_id,
             COALESCE(
-              AVG(price) FILTER (WHERE is_default = true AND price > 0),
-              AVG(price) FILTER (WHERE price > 0 AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND (seats_count IS NULL OR seats_count = 1)),
+              MIN(price) FILTER (WHERE is_default = true AND price > 0),
+              MIN(price) FILTER (WHERE price > 0 AND (ticket_type ILIKE '%normal%' OR ticket_type ILIKE '%adulto%' OR ticket_type ILIKE '%inteiro%' OR ticket_type ILIKE '%standard%') AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND (seats_count IS NULL OR seats_count = 1)),
+              MIN(price) FILTER (WHERE price > 0 AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND ticket_type NOT ILIKE '%crian%' AND ticket_type NOT ILIKE '%estud%' AND ticket_type NOT ILIKE '%sénior%' AND ticket_type NOT ILIKE '%senior%' AND (seats_count IS NULL OR seats_count = 1)),
               AVG(price) FILTER (WHERE price > 0)
             ) as avg_price
           FROM session_ticket_prices
@@ -1546,8 +1549,9 @@ apiRouter.get("/movies/:id/hourly-breakdown", async (req, res) => {
           SELECT 
             session_id,
             COALESCE(
-              AVG(price) FILTER (WHERE is_default = true AND price > 0),
-              AVG(price) FILTER (WHERE price > 0 AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND (seats_count IS NULL OR seats_count = 1)),
+              MIN(price) FILTER (WHERE is_default = true AND price > 0),
+              MIN(price) FILTER (WHERE price > 0 AND (ticket_type ILIKE '%normal%' OR ticket_type ILIKE '%adulto%' OR ticket_type ILIKE '%inteiro%' OR ticket_type ILIKE '%standard%') AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND (seats_count IS NULL OR seats_count = 1)),
+              MIN(price) FILTER (WHERE price > 0 AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND ticket_type NOT ILIKE '%crian%' AND ticket_type NOT ILIKE '%estud%' AND ticket_type NOT ILIKE '%sénior%' AND ticket_type NOT ILIKE '%senior%' AND (seats_count IS NULL OR seats_count = 1)),
               AVG(price) FILTER (WHERE price > 0)
             ) as avg_price
           FROM session_ticket_prices
@@ -2050,6 +2054,196 @@ apiRouter.post("/collector/config", (req, res) => {
   }
 
   res.json({ success: true, scheduler: scheduler.getStatus() });
+});
+
+// Helper to run python script and parse stdout JSON
+async function runPythonScriptJson(script: string, args: string[] = []): Promise<any> {
+  return new Promise((resolve, reject) => {
+    const py = spawn("python3", [script, ...args], { cwd: process.cwd() });
+    let stdout = "";
+    let stderr = "";
+    py.stdout.on("data", (d) => (stdout += d.toString()));
+    py.stderr.on("data", (d) => (stderr += d.toString()));
+    py.on("close", (code) => {
+      if (code !== 0 && !stdout.trim()) {
+        reject(new Error(`Script ${script} exited with code ${code}: ${stderr}`));
+      } else {
+        try {
+          // Find first '{' or '[' if there is logging before JSON
+          const startIdx = Math.min(
+            stdout.indexOf("{") !== -1 ? stdout.indexOf("{") : Infinity,
+            stdout.indexOf("[") !== -1 ? stdout.indexOf("[") : Infinity
+          );
+          const cleanJson = startIdx !== Infinity ? stdout.slice(startIdx) : stdout;
+          resolve(JSON.parse(cleanJson));
+        } catch (e: any) {
+          reject(new Error(`Failed to parse JSON from ${script}: ${e.message}. Output: ${stdout.slice(0, 300)}`));
+        }
+      }
+    });
+  });
+}
+
+// GET /api/ingestion/raw-logs - Retrieves raw ingestion logs from ICA and NOS
+apiRouter.get("/ingestion/raw-logs", async (req, res) => {
+  try {
+    // 1. Query persisted raw ingestion logs from database
+    const dbLogsRes = await query(`
+      SELECT id, source, collected_at, file_name, record_count, status, raw_details, created_at
+      FROM raw_ingestion_logs
+      ORDER BY collected_at DESC
+      LIMIT 50;
+    `);
+
+    let rawLogs = dbLogsRes.rows.map((row) => ({
+      id: String(row.id),
+      source: row.source as "ICA" | "NOS",
+      collectedAt: new Date(row.collected_at).toISOString(),
+      fileName: row.file_name,
+      recordCount: Number(row.record_count) || 0,
+      status: row.status as "SUCCESS" | "FAILED" | "PENDING",
+      rawDetails: typeof row.raw_details === "string" ? JSON.parse(row.raw_details) : (row.raw_details || {}),
+    }));
+
+    // 2. Check if we have an ICA log; if none exists in DB, run ica_ingestion.py to generate and persist initial official baseline
+    const hasIcaLog = rawLogs.some((l) => l.source === "ICA");
+    if (!hasIcaLog) {
+      try {
+        const icaData = await runPythonScriptJson("ica_ingestion.py");
+        if (icaData && icaData.id) {
+          await query(
+            `INSERT INTO raw_ingestion_logs (id, source, collected_at, file_name, record_count, status, raw_details, created_at)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+             ON CONFLICT (id) DO UPDATE SET
+               status = EXCLUDED.status,
+               record_count = EXCLUDED.record_count,
+               raw_details = EXCLUDED.raw_details;`,
+            [
+              icaData.id,
+              "ICA",
+              icaData.collectedAt || new Date().toISOString(),
+              icaData.fileName || "ica_ranking_box_office_semanal.xlsx",
+              icaData.recordCount || 0,
+              icaData.status || "SUCCESS",
+              JSON.stringify(icaData.rawDetails || {}),
+            ]
+          );
+
+          rawLogs.unshift({
+            id: icaData.id,
+            source: "ICA",
+            collectedAt: icaData.collectedAt || new Date().toISOString(),
+            fileName: icaData.fileName || "ica_ranking_box_office_semanal.xlsx",
+            recordCount: icaData.recordCount || 0,
+            status: icaData.status || "SUCCESS",
+            rawDetails: icaData.rawDetails || {},
+          });
+        }
+      } catch (icaErr) {
+        console.warn("Failed to auto-ingest initial ICA log:", icaErr);
+      }
+    }
+
+    // 3. Complement with real collection_runs from NOS telemetry
+    const runsRes = await query(`
+      SELECT r.*, 
+        (SELECT COUNT(*) FROM seat_snapshots WHERE collection_run_id = r.id) as real_snapshots
+      FROM collection_runs r
+      ORDER BY started_at DESC
+      LIMIT 25;
+    `);
+
+    for (const run of runsRes.rows) {
+      const runId = `nos-run-${run.id}`;
+      // Check if already in rawLogs list
+      if (!rawLogs.some((l) => l.id === runId || l.id === run.run_id)) {
+        const isFailed = run.status === "FAILED";
+        const isPending = run.status === "PENDING" || run.status === "RUNNING";
+        const status = isFailed ? "FAILED" : isPending ? "PENDING" : "SUCCESS";
+        const count = run.snapshots_created || Number(run.real_snapshots) || run.sessions_successful || 0;
+
+        rawLogs.push({
+          id: run.run_id || runId,
+          source: "NOS",
+          collectedAt: new Date(run.started_at).toISOString(),
+          fileName: `cinemas.nos.pt/api/sessions_matrix_r${run.id}.json`,
+          recordCount: count,
+          status,
+          rawDetails: {
+            collector_version: run.collector_version || "2.0.0",
+            trigger_source: run.trigger_source || "SCHEDULED",
+            movies_found: run.movies_found || 0,
+            sessions_found: run.sessions_found || 0,
+            sessions_attempted: run.sessions_attempted || 0,
+            sessions_successful: run.sessions_successful || 0,
+            sessions_failed: run.sessions_failed || 0,
+            snapshots_created: count,
+            completed_at: run.completed_at ? new Date(run.completed_at).toISOString() : null,
+            errors: run.errors || [],
+          },
+        });
+      }
+    }
+
+    // Sort all logs by collectedAt descending
+    rawLogs.sort((a, b) => new Date(b.collectedAt).getTime() - new Date(a.collectedAt).getTime());
+
+    res.json(rawLogs);
+  } catch (err: any) {
+    console.error("Error retrieving raw ingestion logs:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/ingestion/trigger-ica - Manually triggers ICA scraping & calibration update
+apiRouter.post("/ingestion/trigger-ica", async (req, res) => {
+  try {
+    const icaData = await runPythonScriptJson("ica_ingestion.py");
+    if (!icaData || !icaData.id) {
+      throw new Error("ICA ingestion script did not return a valid log structure.");
+    }
+
+    // Persist into raw_ingestion_logs
+    await query(
+      `INSERT INTO raw_ingestion_logs (id, source, collected_at, file_name, record_count, status, raw_details, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+       ON CONFLICT (id) DO UPDATE SET
+         status = EXCLUDED.status,
+         record_count = EXCLUDED.record_count,
+         raw_details = EXCLUDED.raw_details;`,
+      [
+        icaData.id,
+        "ICA",
+        icaData.collectedAt || new Date().toISOString(),
+        icaData.fileName || "ica_ranking_box_office_semanal.xlsx",
+        icaData.recordCount || 0,
+        icaData.status || "SUCCESS",
+        JSON.stringify(icaData.rawDetails || {}),
+      ]
+    );
+
+    // Also update dynamic price calibration factors from this fresh ICA data
+    try {
+      await new Promise<void>((resolve) => {
+        const pyCal = spawn("python3", [
+          "-c",
+          "from calibration_service import CalibrationService; CalibrationService().update_calibration_from_ica()"
+        ], { cwd: process.cwd() });
+        pyCal.on("close", () => resolve());
+      });
+    } catch (calErr) {
+      console.warn("Could not immediately trigger calibration factor update:", calErr);
+    }
+
+    res.json({
+      success: true,
+      message: "ICA official weekly box office report successfully downloaded, parsed, and logged.",
+      log: icaData,
+    });
+  } catch (err: any) {
+    console.error("Error triggering ICA raw ingestion:", err);
+    res.status(500).json({ error: err.message });
+  }
 });
 
 // Fallback 404 handler for any unmatched /api requests

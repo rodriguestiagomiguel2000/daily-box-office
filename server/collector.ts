@@ -4,6 +4,7 @@ import os from "os";
 import path from "path";
 import readline from "readline";
 import { pool, query } from "./db";
+import { logCollectionPricingAuditReport } from "./revenue";
 
 export interface CollectorJobOptions {
   runId?: string;
@@ -746,6 +747,13 @@ export async function persistCollectionPayload(
       await generateMoviePerformanceSnapshots(collectionRunDbId);
     }
 
+    // 4k. Print diagnostic log/report for pricing resolution across movies
+    try {
+      await logCollectionPricingAuditReport(collectionRunDbId);
+    } catch (auditErr) {
+      console.error("Failed to output collection pricing audit report:", auditErr);
+    }
+
     // 5. Finalize collection_runs record in PostgreSQL
     const finalRunStatus = runMeta.errors && runMeta.errors.length > 0 ? (snapshotsCreatedCount > 0 ? "PARTIAL" : "FAILED") : "SUCCESS";
     await query(
@@ -894,8 +902,9 @@ export async function generateMoviePerformanceSnapshots(collectionRunDbId: numbe
           SELECT 
             session_id,
             COALESCE(
-              AVG(price) FILTER (WHERE is_default = true AND price > 0),
-              AVG(price) FILTER (WHERE price > 0 AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND (seats_count IS NULL OR seats_count = 1)),
+              MIN(price) FILTER (WHERE is_default = true AND price > 0),
+              MIN(price) FILTER (WHERE price > 0 AND (ticket_type ILIKE '%normal%' OR ticket_type ILIKE '%adulto%' OR ticket_type ILIKE '%inteiro%' OR ticket_type ILIKE '%standard%') AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND (seats_count IS NULL OR seats_count = 1)),
+              MIN(price) FILTER (WHERE price > 0 AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND ticket_type NOT ILIKE '%crian%' AND ticket_type NOT ILIKE '%estud%' AND ticket_type NOT ILIKE '%sénior%' AND ticket_type NOT ILIKE '%senior%' AND (seats_count IS NULL OR seats_count = 1)),
               AVG(price) FILTER (WHERE price > 0)
             ) as avg_price
           FROM session_ticket_prices

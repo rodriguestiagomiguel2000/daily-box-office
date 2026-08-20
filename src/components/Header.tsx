@@ -21,7 +21,8 @@ interface HeaderProps {
   onOpenDailyHistory: () => void;
   onOpenWeekendHistory?: () => void;
   onOpenWeeklyHistory?: () => void;
-  activeView: "tracked" | "daily-history" | "weekend-history" | "weekly-history" | "detail";
+  onOpenRawIngestion?: () => void;
+  activeView: "tracked" | "daily-history" | "weekend-history" | "weekly-history" | "raw-ingestion" | "detail";
 }
 
 function formatNextRunTime(nextRunStr: string | null | undefined): string {
@@ -48,6 +49,7 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenDailyHistory,
   onOpenWeekendHistory,
   onOpenWeeklyHistory,
+  onOpenRawIngestion,
   activeView,
 }) => {
   const isCollecting = status?.scheduler?.isCollecting || isTriggering;
@@ -177,6 +179,21 @@ export const Header: React.FC<HeaderProps> = ({
               >
                 <Calendar className="w-4 h-4 text-cyan-400" />
                 <span>Weekly Box Office</span>
+              </button>
+            )}
+
+            {onOpenRawIngestion && (
+              <button
+                id="nav-raw-ingestion-tab"
+                onClick={onOpenRawIngestion}
+                className={`py-2.5 transition border-b-2 flex items-center gap-2 whitespace-nowrap ${
+                  activeView === "raw-ingestion"
+                    ? "border-emerald-500 text-emerald-400 font-semibold"
+                    : "border-transparent text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                <Database className="w-4 h-4 text-emerald-400" />
+                <span>Dados Reais Ingeridos</span>
               </button>
             )}
           </nav>
