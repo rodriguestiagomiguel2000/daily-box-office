@@ -123,6 +123,7 @@ def emit_progress(
 def collect_data(
     run_id: Optional[str] = None,
     movie_external_ids: Optional[List[str]] = None,
+    tracked_movie_ids: Optional[List[str]] = None,
     limit_sessions_per_movie: Optional[int] = None,
     lookback_minutes: int = 30,
     known_ticket_sessions: Optional[Set[str]] = None
@@ -136,6 +137,13 @@ def collect_data(
     started_at_iso = start_time_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
 
     movies_raw = scraper.get_complete_catalog()
+
+    # Tracked movies set for presale eligibility
+    tracked_set: Set[str] = set()
+    if tracked_movie_ids is not None:
+        tracked_set = set(str(x).strip() for x in tracked_movie_ids if str(x).strip())
+    elif movie_external_ids is not None:
+        tracked_set = set(str(x).strip() for x in movie_external_ids if str(x).strip())
 
     # Filter movies if external_ids specified
     if movie_external_ids is not None:
@@ -210,21 +218,40 @@ def collect_data(
         match = re.search(r"\s*\(([^)]+)\)\s*$", raw_title)
         movie_title = raw_title[:match.start()].strip() if match else raw_title
 
+        # Determine tracking status for movie
+        movie_is_tracked = bool(
+            agg_id in tracked_set
+            or str(m.get("id") or "").strip() in tracked_set
+            or str(m.get("uuid") or "").strip() in tracked_set
+            or m.get("tracking_enabled") is True
+        )
+
+        # Normalize release date to YYYY-MM-DD if present
+        raw_rel_date = str(m.get("release_date") or m.get("releasedate") or "").strip()
+        if "T" in raw_rel_date:
+            raw_rel_date = raw_rel_date.split("T")[0].strip()
+        if " " in raw_rel_date:
+            raw_rel_date = raw_rel_date.split(" ")[0].strip()
+        movie_release_date = raw_rel_date if re.match(r"^\d{4}-\d{2}-\d{2}$", raw_rel_date) else None
+
         movie_meta = {
             "external_id": str(agg_id),
             "title": movie_title,
             "poster_url": m.get("poster_url") or m.get("imageportraiturl") or m.get("imagelandscapeurl") or "",
             "duration": int(m.get("duration") or 0) if str(m.get("duration") or "").isdigit() else None,
             "age_rating": m.get("age_rating") or m.get("certificatedescription") or m.get("certificate") or "",
-            "release_date": m.get("release_date") or m.get("releasedate") or "",
+            "release_date": movie_release_date or "",
         }
 
         try:
             sched = scraper.get_movie_sessions(agg_id)
             days = sched.get("days", []) if isinstance(sched, dict) else []
 
-            # 1. Discover all candidate sessions for this movie (Today only)
+            # 1. Discover all candidate sessions for this movie (Current day + Tracked opening-day presale)
             movie_candidates: List[Dict[str, Any]] = []
+            future_rejected_count = 0
+            current_accepted_count = 0
+            presale_accepted_count = 0
 
             for day in days:
                 for theater in day.get("theaters", []):
@@ -255,17 +282,37 @@ def collect_data(
                             continue
 
                         # STRICT THEATRICAL OPERATIONAL DAY FILTER (6:00 AM Lisbon Cutoff):
-                        # Force session filter to ONLY scrape showtimes scheduled for current operational day (00:00-05:59 belongs to previous calendar day)
                         sess_op_date_str = compute_business_date(starts_at_utc)
-                        if sess_op_date_str != current_op_date_str:
+
+                        is_current_day = (sess_op_date_str == current_op_date_str)
+                        is_opening_day_presale = bool(
+                            movie_is_tracked
+                            and movie_release_date is not None
+                            and current_op_date_str < movie_release_date
+                            and sess_op_date_str == movie_release_date
+                        )
+
+                        if not (is_current_day or is_opening_day_presale):
+                            if sess_op_date_str > current_op_date_str:
+                                future_rejected_count += 1
                             continue
 
-                        # REQUIREMENT 2: Filter out past sessions older than lookback_minutes
-                        if starts_at_utc < cutoff_utc:
+                        # Filter out past sessions older than lookback_minutes (only applies to current-day sessions)
+                        if is_current_day and starts_at_utc < cutoff_utc:
                             continue
 
                         seen_session_uuids_in_run.add(s_uuid)
                         run.sessions_found += 1
+
+                        if is_opening_day_presale:
+                            presale_accepted_count += 1
+                            log.info(
+                                f"[PRESALE] Movie '{movie_title}' | operational_date={sess_op_date_str} | "
+                                f"current={current_op_date_str} | eligible=true | reason=tracked_opening_day | "
+                                f"theater='{theater_name}' | session={s_uuid}"
+                            )
+                        else:
+                            current_accepted_count += 1
 
                         movie_candidates.append({
                             "s_uuid": s_uuid,
@@ -277,6 +324,14 @@ def collect_data(
                             "theater_name": theater_name,
                             "cinema_meta": cinema_meta,
                         })
+
+            if presale_accepted_count > 0 or future_rejected_count > 0:
+                log.info(
+                    f"[PRESALE SUMMARY] Movie '{movie_title}' | release_date={movie_release_date} | "
+                    f"current_op_date={current_op_date_str} | is_tracked={movie_is_tracked} | "
+                    f"current_accepted={current_accepted_count} | presale_accepted={presale_accepted_count} | "
+                    f"other_future_rejected={future_rejected_count}"
+                )
 
             # Sort candidate sessions chronologically for today
             movie_candidates.sort(key=lambda c: c["starts_at_utc"])
@@ -536,6 +591,7 @@ def main():
     parser = argparse.ArgumentParser(description="NOS Cinemas Box Office Collector Job")
     parser.add_argument("--run-id", type=str, default=None, help="Collection Run ID from Node.js supervisor")
     parser.add_argument("--movie-ids", nargs="*", help="List of movie external aggregate IDs to collect")
+    parser.add_argument("--tracked-movie-ids", nargs="*", help="List of movie external aggregate IDs that are tracked for presales")
     parser.add_argument("--limit-sessions", type=int, default=None, help="Limit sessions per movie (for fast testing)")
     parser.add_argument("--lookback-minutes", type=int, default=30, help="Grace window lookback in minutes for historical sessions")
     parser.add_argument("--browse-all-movies", action="store_true", help="Fetch and return full catalog of current movies")
@@ -576,6 +632,7 @@ def main():
         result = collect_data(
             run_id=run_id,
             movie_external_ids=movie_ids,
+            tracked_movie_ids=args.tracked_movie_ids,
             limit_sessions_per_movie=args.limit_sessions,
             lookback_minutes=args.lookback_minutes,
             known_ticket_sessions=known_ticket_sessions

@@ -231,6 +231,19 @@ export async function executeCollectionRunFromPrepared(
     }
     args.push("--lookback-minutes", String(options.lookbackMinutes || 30));
 
+    // Query tracked movies from DB to pass to Python collector for targeted opening-day presale collection
+    try {
+      const trackedRes = await query<{ external_id: string }>(
+        "SELECT external_id FROM movies WHERE tracking_enabled = true;"
+      );
+      const trackedUuids = trackedRes.rows.map((r) => r.external_id).filter(Boolean);
+      if (trackedUuids.length > 0) {
+        args.push("--tracked-movie-ids", ...trackedUuids);
+      }
+    } catch (trErr) {
+      console.warn("Could not query tracked movie IDs from DB:", trErr);
+    }
+
     // Pre-fetch sessions that already have ticket prices to avoid redundant NOS API calls
     try {
       const knownSessionsRes = await query<{ external_session_id: string }>(
