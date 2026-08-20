@@ -1137,13 +1137,15 @@ apiRouter.get("/movies/:id/history-dates", async (req, res) => {
     const movieId = parseInt(req.params.id, 10);
     if (isNaN(movieId)) return res.status(400).json({ error: "Invalid movie ID" });
 
+    const todayStr = getOperationalDateStr();
     const datesRes = await query(
       `SELECT DISTINCT 
         COALESCE(NULLIF(s.operational_date, ''), TO_CHAR((s.starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD')) as date
        FROM sessions s
        WHERE s.movie_id = $1 AND s.starts_at IS NOT NULL
+         AND COALESCE(NULLIF(s.operational_date, ''), TO_CHAR((s.starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD')) <= $2
        ORDER BY date DESC;`,
-      [movieId]
+      [movieId, todayStr]
     );
 
     const dates = datesRes.rows.map((r) => r.date).filter(Boolean);
@@ -1812,18 +1814,18 @@ apiRouter.get("/boxoffice/daily-history", async (req, res) => {
   try {
     const todayStr = getOperationalDateStr();
 
-    // 1. Get all movies that have tracking_enabled = true OR have performance snapshots / sessions
+    // 1. Get all movies that have tracking_enabled = true OR have performance snapshots / sessions for dates <= todayStr
     const moviesRes = await query(`
       SELECT DISTINCT m.id, m.title, m.poster_url, m.release_date, m.tracking_enabled
       FROM movies m
       WHERE m.tracking_enabled = true 
-         OR m.id IN (SELECT DISTINCT movie_id FROM movie_performance_snapshots)
-         OR m.id IN (SELECT DISTINCT movie_id FROM sessions)
+         OR m.id IN (SELECT DISTINCT movie_id FROM movie_performance_snapshots WHERE operational_date <= $1)
+         OR m.id IN (SELECT DISTINCT movie_id FROM sessions WHERE COALESCE(NULLIF(operational_date, ''), TO_CHAR((starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD')) <= $1)
       ORDER BY m.tracking_enabled DESC, m.id ASC;
-    `);
+    `, [todayStr]);
     const movies = moviesRes.rows;
 
-    // 2. Fetch latest snapshot per (movie_id, operational_date) from movie_performance_snapshots
+    // 2. Fetch latest snapshot per (movie_id, operational_date) from movie_performance_snapshots for dates <= todayStr
     const snapsRes = await query(`
       WITH latest_snaps AS (
         SELECT DISTINCT ON (movie_id, operational_date)
@@ -1842,18 +1844,19 @@ apiRouter.get("/boxoffice/daily-history", async (req, res) => {
           estimated_revenue,
           sales_velocity
         FROM movie_performance_snapshots
+        WHERE operational_date <= $1
         ORDER BY movie_id, operational_date, snapshot_timestamp DESC
       )
       SELECT ls.*
       FROM latest_snaps ls;
-    `);
+    `, [todayStr]);
 
-    // 3. Group snapshots by operational_date
+    // 3. Group snapshots by operational_date (strictly <= todayStr)
     const dateMap = new Map<string, Record<number, any>>();
 
     for (const snap of snapsRes.rows) {
       const opDate = snap.operational_date;
-      if (!opDate) continue;
+      if (!opDate || opDate > todayStr) continue;
       if (!dateMap.has(opDate)) {
         dateMap.set(opDate, {});
       }
@@ -1901,8 +1904,10 @@ apiRouter.get("/boxoffice/daily-history", async (req, res) => {
       }
     }
 
-    // 6. Build operational dates list sorted DESC
-    const sortedDates = Array.from(dateMap.keys()).sort((a, b) => b.localeCompare(a));
+    // 6. Build operational dates list sorted DESC (strictly <= todayStr)
+    const sortedDates = Array.from(dateMap.keys())
+      .filter((d) => d <= todayStr)
+      .sort((a, b) => b.localeCompare(a));
 
     const rows = sortedDates.map((opDate) => {
       const movieEntries = dateMap.get(opDate) || {};

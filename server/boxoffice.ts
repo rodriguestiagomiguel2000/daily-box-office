@@ -167,12 +167,12 @@ export function formatPeriodLabel(startStr: string, endStr: string): string {
 export async function getUnifiedDailyBoxOfficeData(movieId?: number) {
   const todayStr = getOperationalDateStr();
 
-  // 1. Fetch latest snapshot per (movie_id, operational_date)
-  const snapParams: any[] = [];
-  let snapWhere = "";
+  // 1. Fetch latest snapshot per (movie_id, operational_date) for dates <= todayStr
+  const snapParams: any[] = [todayStr];
+  let snapWhere = "WHERE operational_date <= $1";
   if (movieId) {
     snapParams.push(movieId);
-    snapWhere = "WHERE movie_id = $1";
+    snapWhere += " AND movie_id = $2";
   }
 
   const snapsRes = await query(
@@ -192,12 +192,12 @@ export async function getUnifiedDailyBoxOfficeData(movieId?: number) {
     snapParams
   );
 
-  // 2. Fetch distinct sessions and distinct cinemas per (movie_id, operational_date)
-  const sessionParams: any[] = [];
-  let sessionWhere = "";
+  // 2. Fetch distinct sessions and distinct cinemas per (movie_id, operational_date) for dates <= todayStr
+  const sessionParams: any[] = [todayStr];
+  let sessionWhere = "AND COALESCE(NULLIF(s.operational_date, ''), TO_CHAR((s.starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD')) <= $1";
   if (movieId) {
     sessionParams.push(movieId);
-    sessionWhere = "AND s.movie_id = $1";
+    sessionWhere += " AND s.movie_id = $2";
   }
 
   const sessionsRes = await query(
@@ -215,9 +215,9 @@ export async function getUnifiedDailyBoxOfficeData(movieId?: number) {
   const moviesRes = await query(
     `SELECT id, external_id, title, poster_url, duration, age_rating, release_date, tracking_enabled
      FROM movies
-     ${movieId ? "WHERE id = $1" : "WHERE tracking_enabled = true OR id IN (SELECT DISTINCT movie_id FROM sessions)"}
+     ${movieId ? "WHERE id = $1" : "WHERE tracking_enabled = true OR id IN (SELECT DISTINCT movie_id FROM sessions WHERE COALESCE(NULLIF(operational_date, ''), TO_CHAR((starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD')) <= $1)"}
      ORDER BY tracking_enabled DESC, id ASC;`,
-    movieId ? [movieId] : []
+    movieId ? [movieId] : [todayStr]
   );
 
   const moviesMap = new Map<number, any>();
@@ -240,10 +240,10 @@ export async function getUnifiedDailyBoxOfficeData(movieId?: number) {
     }
   >();
 
-  // Add snapshots
+  // Add snapshots (strictly <= todayStr)
   for (const snap of snapsRes.rows) {
     const opDate = snap.operational_date;
-    if (!opDate) continue;
+    if (!opDate || opDate > todayStr) continue;
     const key = `${snap.movie_id}_${opDate}`;
     dailyMap.set(key, {
       movie_id: snap.movie_id,
@@ -257,10 +257,10 @@ export async function getUnifiedDailyBoxOfficeData(movieId?: number) {
     });
   }
 
-  // Add session stats (cinema IDs and session IDs)
+  // Add session stats (cinema IDs and session IDs, strictly <= todayStr)
   for (const sess of sessionsRes.rows) {
     const opDate = sess.op_date;
-    if (!opDate) continue;
+    if (!opDate || opDate > todayStr) continue;
     const key = `${sess.movie_id}_${opDate}`;
     if (!dailyMap.has(key)) {
       dailyMap.set(key, {
