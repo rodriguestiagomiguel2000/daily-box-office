@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { X, Calendar, Clock, Film, ShieldCheck, ShieldAlert, BarChart2, TrendingUp, Users, Ticket, RefreshCw } from "lucide-react";
 import { ResponsiveContainer, LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
 import { SessionHistoryResponse, SessionSnapshotHistory } from "../types";
+import { fetchJson } from "../utils/api";
 
 interface SessionDetailModalProps {
   sessionId: number | null;
@@ -23,12 +24,7 @@ export const SessionDetailModal: React.FC<SessionDetailModalProps> = ({ sessionI
     setLoading(true);
     setError(null);
     try {
-      const res = await fetch(`/api/sessions/${sessionId}/history`);
-      const contentType = res.headers.get("content-type");
-      if (!res.ok || !contentType || !contentType.includes("application/json")) {
-        throw new Error(`Failed to load session history: ${res.status} ${res.statusText}`);
-      }
-      const json: SessionHistoryResponse = await res.json();
+      const json = await fetchJson<SessionHistoryResponse>(`/api/sessions/${sessionId}/history`);
       setData(json);
     } catch (err: any) {
       setError(err.message || "An error occurred fetching session details");

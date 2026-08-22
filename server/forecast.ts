@@ -1,4 +1,5 @@
 import { query } from "./db";
+import { getSessionPricesSqlCte } from "./revenue";
 import {
   getOperationalDateStr,
   parseLisbonLocalToUTC,
@@ -677,37 +678,24 @@ export async function computeMovieEODForecast(
 
   // 3. Query remaining session inventory strictly after cutoff
   const inventoryRes = await query(
-    `SELECT 
-       COUNT(*) as total_sessions,
-       COUNT(CASE WHEN starts_at > $3 THEN 1 END) as future_sessions,
-       COALESCE(SUM(CASE WHEN starts_at > $3 THEN sellable_seats ELSE 0 END), 0) as remaining_capacity,
-       AVG(sp.resolved_unit_price) as avg_price
-     FROM (
-       SELECT DISTINCT ON (s.id)
-         s.id,
-         s.starts_at,
-         COALESCE(ss.sellable_seats, 150) as sellable_seats
-       FROM sessions s
-       LEFT JOIN seat_snapshots ss ON ss.session_id = s.id
-       WHERE s.movie_id = $1
-         AND (s.operational_date = $2 OR TO_CHAR((s.starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD') = $2)
-       ORDER BY s.id, ss.collected_at DESC
-     ) s_latest
-     LEFT JOIN (
-       SELECT 
-         s.id as session_id,
-         COALESCE(
-           MIN(stp.price) FILTER (WHERE stp.is_default = true AND stp.price > 0),
-           MIN(stp.price) FILTER (WHERE stp.price > 0 AND (stp.ticket_type ILIKE '%normal%' OR stp.ticket_type ILIKE '%adulto%' OR stp.ticket_type ILIKE '%inteiro%' OR stp.ticket_type ILIKE '%standard%') AND stp.ticket_type NOT ILIKE '%fam%' AND stp.ticket_type NOT ILIKE '%pax%' AND (stp.seats_count IS NULL OR stp.seats_count = 1)),
-           MIN(stp.price) FILTER (WHERE stp.price > 0 AND stp.ticket_type NOT ILIKE '%fam%' AND stp.ticket_type NOT ILIKE '%pax%' AND stp.ticket_type NOT ILIKE '%crian%' AND stp.ticket_type NOT ILIKE '%estud%' AND stp.ticket_type NOT ILIKE '%sénior%' AND stp.ticket_type NOT ILIKE '%senior%' AND (stp.seats_count IS NULL OR stp.seats_count = 1)),
-           AVG(stp.price) FILTER (WHERE stp.price > 0),
-           8.75
-         ) as resolved_unit_price
-       FROM sessions s
-       LEFT JOIN session_ticket_prices stp ON stp.session_id = s.id
-       WHERE s.movie_id = $1
-       GROUP BY s.id
-     ) sp ON sp.session_id = s_latest.id;`,
+    `WITH ${getSessionPricesSqlCte()}
+     SELECT 
+        COUNT(*) as total_sessions,
+        COUNT(CASE WHEN s_latest.starts_at > $3 THEN 1 END) as future_sessions,
+        COALESCE(SUM(CASE WHEN s_latest.starts_at > $3 THEN s_latest.sellable_seats ELSE 0 END), 0) as remaining_capacity,
+        AVG(COALESCE(sp.resolved_unit_price, 8.75)) as avg_price
+      FROM (
+        SELECT DISTINCT ON (s.id)
+          s.id,
+          s.starts_at,
+          COALESCE(ss.sellable_seats, 150) as sellable_seats
+        FROM sessions s
+        LEFT JOIN seat_snapshots ss ON ss.session_id = s.id
+        WHERE s.movie_id = $1
+          AND (s.operational_date = $2 OR TO_CHAR((s.starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD') = $2)
+        ORDER BY s.id, ss.collected_at DESC
+      ) s_latest
+      LEFT JOIN session_prices sp ON sp.session_id = s_latest.id;`,
     [movieId, operationalDateStr, targetTs.toISOString()]
   );
 
@@ -1036,31 +1024,20 @@ export async function runHistoricalBacktests(options?: { movieIds?: number[]; ov
     // Pre-fetch inventory & session price info for this movie
     const invMap = new Map<string, { future_sessions: number; remaining_capacity: number; avg_price: number }>();
     const invRes = await query(
-      `SELECT 
-         COALESCE(s.operational_date, TO_CHAR((s.starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD')) as op_date,
-         s.starts_at,
-         COALESCE(ss.sellable_seats, 150) as sellable_seats,
-         COALESCE(sp.resolved_unit_price, 8.75) as resolved_unit_price
-       FROM sessions s
-       LEFT JOIN (
-         SELECT DISTINCT ON (session_id) session_id, sellable_seats
-         FROM seat_snapshots
-         ORDER BY session_id, collected_at DESC
-       ) ss ON ss.session_id = s.id
-       LEFT JOIN (
-         SELECT 
-           session_id,
-           COALESCE(
-             MIN(price) FILTER (WHERE is_default = true AND price > 0),
-             MIN(price) FILTER (WHERE price > 0 AND (ticket_type ILIKE '%normal%' OR ticket_type ILIKE '%adulto%' OR ticket_type ILIKE '%inteiro%' OR ticket_type ILIKE '%standard%') AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND (seats_count IS NULL OR seats_count = 1)),
-             MIN(price) FILTER (WHERE price > 0 AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND ticket_type NOT ILIKE '%crian%' AND ticket_type NOT ILIKE '%estud%' AND ticket_type NOT ILIKE '%sénior%' AND ticket_type NOT ILIKE '%senior%' AND (seats_count IS NULL OR seats_count = 1)),
-             AVG(price) FILTER (WHERE price > 0),
-             8.75
-           ) as resolved_unit_price
-         FROM session_ticket_prices
-         GROUP BY session_id
-       ) sp ON sp.session_id = s.id
-       WHERE s.movie_id = $1;`,
+      `WITH ${getSessionPricesSqlCte()}
+       SELECT 
+          COALESCE(s.operational_date, TO_CHAR((s.starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD')) as op_date,
+          s.starts_at,
+          COALESCE(ss.sellable_seats, 150) as sellable_seats,
+          COALESCE(sp.resolved_unit_price, 8.75) as resolved_unit_price
+        FROM sessions s
+        LEFT JOIN (
+          SELECT DISTINCT ON (session_id) session_id, sellable_seats
+          FROM seat_snapshots
+          ORDER BY session_id, collected_at DESC
+        ) ss ON ss.session_id = s.id
+        LEFT JOIN session_prices sp ON sp.session_id = s.id
+        WHERE s.movie_id = $1;`,
       [movieId]
     );
 

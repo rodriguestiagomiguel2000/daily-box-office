@@ -17,6 +17,7 @@ import {
   DailyBoxOfficeRow,
   Movie,
 } from "../types";
+import { fetchJson } from "../utils/api";
 
 interface DailyBoxOfficeHistoryViewProps {
   onSelectMovie: (movieId: number) => void;
@@ -98,9 +99,7 @@ export const DailyBoxOfficeHistoryView: React.FC<DailyBoxOfficeHistoryViewProps>
     setIsLoading(true);
     setError(null);
     try {
-      const res = await fetch("/api/boxoffice/daily-history");
-      if (!res.ok) throw new Error(`HTTP error ${res.status}`);
-      const json: DailyBoxOfficeHistoryResponse = await res.json();
+      const json = await fetchJson<DailyBoxOfficeHistoryResponse>("/api/boxoffice/daily-history");
       setData(json);
     } catch (err: any) {
       console.error("Failed to fetch daily box office history:", err);

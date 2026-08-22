@@ -19,6 +19,7 @@ import {
   Award,
 } from "lucide-react";
 import { WeeklyBoxOfficeResponse, WeeklyBoxOfficePeriod, WeeklyBoxOfficeMovieItem } from "../types";
+import { fetchJson } from "../utils/api";
 
 interface WeeklyBoxOfficeViewProps {
   onSelectMovie: (movieId: number) => void;
@@ -46,11 +47,7 @@ export const WeeklyBoxOfficeView: React.FC<WeeklyBoxOfficeViewProps> = ({
     setError(null);
 
     try {
-      const res = await fetch("/api/boxoffice/weeks");
-      if (!res.ok) {
-        throw new Error(`Failed to load weekly box office (HTTP ${res.status})`);
-      }
-      const json: WeeklyBoxOfficeResponse = await res.json();
+      const json = await fetchJson<WeeklyBoxOfficeResponse>("/api/boxoffice/weeks");
       setData(json);
     } catch (err: any) {
       console.error("Error fetching weekly box office:", err);

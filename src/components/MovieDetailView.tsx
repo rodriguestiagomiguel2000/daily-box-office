@@ -50,6 +50,7 @@ import {
   getLisbonTimeParts,
   getCurrentTheatricalOperationalDate,
 } from "../utils/scheduling";
+import { fetchJson } from "../utils/api";
 import { SessionDetailModal } from "./SessionDetailModal";
 import { MovieDailyBreakdownView } from "./MovieDailyBreakdownView";
 import { MoviePresaleCurveView } from "./MoviePresaleCurveView";
@@ -171,10 +172,10 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
   useEffect(() => {
     let isMounted = true;
     async function fetchDates() {
+      if (!movie?.id) return;
       try {
-        const res = await fetch(`/api/movies/${movie.id}/history-dates`);
-        if (res.ok && isMounted) {
-          const json = await res.json();
+        const json = await fetchJson<{ dates?: string[] }>(`/api/movies/${movie.id}/history-dates`);
+        if (json && isMounted) {
           const dates: string[] = json.dates || [];
           setHistoryDates(dates);
           if (dates.length > 0 && !dates.includes(selectedDate)) {
@@ -194,11 +195,11 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
     return () => {
       isMounted = false;
     };
-  }, [movie.id]);
+  }, [movie?.id]);
 
   // Fetch intraday comparison alone with race condition protection
   const fetchComparison = useCallback(async () => {
-    if (!datesLoaded) return;
+    if (!datesLoaded || !movie?.id) return;
 
     // Abort previous in-flight request
     if (comparisonAbortControllerRef.current) {
@@ -214,16 +215,12 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
     try {
       const dateParam = selectedDate || todayDefaultStr;
       const timeParam = targetTime || "13:00";
-      const res = await fetch(
-        `/api/movies/${movie.id}/intraday-comparison?date=${dateParam}&time=${timeParam}`,
+      const json = await fetchJson<IntradayComparisonResponse>(
+        `/api/movies/${movie.id}/intraday-comparison?date=${encodeURIComponent(dateParam)}&time=${encodeURIComponent(timeParam)}`,
         { signal: controller.signal }
       );
-      if (res.ok) {
-        const json = await res.json();
-        // Only update state if this is still the most recent request
-        if (currentRequestId === comparisonRequestIdRef.current) {
-          setComparisonData(json);
-        }
+      if (json && currentRequestId === comparisonRequestIdRef.current) {
+        setComparisonData(json);
       }
     } catch (err: any) {
       if (err?.name !== "AbortError") {
@@ -234,7 +231,7 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
         setIsLoadingComparison(false);
       }
     }
-  }, [movie.id, selectedDate, targetTime, todayDefaultStr, datesLoaded]);
+  }, [movie?.id, selectedDate, targetTime, todayDefaultStr, datesLoaded]);
 
   useEffect(() => {
     fetchComparison();
@@ -242,7 +239,7 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
 
   // Fetch intraday curves & progression together with race condition protection
   const fetchCurvesAndProgression = useCallback(async () => {
-    if (!datesLoaded) return;
+    if (!datesLoaded || !movie?.id) return;
 
     // Abort previous in-flight request
     if (curvesAbortControllerRef.current) {
@@ -255,21 +252,21 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
     setIsLoadingCurves(true);
     try {
       const dateParam = selectedDate || todayDefaultStr;
-      const [curvesRes, progRes] = await Promise.all([
-        fetch(`/api/movies/${movie.id}/intraday-curves?date=${dateParam}`, { signal: controller.signal }),
-        fetch(`/api/movies/${movie.id}/intraday-progression?date=${dateParam}`, { signal: controller.signal }),
+      const [curvesJson, progJson] = await Promise.all([
+        fetchJson<IntradayCurvesResponse>(
+          `/api/movies/${movie.id}/intraday-curves?date=${encodeURIComponent(dateParam)}`,
+          { signal: controller.signal }
+        ),
+        fetchJson<{ items?: IntradaySnapshot[] }>(
+          `/api/movies/${movie.id}/intraday-progression?date=${encodeURIComponent(dateParam)}`,
+          { signal: controller.signal }
+        ),
       ]);
-      if (curvesRes.ok) {
-        const json = await curvesRes.json();
-        if (currentRequestId === curvesRequestIdRef.current) {
-          setCurvesData(json);
-        }
+      if (curvesJson && currentRequestId === curvesRequestIdRef.current) {
+        setCurvesData(curvesJson);
       }
-      if (progRes.ok) {
-        const json = await progRes.json();
-        if (currentRequestId === curvesRequestIdRef.current) {
-          setProgressionData(json.items || []);
-        }
+      if (progJson && currentRequestId === curvesRequestIdRef.current) {
+        setProgressionData(progJson.items || []);
       }
     } catch (err: any) {
       if (err?.name !== "AbortError") {
@@ -280,7 +277,7 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
         setIsLoadingCurves(false);
       }
     }
-  }, [movie.id, selectedDate, todayDefaultStr, datesLoaded]);
+  }, [movie?.id, selectedDate, todayDefaultStr, datesLoaded]);
 
   useEffect(() => {
     fetchCurvesAndProgression();
@@ -288,7 +285,7 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
 
   // Fetch intraday forecast with race condition protection
   const fetchForecast = useCallback(async () => {
-    if (!datesLoaded) return;
+    if (!datesLoaded || !movie?.id) return;
 
     // Abort previous in-flight request
     if (forecastAbortControllerRef.current) {
@@ -302,15 +299,12 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
     try {
       const dateParam = selectedDate || todayDefaultStr;
       const timeParam = targetTime || "13:00";
-      const res = await fetch(
-        `/api/movies/${movie.id}/intraday-forecast?date=${dateParam}&time=${timeParam}`,
+      const json = await fetchJson<MovieForecastResponse>(
+        `/api/movies/${movie.id}/intraday-forecast?date=${encodeURIComponent(dateParam)}&time=${encodeURIComponent(timeParam)}`,
         { signal: controller.signal }
       );
-      if (res.ok) {
-        const json = await res.json();
-        if (currentRequestId === forecastRequestIdRef.current) {
-          setForecastData(json);
-        }
+      if (json && currentRequestId === forecastRequestIdRef.current) {
+        setForecastData(json);
       }
     } catch (err: any) {
       if (err?.name !== "AbortError") {
@@ -321,7 +315,7 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
         setIsLoadingForecast(false);
       }
     }
-  }, [movie.id, selectedDate, targetTime, todayDefaultStr, datesLoaded]);
+  }, [movie?.id, selectedDate, targetTime, todayDefaultStr, datesLoaded]);
 
   useEffect(() => {
     fetchForecast();

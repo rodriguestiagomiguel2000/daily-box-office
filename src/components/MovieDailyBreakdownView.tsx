@@ -27,6 +27,7 @@ import {
   Cell,
 } from "recharts";
 import { MovieDailyBreakdownResponse, MovieDailyBreakdownDay } from "../types";
+import { fetchJson } from "../utils/api";
 
 interface MovieDailyBreakdownViewProps {
   movieId: number;
@@ -44,6 +45,7 @@ export const MovieDailyBreakdownView: React.FC<MovieDailyBreakdownViewProps> = (
   const [activeChartMetric, setActiveChartMetric] = useState<"revenue" | "admissions" | "sessions">("revenue");
 
   const fetchBreakdown = async (isManual = false) => {
+    if (!movieId) return;
     if (isManual) {
       setIsRefreshing(true);
     } else {
@@ -52,11 +54,7 @@ export const MovieDailyBreakdownView: React.FC<MovieDailyBreakdownViewProps> = (
     setError(null);
 
     try {
-      const res = await fetch(`/api/movies/${movieId}/daily-breakdown`);
-      if (!res.ok) {
-        throw new Error(`Failed to load daily breakdown (HTTP ${res.status})`);
-      }
-      const json: MovieDailyBreakdownResponse = await res.json();
+      const json = await fetchJson<MovieDailyBreakdownResponse>(`/api/movies/${movieId}/daily-breakdown`);
       setData(json);
     } catch (err: any) {
       console.error("Error fetching daily breakdown:", err);

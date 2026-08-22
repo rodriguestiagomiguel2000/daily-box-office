@@ -29,6 +29,7 @@ import {
   Cell,
 } from "recharts";
 import { WeekendBoxOfficeResponse, WeekendBoxOfficePeriod, WeekendBoxOfficeMovieItem } from "../types";
+import { fetchJson } from "../utils/api";
 
 interface WeekendBoxOfficeViewProps {
   onSelectMovie: (movieId: number) => void;
@@ -56,11 +57,7 @@ export const WeekendBoxOfficeView: React.FC<WeekendBoxOfficeViewProps> = ({
     setError(null);
 
     try {
-      const res = await fetch("/api/boxoffice/weekends");
-      if (!res.ok) {
-        throw new Error(`Failed to load weekend box office (HTTP ${res.status})`);
-      }
-      const json: WeekendBoxOfficeResponse = await res.json();
+      const json = await fetchJson<WeekendBoxOfficeResponse>("/api/boxoffice/weekends");
       setData(json);
     } catch (err: any) {
       console.error("Error fetching weekend box office:", err);

@@ -26,6 +26,7 @@ import {
   Sliders
 } from "lucide-react";
 import { RawIngestionLog, CalibrationFactorsResponse } from "../types";
+import { fetchJson } from "../utils/api";
 
 interface RawIngestionTabProps {
   onTriggerNosRun?: () => void;
@@ -52,19 +53,13 @@ export const RawIngestionTab: React.FC<RawIngestionTabProps> = ({
   const fetchLogs = useCallback(async (manual = false) => {
     if (manual) setIsRefreshing(true);
     try {
-      const [logsRes, calRes] = await Promise.all([
-        fetch("/api/ingestion/raw-logs"),
-        fetch("/api/calibration/factors").catch(() => null)
+      const [data, calData] = await Promise.all([
+        fetchJson<RawIngestionLog[]>("/api/ingestion/raw-logs"),
+        fetchJson<CalibrationFactorsResponse>("/api/calibration/factors").catch(() => null)
       ]);
 
-      if (!logsRes.ok) {
-        throw new Error(`Server returned status ${logsRes.status}`);
-      }
-      const data: RawIngestionLog[] = await logsRes.json();
       setLogs(Array.isArray(data) ? data : []);
-
-      if (calRes && calRes.ok) {
-        const calData: CalibrationFactorsResponse = await calRes.json();
+      if (calData) {
         setCalibrationData(calData);
       }
     } catch (err: any) {
@@ -88,16 +83,15 @@ export const RawIngestionTab: React.FC<RawIngestionTabProps> = ({
     setIsTriggeringIca(true);
     setActionMessage(null);
     try {
-      const res = await fetch("/api/ingestion/trigger-ica", { method: "POST" });
-      const data = await res.json();
-      if (res.ok && data.success) {
+      const data = await fetchJson<{ success?: boolean; message?: string; error?: string }>("/api/ingestion/trigger-ica", { method: "POST" });
+      if (data?.success) {
         setActionMessage({
           text: data.message || "Official ICA report successfully downloaded, parsed, and logged!",
           type: "success",
         });
         await fetchLogs(true);
       } else {
-        throw new Error(data.error || "Failed to trigger ICA ingestion");
+        throw new Error(data?.error || "Failed to trigger ICA ingestion");
       }
     } catch (err: any) {
       setActionMessage({

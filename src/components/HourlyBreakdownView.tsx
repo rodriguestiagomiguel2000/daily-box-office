@@ -30,6 +30,7 @@ import {
   CartesianGrid,
 } from "recharts";
 import { HourlyBreakdownResponse, HourlyBucketItem } from "../types";
+import { fetchJson } from "../utils/api";
 
 interface HourlyBreakdownViewProps {
   movieId: number;
@@ -71,11 +72,7 @@ export const HourlyBreakdownView: React.FC<HourlyBreakdownViewProps> = ({
         url += `&compare_date=${encodeURIComponent(compareDate)}`;
       }
 
-      const res = await fetch(url);
-      if (!res.ok) {
-        throw new Error(`Server returned status ${res.status}`);
-      }
-      const json: HourlyBreakdownResponse = await res.json();
+      const json = await fetchJson<HourlyBreakdownResponse>(url);
       setData(json);
     } catch (err: any) {
       console.error("Error fetching hourly breakdown:", err);

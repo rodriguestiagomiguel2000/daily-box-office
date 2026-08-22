@@ -4,7 +4,7 @@ import os from "os";
 import path from "path";
 import readline from "readline";
 import { pool, query } from "./db";
-import { logCollectionPricingAuditReport } from "./revenue";
+import { logCollectionPricingAuditReport, getSessionPricesSqlCte } from "./revenue";
 
 export interface CollectorJobOptions {
   runId?: string;
@@ -898,44 +898,7 @@ export async function generateMoviePerformanceSnapshots(collectionRunDbId: numbe
             AND st.transition_timestamp <= $3
           ORDER BY st.session_id, st.transition_timestamp DESC
         ),
-        session_prices AS (
-          SELECT 
-            s.id as session_id,
-            s.movie_id,
-            s.format,
-            base_price.raw_unit_price as resolved_unit_price_raw,
-            COALESCE(cf_movie.gamma, cf_cat.gamma, 1.0) as gamma,
-            ROUND((base_price.raw_unit_price * COALESCE(cf_movie.gamma, cf_cat.gamma, 1.0))::numeric, 2) as resolved_unit_price
-          FROM sessions s
-          LEFT JOIN movies m ON s.movie_id = m.id
-          LEFT JOIN LATERAL (
-            SELECT 
-              COALESCE(
-                MIN(stp.price) FILTER (WHERE stp.is_default = true AND stp.price > 0),
-                MIN(stp.price) FILTER (WHERE stp.price > 0 AND (stp.ticket_type ILIKE '%normal%' OR stp.ticket_type ILIKE '%adulto%' OR stp.ticket_type ILIKE '%inteiro%' OR stp.ticket_type ILIKE '%standard%') AND stp.ticket_type NOT ILIKE '%fam%' AND stp.ticket_type NOT ILIKE '%pax%' AND (stp.seats_count IS NULL OR stp.seats_count = 1)),
-                MIN(stp.price) FILTER (WHERE stp.price > 0 AND stp.ticket_type NOT ILIKE '%fam%' AND stp.ticket_type NOT ILIKE '%pax%' AND stp.ticket_type NOT ILIKE '%crian%' AND stp.ticket_type NOT ILIKE '%estud%' AND stp.ticket_type NOT ILIKE '%sénior%' AND stp.ticket_type NOT ILIKE '%senior%' AND (stp.seats_count IS NULL OR stp.seats_count = 1)),
-                AVG(stp.price) FILTER (WHERE stp.price > 0),
-                CASE 
-                  WHEN s.format ILIKE '%IMAX%' THEN 13.50 
-                  WHEN s.format ILIKE '%3D%' THEN 9.50 
-                  ELSE 8.75 
-                END
-              ) as raw_unit_price
-            FROM session_ticket_prices stp
-            WHERE stp.session_id = s.id
-          ) base_price ON true
-          LEFT JOIN calibration_factors cf_movie ON cf_movie.movie_id = s.movie_id
-          LEFT JOIN calibration_factors cf_cat ON cf_cat.movie_id IS NULL AND cf_cat.category = COALESCE(
-            m.category,
-            CASE 
-              WHEN m.title ILIKE '%animac%' OR m.title ILIKE '%patrulha pata%' OR m.title ILIKE '%minion%' OR m.title ILIKE '%minimo%' OR m.title ILIKE '%famil%' OR m.title ILIKE '%disney%' OR m.title ILIKE '%pixar%' OR m.title ILIKE '%divertida%' OR m.title ILIKE '%toy story%' OR m.title ILIKE '%vaiana%' OR m.title ILIKE '%sonic%' OR m.title ILIKE '%mario%' OR m.title ILIKE '%stitch%' OR m.title ILIKE '%paddington%' OR m.title ILIKE '%shrek%' OR m.title ILIKE '%frozen%' OR m.title ILIKE '%wonka%' OR m.title ILIKE '%barbie%' THEN 'Family / Animation'
-              WHEN m.title ILIKE '%drama%' OR m.title ILIKE '%terror%' OR m.title ILIKE '%horror%' OR m.title ILIKE '%thriller%' OR m.title ILIKE '%crime%' OR m.title ILIKE '%misterio%' OR m.title ILIKE '%romance%' OR m.title ILIKE '%biograf%' THEN 'Drama / Adult'
-              ELSE 'Action / General'
-            END
-          )
-          WHERE s.id IN (SELECT session_id FROM session_latest_snaps)
-          GROUP BY s.id, s.movie_id, s.format, base_price.raw_unit_price, cf_movie.gamma, cf_cat.gamma
-        )
+        ${getSessionPricesSqlCte()}
         SELECT 
           COUNT(sls.session_id) as showcount_total,
           COUNT(CASE WHEN sls.starts_at <= $3 THEN 1 END) as shows_started,

@@ -26,6 +26,7 @@ import {
   Legend,
 } from "recharts";
 import { MoviePresaleCurveResponse, PresaleBucket } from "../types";
+import { fetchJson } from "../utils/api";
 
 interface MoviePresaleCurveViewProps {
   movieId: number;
@@ -43,14 +44,11 @@ export const MoviePresaleCurveView: React.FC<MoviePresaleCurveViewProps> = ({
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
 
   const fetchPresaleCurve = useCallback(async () => {
+    if (!movieId) return;
     try {
       setLoading(true);
       setError(null);
-      const res = await fetch(`/api/movies/${movieId}/presale-curve`);
-      if (!res.ok) {
-        throw new Error(`Failed to load presale curve (${res.status})`);
-      }
-      const json: MoviePresaleCurveResponse = await res.json();
+      const json = await fetchJson<MoviePresaleCurveResponse>(`/api/movies/${movieId}/presale-curve`);
       setData(json);
     } catch (err: any) {
       console.error("Error fetching presale curve:", err);

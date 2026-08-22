@@ -32,6 +32,14 @@ async function startServer() {
     res.json({ status: "healthy", timestamp: new Date().toISOString() });
   });
 
+  // Explicit safeguard: ensure /api routes never fall through to Vite SPA html handler
+  app.all("/api/*all", (req, res) => {
+    res.status(404).json({ error: `API route not found: ${req.method} ${req.originalUrl}` });
+  });
+  app.all("/api/*", (req, res) => {
+    res.status(404).json({ error: `API route not found: ${req.method} ${req.originalUrl}` });
+  });
+
   // Vite middleware for development vs static dist for production
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
