@@ -645,4 +645,34 @@ export interface RawIngestionLog {
   rawDetails: Record<string, any>;
 }
 
+export interface CategoryFactor {
+  categoryLabel?: string;
+  gamma: number;
+  sample_count: number;
+  updated_at: string;
+}
+
+export interface CalibrationFactorsResponse {
+  categoryFactors: {
+    FAMILY?: CategoryFactor;
+    ACTION_GENERAL?: CategoryFactor;
+    DRAMA_ADULT?: CategoryFactor;
+    [key: string]: CategoryFactor | undefined;
+  };
+  movieFactors: Array<{
+    movieId: number;
+    movieTitle: string;
+    category: string;
+    gamma: number;
+    sampleCount: number;
+    updatedAt: string;
+  }>;
+  totalCategoryBaselines: number;
+  totalMovieFactors: number;
+  emaAlpha?: number;
+  clipMin?: number;
+  clipMax?: number;
+}
+
+
 

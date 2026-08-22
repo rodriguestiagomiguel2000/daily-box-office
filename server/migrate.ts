@@ -237,6 +237,12 @@ export async function runMigrations(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_forecast_backtests_movie ON forecast_backtests(movie_id, operational_date, cutoff_time);
     CREATE INDEX IF NOT EXISTS idx_forecast_backtests_cutoff ON forecast_backtests(cutoff_time, model_version);
 
+    -- Ensure columns on movies and movie_performance_snapshots
+    ALTER TABLE movies ADD COLUMN IF NOT EXISTS category TEXT;
+    ALTER TABLE movie_performance_snapshots ADD COLUMN IF NOT EXISTS resolved_unit_price_raw NUMERIC(6, 2);
+    ALTER TABLE movie_performance_snapshots ADD COLUMN IF NOT EXISTS resolved_unit_price NUMERIC(6, 2);
+    ALTER TABLE movie_performance_snapshots ADD COLUMN IF NOT EXISTS gamma NUMERIC(5, 3) DEFAULT 1.0;
+
     -- 12. Raw Ingestion Logs (ICA official reports & NOS collector payloads)
     CREATE TABLE IF NOT EXISTS raw_ingestion_logs (
       id VARCHAR(100) PRIMARY KEY,
@@ -250,6 +256,27 @@ export async function runMigrations(): Promise<void> {
     );
     CREATE INDEX IF NOT EXISTS idx_raw_ingestion_logs_source ON raw_ingestion_logs(source, collected_at DESC);
     CREATE INDEX IF NOT EXISTS idx_raw_ingestion_logs_collected ON raw_ingestion_logs(collected_at DESC);
+
+    -- 13. Calibration Factors (Empirical gamma correction factors from ICA benchmarks)
+    CREATE TABLE IF NOT EXISTS calibration_factors (
+      id SERIAL PRIMARY KEY,
+      movie_id INT REFERENCES movies(id) ON DELETE CASCADE,
+      category TEXT NOT NULL,
+      gamma NUMERIC(5, 3) NOT NULL DEFAULT 1.0,
+      sample_count INT NOT NULL DEFAULT 0,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_cal_movie ON calibration_factors(movie_id) WHERE movie_id IS NOT NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_cal_cat ON calibration_factors(category) WHERE movie_id IS NULL;
+    CREATE INDEX IF NOT EXISTS idx_cal_updated ON calibration_factors(updated_at DESC);
+
+    -- Seed initial baseline category calibration factors if not present
+    INSERT INTO calibration_factors (category, gamma, sample_count, updated_at)
+    VALUES 
+      ('Family / Animation', 0.80, 0, NOW()),
+      ('Action / General', 0.90, 0, NOW()),
+      ('Drama / Adult', 0.93, 0, NOW())
+    ON CONFLICT (category) WHERE movie_id IS NULL DO NOTHING;
   `;
 
   await query(migrationSQL);

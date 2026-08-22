@@ -157,14 +157,25 @@ class CalibrationService:
     def update_from_ica(
         self,
         ica_records: List[ICAMovieRecord],
-        default_adult_price: float = DEFAULT_ADULT_PRICE_BASELINE
+        movie_baseline_prices: Optional[Dict[str, float]] = None,
+        default_adult_price: float = DEFAULT_ADULT_PRICE_BASELINE,
+        min_category_samples: int = 3,
+        min_admissions_floor: int = 500,
+        ema_alpha: float = 0.70
     ) -> Dict[str, float]:
         """
         Updates dynamic calibration multipliers (gamma) using official ICA records.
         
         Calculates:
-            gamma_movie = ATP_ica / P_adult
-            gamma_category = weighted_average(gamma_movie across movies in category)
+            gamma_movie = rec.atp / ref_price (where ref_price is the movie's actual admissions-weighted resolved unit price)
+            gamma_movie (accumulated) = EMA(gamma_movie, prev_gamma, alpha=0.70)
+            gamma_category = weighted_average(gamma_movie across qualifying movies in category)
+            
+        Guards:
+            - Clips gamma to [0.50, 1.30]
+            - Requires at least `min_category_samples` (default 3) qualifying movies with weekly_admissions >= `min_admissions_floor`
+              before updating a category factor from its default baseline.
+            - Accumulates movie-specific factors across weeks via Exponential Moving Average (EMA) rather than overwriting.
         """
         if not ica_records:
             return self.state.category_factors
@@ -173,42 +184,76 @@ class CalibrationService:
         category_weights: Dict[str, float] = {cat: 0.0 for cat in DEFAULT_CALIBRATION_FACTORS}
         category_counts: Dict[str, int] = {cat: 0 for cat in DEFAULT_CALIBRATION_FACTORS}
 
-        movie_factors: Dict[str, float] = {}
+        # Normalize movie_baseline_prices keys if provided
+        norm_baseline_prices: Dict[str, float] = {}
+        if movie_baseline_prices:
+            for k, v in movie_baseline_prices.items():
+                if v and float(v) > 0:
+                    norm_baseline_prices[normalize_title(str(k))] = float(v)
+
+        movie_factors: Dict[str, float] = dict(self.state.movie_specific_factors)
 
         for rec in ica_records:
             if rec.atp <= 0 or rec.weekly_admissions <= 0:
                 continue
 
-            # Movie specific gamma
-            gamma_m = round(rec.atp / default_adult_price, 3)
+            norm_t = normalize_title(rec.title)
+
+            # Determine movie's actual reference price from DB, or fallback
+            ref_price = default_adult_price
+            if norm_baseline_prices:
+                if norm_t in norm_baseline_prices:
+                    ref_price = norm_baseline_prices[norm_t]
+                else:
+                    # Check substring match in provided prices
+                    for bp_key, bp_val in norm_baseline_prices.items():
+                        if bp_key and (bp_key in norm_t or norm_t in bp_key):
+                            ref_price = bp_val
+                            break
+
+            # Observed movie gamma for this report
+            gamma_obs = round(rec.atp / ref_price, 3)
             # Clip reasonable bounds [0.50, 1.30] to prevent extreme anomalies
+            gamma_obs = max(0.50, min(1.30, gamma_obs))
+
+            # Exponential Moving Average with existing stored factor if present
+            if norm_t in self.state.movie_specific_factors:
+                prev_gamma = self.state.movie_specific_factors[norm_t]
+                gamma_m = round(ema_alpha * gamma_obs + (1.0 - ema_alpha) * prev_gamma, 3)
+            else:
+                gamma_m = gamma_obs
+
             gamma_m = max(0.50, min(1.30, gamma_m))
-            movie_factors[normalize_title(rec.title)] = gamma_m
+            movie_factors[norm_t] = gamma_m
 
             # Classify movie
             cat = classify_movie_category(rec.title)
-            weight = rec.weekly_admissions
-            category_totals[cat] += gamma_m * weight
-            category_weights[cat] += weight
-            category_counts[cat] += 1
+            # Category aggregation guard: require admissions floor to count toward category factor
+            if rec.weekly_admissions >= min_admissions_floor:
+                weight = float(rec.weekly_admissions)
+                category_totals[cat] += gamma_m * weight
+                category_weights[cat] += weight
+                category_counts[cat] += 1
 
-        # Compute category averages
+        # Compute category averages with minimum sample count guard
         new_category_factors: Dict[str, float] = {}
         for cat, default_gamma in DEFAULT_CALIBRATION_FACTORS.items():
-            if category_weights[cat] > 0:
+            count = category_counts[cat]
+            if count >= min_category_samples and category_weights[cat] > 0:
                 weighted_gamma = round(category_totals[cat] / category_weights[cat], 3)
                 # Blend 70% empirical with 30% baseline for smooth stability
                 blended = round(0.70 * weighted_gamma + 0.30 * default_gamma, 3)
                 new_category_factors[cat] = blended
             else:
-                new_category_factors[cat] = default_gamma
+                # Retain existing factor or default if insufficient samples (< min_category_samples)
+                new_category_factors[cat] = self.state.category_factors.get(cat, default_gamma)
 
         self.state.category_factors = new_category_factors
         self.state.movie_specific_factors = movie_factors
         self.state.sample_counts = category_counts
         self.save_factors()
 
-        log.info(f"Updated dynamic calibration factors from ICA: {self.state.category_factors}")
+        log.info(f"Updated dynamic calibration factors from ICA: {self.state.category_factors} (samples: {category_counts})")
         return self.state.category_factors
 
     def get_calibration_factor(

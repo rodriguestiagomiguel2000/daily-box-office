@@ -6,7 +6,7 @@ import {
   Calendar,
   Clock,
   TrendingUp,
-  DollarSign,
+  Euro,
   Users,
   CheckCircle,
   AlertTriangle,
@@ -800,7 +800,7 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
                   <div>
                     <div className="text-xs text-slate-400 uppercase tracking-wider">Est. Revenue</div>
                     <div className="text-2xl font-black text-emerald-400">
-                      €{comparisonData.today.estimated_revenue.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                      {comparisonData.today.estimated_revenue.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })} €
                     </div>
                   </div>
 
@@ -841,7 +841,7 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
                     <div>
                       <div className="text-slate-400 text-[11px]">Revenue / Show</div>
                       <div className="font-bold text-slate-200">
-                        {comparisonData.today.showcount_total > 0 ? `€${comparisonData.today.revenue_per_show.toFixed(2)}` : "—"}
+                        {comparisonData.today.showcount_total > 0 ? `${comparisonData.today.revenue_per_show.toFixed(2)} €` : "—"}
                       </div>
                     </div>
                     <div>
@@ -854,7 +854,7 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
                       <div className="text-slate-400 text-[11px]">ATP</div>
                       <div className="font-bold text-slate-200">
                         {comparisonData.today.estimated_admissions > 0
-                          ? `€${(comparisonData.today.estimated_revenue / comparisonData.today.estimated_admissions).toFixed(2)}`
+                          ? `${(comparisonData.today.estimated_revenue / comparisonData.today.estimated_admissions).toFixed(2)} €`
                           : "—"}
                       </div>
                     </div>
@@ -902,7 +902,7 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
                       })()}
                     </div>
                     <div className="text-2xl font-black text-slate-200">
-                      €{comparisonData.yesterday.estimated_revenue.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                      {comparisonData.yesterday.estimated_revenue.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })} €
                     </div>
                   </div>
 
@@ -943,7 +943,7 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
                     <div>
                       <div className="text-slate-400 text-[11px]">Revenue / Show</div>
                       <div className="font-bold text-slate-200">
-                        {comparisonData.yesterday.showcount_total > 0 ? `€${comparisonData.yesterday.revenue_per_show.toFixed(2)}` : "—"}
+                        {comparisonData.yesterday.showcount_total > 0 ? `${comparisonData.yesterday.revenue_per_show.toFixed(2)} €` : "—"}
                       </div>
                     </div>
                     <div>
@@ -956,7 +956,7 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
                       <div className="text-slate-400 text-[11px]">ATP</div>
                       <div className="font-bold text-slate-200">
                         {comparisonData.yesterday.estimated_admissions > 0
-                          ? `€${(comparisonData.yesterday.estimated_revenue / comparisonData.yesterday.estimated_admissions).toFixed(2)}`
+                          ? `${(comparisonData.yesterday.estimated_revenue / comparisonData.yesterday.estimated_admissions).toFixed(2)} €`
                           : "—"}
                       </div>
                     </div>
@@ -1004,7 +1004,7 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
                       })()}
                     </div>
                     <div className="text-2xl font-black text-slate-200">
-                      €{comparisonData.last_week.estimated_revenue.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                      {comparisonData.last_week.estimated_revenue.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })} €
                     </div>
                   </div>
 
@@ -1045,7 +1045,7 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
                     <div>
                       <div className="text-slate-400 text-[11px]">Revenue / Show</div>
                       <div className="font-bold text-slate-200">
-                        {comparisonData.last_week.showcount_total > 0 ? `€${comparisonData.last_week.revenue_per_show.toFixed(2)}` : "—"}
+                        {comparisonData.last_week.showcount_total > 0 ? `${comparisonData.last_week.revenue_per_show.toFixed(2)} €` : "—"}
                       </div>
                     </div>
                     <div>
@@ -1058,7 +1058,7 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
                       <div className="text-slate-400 text-[11px]">ATP</div>
                       <div className="font-bold text-slate-200">
                         {comparisonData.last_week.estimated_admissions > 0
-                          ? `€${(comparisonData.last_week.estimated_revenue / comparisonData.last_week.estimated_admissions).toFixed(2)}`
+                          ? `${(comparisonData.last_week.estimated_revenue / comparisonData.last_week.estimated_admissions).toFixed(2)} €`
                           : "—"}
                       </div>
                     </div>
@@ -1170,7 +1170,7 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
                       fontSize={12}
                       tickFormatter={(val) =>
                         curveMetric === "revenue"
-                          ? `€${val >= 1000 ? `${(val / 1000).toFixed(1)}k` : val}`
+                          ? `${val >= 1000 ? `${(val / 1000).toFixed(1)}k` : val} €`
                           : curveMetric === "occupancy"
                           ? `${val}%`
                           : val
@@ -1183,10 +1183,12 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
                         borderRadius: "12px",
                         color: "#f8fafc",
                       }}
+                      itemStyle={{ color: "#f8fafc" }}
+                      labelStyle={{ color: "#94a3b8", fontWeight: 600, marginBottom: "4px" }}
                       formatter={(value: any, name: any) => {
                         if (value === null || value === undefined) return ["—", name];
                         if (curveMetric === "revenue") {
-                          return [`€${Number(value).toLocaleString()}`, name];
+                          return [`${Number(value).toLocaleString()} €`, name];
                         }
                         if (curveMetric === "occupancy") {
                           return [`${value}%`, name];
@@ -1245,11 +1247,11 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
                       <Line
                         type="monotone"
                         dataKey="forecast_revenue"
-                        name={`EOD Forecast (Exp: €${
+                        name={`EOD Forecast (Exp: ${
                           forecastData?.forecast?.expected
                             ? forecastData.forecast.expected >= 1000
-                              ? (forecastData.forecast.expected / 1000).toFixed(1) + "k"
-                              : forecastData.forecast.expected.toLocaleString()
+                              ? (forecastData.forecast.expected / 1000).toFixed(1) + "k €"
+                              : forecastData.forecast.expected.toLocaleString() + " €"
                             : "—"
                         })`}
                         stroke="#f59e0b"
@@ -1304,7 +1306,7 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
           )}
 
           {/* Intraday Progression Table */}
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow w-full">
             <div className="p-4 border-b border-slate-800 flex items-center justify-between bg-slate-950/40">
               <div>
                 <h3 className="font-bold text-slate-200 text-sm">
@@ -1316,22 +1318,21 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
                 {progressionData.length} Observations
               </span>
             </div>
-
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-xs">
-                <thead className="bg-slate-800/80 text-slate-400 uppercase tracking-wider font-semibold border-b border-slate-800">
+              <table className="w-full text-left text-xs table-auto">
+                <thead className="bg-slate-800/80 text-slate-400 uppercase tracking-wider font-semibold border-b border-slate-800 text-[10px] sm:text-xs">
                   <tr>
-                    <th className="py-3 px-4">Sweep Time</th>
-                    <th className="py-3 px-3 text-center">Shows (Tot / Start / Comp)</th>
-                    <th className="py-3 px-3 text-right">Capacity</th>
-                    <th className="py-3 px-3 text-right">Est. Admissions</th>
-                    <th className="py-3 px-3 text-right">Occupancy %</th>
-                    <th className="py-3 px-3 text-right">Est. Revenue (€)</th>
-                    <th className="py-3 px-3 text-right">Rev / Show</th>
-                    <th className="py-3 px-3 text-right">Sales Velocity</th>
+                    <th className="py-2 px-2 sm:py-3 sm:px-3">Time</th>
+                    <th className="py-2 px-2 sm:py-3 sm:px-3 text-center">Shows</th>
+                    <th className="py-2 px-2 sm:py-3 sm:px-3 text-right">Capacity</th>
+                    <th className="py-2 px-2 sm:py-3 sm:px-3 text-right">Admissions</th>
+                    <th className="py-2 px-2 sm:py-3 sm:px-3 text-right">Occ %</th>
+                    <th className="py-2 px-2 sm:py-3 sm:px-3 text-right">Revenue</th>
+                    <th className="py-2 px-2 sm:py-3 sm:px-3 text-right">Rev/Show</th>
+                    <th className="py-2 px-2 sm:py-3 sm:px-3 text-right">Velocity</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-800 text-slate-200 font-mono">
+                <tbody className="divide-y divide-slate-800 text-slate-200 font-mono text-[11px] sm:text-xs">
                   {progressionData.length === 0 ? (
                     <tr>
                       <td colSpan={8} className="py-8 text-center text-slate-500 font-sans">
@@ -1341,30 +1342,30 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
                   ) : (
                     progressionData.map((item, idx) => (
                       <tr key={idx} className="hover:bg-slate-800/50 transition">
-                        <td className="py-3 px-4 font-bold text-amber-400 font-sans">
+                        <td className="py-2 px-2 sm:py-3 sm:px-3 font-bold text-amber-400 font-sans whitespace-nowrap">
                           {item.time}
-                          <span className="text-[10px] text-slate-500 font-mono block">
-                            {new Date(item.snapshot_timestamp || item.timestamp || item.created_at || item.date).toLocaleDateString("pt-PT", { timeZone: "Europe/Lisbon" })}
+                          <span className="text-[9px] sm:text-[10px] text-slate-500 font-mono block mt-0.5">
+                            {new Date(item.snapshot_timestamp || item.timestamp || item.created_at || item.date).toLocaleDateString(undefined, { timeZone: "Europe/Lisbon" })}
                           </span>
                         </td>
-                        <td className="py-3 px-3 text-center font-sans">
+                        <td className="py-2 px-2 sm:py-3 sm:px-3 text-center font-sans whitespace-nowrap">
                           <span className="font-bold text-slate-200">{item.showcount_total}</span>
-                          <span className="text-slate-500 text-[11px] ml-1">
+                          <span className="text-slate-500 text-[9px] sm:text-[10px] block mt-0.5 leading-tight">
                             ({item.shows_started} start / {item.shows_completed} comp)
                           </span>
                         </td>
-                        <td className="py-3 px-3 text-right text-slate-400">{item.sellable_capacity.toLocaleString()}</td>
-                        <td className="py-3 px-3 text-right text-cyan-300 font-bold">{item.estimated_admissions.toLocaleString()}</td>
-                        <td className="py-3 px-3 text-right">
+                        <td className="py-2 px-2 sm:py-3 sm:px-3 text-right text-slate-400">{item.sellable_capacity.toLocaleString()}</td>
+                        <td className="py-2 px-2 sm:py-3 sm:px-3 text-right text-cyan-300 font-bold">{item.estimated_admissions.toLocaleString()}</td>
+                        <td className="py-2 px-2 sm:py-3 sm:px-3 text-right">
                           <span className={(item.occupancy_proxy * 100) > 40 ? "text-amber-400 font-bold" : "text-slate-300"}>
                             {(item.occupancy_proxy * 100).toFixed(1)}%
                           </span>
                         </td>
-                        <td className="py-3 px-3 text-right text-emerald-400 font-bold">
-                          €{item.estimated_revenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        <td className="py-2 px-2 sm:py-3 sm:px-3 text-right text-emerald-400 font-bold whitespace-nowrap">
+                          {item.estimated_revenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €
                         </td>
-                        <td className="py-3 px-3 text-right text-slate-300">€{item.revenue_per_show.toFixed(2)}</td>
-                        <td className="py-3 px-3 text-right text-cyan-400">{item.sales_velocity.toFixed(1)} /hr</td>
+                        <td className="py-2 px-2 sm:py-3 sm:px-3 text-right text-slate-300 whitespace-nowrap">{item.revenue_per_show.toFixed(2)} €</td>
+                        <td className="py-2 px-2 sm:py-3 sm:px-3 text-right text-cyan-400 whitespace-nowrap">{item.sales_velocity.toFixed(1)} /hr</td>
                       </tr>
                     ))
                   )}
@@ -1417,8 +1418,9 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
                       <XAxis dataKey="time_label" stroke="#94a3b8" fontSize={12} />
                       <YAxis stroke="#94a3b8" fontSize={12} />
                       <Tooltip
-                        contentStyle={{ backgroundColor: "#0f172a", borderColor: "#334155", borderRadius: "8px" }}
-                        labelStyle={{ color: "#f8fafc" }}
+                        contentStyle={{ backgroundColor: "#0f172a", borderColor: "#334155", borderRadius: "8px", color: "#f8fafc" }}
+                        itemStyle={{ color: "#f8fafc" }}
+                        labelStyle={{ color: "#94a3b8", fontWeight: 600, marginBottom: "4px" }}
                       />
                       <Line
                         type="monotone"
@@ -1451,7 +1453,9 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
                       <XAxis dataKey="time_label" stroke="#94a3b8" fontSize={12} />
                       <YAxis stroke="#94a3b8" fontSize={12} tickFormatter={(val) => `${(val * 100).toFixed(0)}%`} />
                       <Tooltip
-                        contentStyle={{ backgroundColor: "#0f172a", borderColor: "#334155", borderRadius: "8px" }}
+                        contentStyle={{ backgroundColor: "#0f172a", borderColor: "#334155", borderRadius: "8px", color: "#f8fafc" }}
+                        itemStyle={{ color: "#f8fafc" }}
+                        labelStyle={{ color: "#94a3b8", fontWeight: 600, marginBottom: "4px" }}
                         formatter={(val: any) => [`${(Number(val) * 100).toFixed(1)}%`, "Occupancy Proxy"]}
                       />
                       <Line
@@ -1629,7 +1633,7 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
                             </span>
                           </td>
                           <td className="py-3 px-3 text-right font-mono text-emerald-400">
-                            €{sess.estimated_revenue.toFixed(2)}
+                            {sess.estimated_revenue.toFixed(2)} €
                           </td>
                           <td className="py-3 px-3 text-center">
                             <span className="inline-flex items-center gap-1 text-xs font-semibold text-cyan-400 group-hover:underline">
@@ -1683,7 +1687,7 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
                         </span>
                       </td>
                       <td className="py-3 px-3 text-right font-mono text-emerald-400 font-semibold">
-                        €{cin.estimated_revenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        {cin.estimated_revenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €
                       </td>
                     </tr>
                   );

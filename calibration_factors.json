@@ -1,25 +1,35 @@
 {
   "category_factors": {
-    "Family / Animation": 0.822,
-    "Action / General": 0.983,
+    "Family / Animation": 0.801,
+    "Action / General": 0.887,
     "Drama / Adult": 0.93
   },
   "movie_specific_factors": {
-    "homem aranha um novo dia": 0.986,
-    "a odisseia": 1.204,
-    "patrulha pata o filme dos dinossauros": 0.826,
+    "homem aranha um novo dia": 0.841,
+    "a odisseia": 0.957,
+    "patrulha pata o filme dos dinossauros": 0.76,
     "ooh la la 2": 0.9,
     "minimos e monstros": 0.834,
-    "o fim de oak street": 0.914,
-    "apenas uma noite": 0.899,
+    "o fim de oak street": 0.84,
+    "apenas uma noite": 0.822,
     "playback": 0.899,
     "toy story 5": 0.842,
-    "vaiana": 0.842
+    "vaiana": 0.842,
+    "o convite": 0.834,
+    "katseye wild hearts": 1.07,
+    "finnik criaturas magicas": 0.813,
+    "aguas profundas": 0.946,
+    "calle malaga": 0.822,
+    "eu sou cuba": 0.882,
+    "obsession a felicidade e relativa": 0.805,
+    "o dia da revelacao": 0.904,
+    "ice cream man": 0.841,
+    "scary movie what s up": 0.903
   },
   "sample_counts": {
-    "Family / Animation": 3,
-    "Action / General": 7,
+    "Family / Animation": 4,
+    "Action / General": 13,
     "Drama / Adult": 0
   },
-  "last_updated": "2026-08-20T14:23:31.379544"
+  "last_updated": "2026-08-20T23:53:32.265548"
 }

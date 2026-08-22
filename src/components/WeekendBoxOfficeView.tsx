@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import {
   Calendar,
-  DollarSign,
+  Euro,
   Users,
   Building,
   Film,
@@ -76,16 +76,11 @@ export const WeekendBoxOfficeView: React.FC<WeekendBoxOfficeViewProps> = ({
   }, []);
 
   const formatCurrency = (val: number) => {
-    return new Intl.NumberFormat("pt-PT", {
-      style: "currency",
-      currency: "EUR",
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    }).format(val);
+    return `${val.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`;
   };
 
   const formatNumber = (val: number) => {
-    return new Intl.NumberFormat("pt-PT").format(val);
+    return new Intl.NumberFormat().format(val);
   };
 
   const renderDelta = (pct: number | null, label?: string) => {
@@ -229,7 +224,7 @@ export const WeekendBoxOfficeView: React.FC<WeekendBoxOfficeViewProps> = ({
           >
             {weekends.map((w, idx) => (
               <option key={w.weekend_id} value={idx}>
-                {w.label} {w.is_live ? "⚡ (Live / In Progress)" : `(Gross: €${(w.total_revenue / 1000).toFixed(0)}k)`}
+                {w.label} {w.is_live ? "⚡ (Live / In Progress)" : `(Gross: ${(w.total_revenue / 1000).toFixed(0)}k €)`}
               </option>
             ))}
           </select>
@@ -276,7 +271,7 @@ export const WeekendBoxOfficeView: React.FC<WeekendBoxOfficeViewProps> = ({
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-md">
           <div className="text-[11px] text-slate-400 uppercase tracking-wider font-semibold flex items-center gap-1.5 mb-1">
-            <DollarSign className="w-3.5 h-3.5 text-amber-400" />
+            <Euro className="w-3.5 h-3.5 text-amber-400" />
             <span>Weekend Gross</span>
           </div>
           <div className="text-xl font-black text-amber-400 font-mono">
@@ -294,10 +289,10 @@ export const WeekendBoxOfficeView: React.FC<WeekendBoxOfficeViewProps> = ({
             {formatNumber(currentWeekend.total_admissions)}
           </div>
           <div className="text-[11px] text-slate-500 mt-1">
-            Avg €
+            Avg{" "}
             {currentWeekend.total_admissions > 0
-              ? (currentWeekend.total_revenue / currentWeekend.total_admissions).toFixed(2)
-              : "0.00"}{" "}
+              ? `${(currentWeekend.total_revenue / currentWeekend.total_admissions).toFixed(2)} €`
+              : "0.00 €"}{" "}
             / ticket
           </div>
         </div>
@@ -352,14 +347,10 @@ export const WeekendBoxOfficeView: React.FC<WeekendBoxOfficeViewProps> = ({
                 <th className="py-3 px-3 font-semibold text-center w-10">#</th>
                 <th className="py-3 px-4 font-semibold">Movie Title</th>
                 <th className="py-3 px-3 font-semibold text-center">Weekend</th>
-                <th className="py-3 px-4 font-semibold text-right">Weekend Gross (€)</th>
-                <th className="py-3 px-3 font-semibold text-right">vs Prev Weekend</th>
+                <th className="py-3 px-4 font-semibold text-right">Weekend Gross</th>
                 <th className="py-3 px-4 font-semibold text-right">Admissions</th>
-                <th className="py-3 px-3 font-semibold text-right">vs Prev Weekend</th>
                 <th className="py-3 px-3 font-semibold text-center">Cinemas</th>
-                <th className="py-3 px-2 font-semibold text-center">vs Prev</th>
                 <th className="py-3 px-3 font-semibold text-center">Shows</th>
-                <th className="py-3 px-2 font-semibold text-center">vs Prev</th>
                 <th className="py-3 px-3 font-semibold text-right">Avg Ticket</th>
                 <th className="py-3 px-3 font-semibold text-center">Days Active</th>
               </tr>
@@ -411,53 +402,49 @@ export const WeekendBoxOfficeView: React.FC<WeekendBoxOfficeViewProps> = ({
                       </span>
                     </td>
 
-                    {/* Weekend Gross */}
+                    {/* Weekend Gross w/ delta */}
                     <td className="py-3 px-4 text-right whitespace-nowrap">
                       <div className="font-bold text-amber-400 font-mono text-sm">
                         {formatCurrency(movie.revenue)}
                       </div>
+                      <div className="mt-0.5">
+                        {renderDelta(movie.prev_weekend_revenue_change_pct, "Weekend Gross")}
+                      </div>
                     </td>
 
-                    {/* Revenue Change vs Prev Weekend */}
-                    <td className="py-3 px-3 text-right whitespace-nowrap font-mono">
-                      {renderDelta(movie.prev_weekend_revenue_change_pct, "Weekend Gross")}
-                    </td>
-
-                    {/* Admissions */}
+                    {/* Admissions w/ delta */}
                     <td className="py-3 px-4 text-right whitespace-nowrap">
                       <div className="font-semibold text-cyan-400 font-mono">
                         {formatNumber(movie.admissions)}
                       </div>
+                      <div className="mt-0.5">
+                        {renderDelta(movie.prev_weekend_admissions_change_pct, "Weekend Admissions")}
+                      </div>
                     </td>
 
-                    {/* Admissions Change vs Prev Weekend */}
-                    <td className="py-3 px-3 text-right whitespace-nowrap font-mono">
-                      {renderDelta(movie.prev_weekend_admissions_change_pct, "Weekend Admissions")}
+                    {/* Cinemas Count w/ delta */}
+                    <td className="py-3 px-3 text-center whitespace-nowrap">
+                      <div className="font-mono font-medium text-slate-200">
+                        {movie.cinemas_count}
+                      </div>
+                      <div className="mt-0.5">
+                        {renderDelta(movie.prev_weekend_cinemas_change_pct, "Cinemas")}
+                      </div>
                     </td>
 
-                    {/* Cinemas Count */}
-                    <td className="py-3 px-3 text-center whitespace-nowrap font-mono font-medium text-slate-200">
-                      {movie.cinemas_count}
-                    </td>
-
-                    {/* Cinemas Change vs Prev Weekend */}
-                    <td className="py-3 px-2 text-center whitespace-nowrap font-mono">
-                      {renderDelta(movie.prev_weekend_cinemas_change_pct, "Cinemas")}
-                    </td>
-
-                    {/* Sessions Count */}
-                    <td className="py-3 px-3 text-center whitespace-nowrap font-mono font-medium text-slate-200">
-                      {movie.sessions_count}
-                    </td>
-
-                    {/* Sessions Change vs Prev Weekend */}
-                    <td className="py-3 px-2 text-center whitespace-nowrap font-mono">
-                      {renderDelta(movie.prev_weekend_sessions_change_pct, "Shows")}
+                    {/* Sessions Count w/ delta */}
+                    <td className="py-3 px-3 text-center whitespace-nowrap">
+                      <div className="font-mono font-medium text-slate-200">
+                        {movie.sessions_count}
+                      </div>
+                      <div className="mt-0.5">
+                        {renderDelta(movie.prev_weekend_sessions_change_pct, "Shows")}
+                      </div>
                     </td>
 
                     {/* Average Ticket */}
                     <td className="py-3 px-3 text-right whitespace-nowrap font-mono text-slate-400 text-xs">
-                      {avgTicket > 0 ? `€${avgTicket.toFixed(2)}` : "—"}
+                      {avgTicket > 0 ? `${avgTicket.toFixed(2)} €` : "—"}
                     </td>
 
                     {/* Days Active */}

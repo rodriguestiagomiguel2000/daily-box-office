@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { Film, Users, Building, Calendar, Clock, TrendingUp, DollarSign, ChevronRight, EyeOff, AlertCircle, Info, RefreshCw } from "lucide-react";
+import { Film, Users, Building, Calendar, Clock, TrendingUp, Euro, ChevronRight, EyeOff, AlertCircle, Info, RefreshCw } from "lucide-react";
 import { TrackedMovieSummary } from "../types";
 import { getNextScheduledTime, formatToPortugal } from "../utils/scheduling";
 
@@ -97,7 +97,7 @@ export const TrackedMoviesView: React.FC<TrackedMoviesViewProps> = ({
         <div id="stat-card-revenue" className="col-span-2 lg:col-span-1 bg-slate-900/80 border border-slate-800 rounded-xl p-4">
           <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
             <span>Estimated Revenue</span>
-            <DollarSign className="w-4 h-4 text-emerald-400" />
+            <Euro className="w-4 h-4 text-emerald-400" />
           </div>
           <div className="text-2xl font-bold text-slate-100">
             €{totalEstimatedRevenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
@@ -290,11 +290,11 @@ export const TrackedMoviesView: React.FC<TrackedMoviesViewProps> = ({
                       <div className="bg-slate-800/60 p-2.5 rounded-xl border border-slate-800">
                         <div className="text-xs text-slate-400">Estimated Rev</div>
                         <div className="text-lg font-bold text-emerald-400 mt-0.5">
-                          €{movie.estimated_revenue.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+                          {movie.estimated_revenue.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })} €
                         </div>
                         <div className="text-[11px] text-slate-500">
                           {movie.unavailable_seats > 0
-                            ? `ATP €${(movie.estimated_revenue / movie.unavailable_seats).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                            ? `ATP ${(movie.estimated_revenue / movie.unavailable_seats).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`
                             : "—"}
                         </div>
                       </div>

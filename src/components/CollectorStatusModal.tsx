@@ -310,7 +310,7 @@ export const CollectorStatusModal: React.FC<CollectorStatusModalProps> = ({
             <div className="text-[11px] text-slate-400 bg-slate-900/50 p-2.5 rounded-lg border border-slate-800/40 flex items-center space-x-2">
               <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" />
               <span>
-                <strong>Hora aproximada:</strong> a execução em segundo plano pode apresentar um ligeiro atraso de alguns minutos em relação ao horário exato agendado.
+                <strong>Approximate time:</strong> background execution may show a slight delay of a few minutes relative to the exact scheduled time.
               </span>
             </div>
           </div>

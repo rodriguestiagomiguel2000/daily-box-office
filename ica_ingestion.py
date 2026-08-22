@@ -333,7 +333,7 @@ def parse_ica_excel(content: Union[str, bytes, io.BytesIO]) -> List[ICAMovieReco
 # ICA Web Ingestion / Fetching
 # ---------------------------------------------------------------------------
 
-def fetch_latest_ica_excel(timeout: int = 15) -> Tuple[Optional[bytes], Optional[str]]:
+def fetch_latest_ica_excel(timeout: int = 5) -> Tuple[Optional[bytes], Optional[str]]:
     """
     Downloads the latest weekly box office Excel report from ICA's official website.
     

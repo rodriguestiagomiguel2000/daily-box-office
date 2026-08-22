@@ -22,9 +22,10 @@ import {
   Film,
   Building2,
   Calendar,
-  AlertCircle
+  AlertCircle,
+  Sliders
 } from "lucide-react";
-import { RawIngestionLog } from "../types";
+import { RawIngestionLog, CalibrationFactorsResponse } from "../types";
 
 interface RawIngestionTabProps {
   onTriggerNosRun?: () => void;
@@ -36,6 +37,7 @@ export const RawIngestionTab: React.FC<RawIngestionTabProps> = ({
   isNosCollecting = false,
 }) => {
   const [logs, setLogs] = useState<RawIngestionLog[]>([]);
+  const [calibrationData, setCalibrationData] = useState<CalibrationFactorsResponse | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [isTriggeringIca, setIsTriggeringIca] = useState<boolean>(false);
@@ -46,16 +48,25 @@ export const RawIngestionTab: React.FC<RawIngestionTabProps> = ({
   const [copiedJson, setCopiedJson] = useState<boolean>(false);
   const [actionMessage, setActionMessage] = useState<{ text: string; type: "success" | "error" } | null>(null);
 
-  // Fetch raw ingestion logs from GET /api/ingestion/raw-logs
+  // Fetch raw ingestion logs from GET /api/ingestion/raw-logs and calibration factors
   const fetchLogs = useCallback(async (manual = false) => {
     if (manual) setIsRefreshing(true);
     try {
-      const res = await fetch("/api/ingestion/raw-logs");
-      if (!res.ok) {
-        throw new Error(`Server returned status ${res.status}`);
+      const [logsRes, calRes] = await Promise.all([
+        fetch("/api/ingestion/raw-logs"),
+        fetch("/api/calibration/factors").catch(() => null)
+      ]);
+
+      if (!logsRes.ok) {
+        throw new Error(`Server returned status ${logsRes.status}`);
       }
-      const data: RawIngestionLog[] = await res.json();
+      const data: RawIngestionLog[] = await logsRes.json();
       setLogs(Array.isArray(data) ? data : []);
+
+      if (calRes && calRes.ok) {
+        const calData: CalibrationFactorsResponse = await calRes.json();
+        setCalibrationData(calData);
+      }
     } catch (err: any) {
       console.error("Failed to load raw ingestion logs:", err);
       setActionMessage({
@@ -81,7 +92,7 @@ export const RawIngestionTab: React.FC<RawIngestionTabProps> = ({
       const data = await res.json();
       if (res.ok && data.success) {
         setActionMessage({
-          text: "Official ICA report successfully downloaded, parsed, and logged!",
+          text: data.message || "Official ICA report successfully downloaded, parsed, and logged!",
           type: "success",
         });
         await fetchLogs(true);
@@ -147,7 +158,7 @@ export const RawIngestionTab: React.FC<RawIngestionTabProps> = ({
             </div>
             <div>
               <h1 className="text-xl sm:text-2xl font-bold tracking-tight text-white flex items-center gap-2">
-                Dados Reais Ingeridos
+                Raw Ingested Data
                 <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
                   Raw Logs & Telemetry
                 </span>
@@ -286,6 +297,135 @@ export const RawIngestionTab: React.FC<RawIngestionTabProps> = ({
             <CheckCircle2 className="w-5 h-5" />
           </div>
         </div>
+      </div>
+
+      {/* Dynamic Empirical Calibration Factors Block */}
+      <div className="bg-slate-900/90 border border-slate-800/90 rounded-xl p-4 sm:p-5">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800/80 pb-3 mb-4">
+          <div>
+            <div className="flex items-center gap-2">
+              <Sliders className="w-4 h-4 text-emerald-400" />
+              <h3 className="text-sm sm:text-base font-bold text-white tracking-tight">
+                Empirical Price Calibration Factors (Gamma Correction)
+              </h3>
+              <span className="text-[11px] px-2 py-0.5 rounded-full font-mono bg-emerald-500/10 text-emerald-300 border border-emerald-500/20">
+                Active in Revenue CTE
+              </span>
+            </div>
+            <p className="text-xs text-slate-400 mt-1">
+              Derived weekly from ICA official box office benchmarks with EMA smoothing (α={(calibrationData?.emaAlpha ?? 0.70).toFixed(2)}, clipped [{(calibrationData?.clipMin ?? 0.50).toFixed(2)}, {(calibrationData?.clipMax ?? 1.30).toFixed(2)}]). Automatically corrects standard-rate overestimation on family/discounted titles.
+            </p>
+          </div>
+
+          <button
+            onClick={() => fetchLogs(true)}
+            className="text-xs text-slate-400 hover:text-emerald-300 transition flex items-center gap-1.5 self-start sm:self-auto"
+          >
+            <RefreshCw className={`w-3 h-3 ${isRefreshing ? "animate-spin" : ""}`} />
+            <span>Reload Gammas</span>
+          </button>
+        </div>
+
+        {/* Category Baselines */}
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3 mb-4">
+          {/* Family / Animation */}
+          <div className="bg-slate-950 p-3.5 rounded-lg border border-slate-800">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-slate-300">Family / Animation</span>
+              <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-blue-500/10 text-blue-400 border border-blue-500/20">
+                Category
+              </span>
+            </div>
+            <div className="flex items-baseline gap-2 mt-2">
+              <span className="text-xl font-bold font-mono text-emerald-400">
+                {calibrationData?.categoryFactors?.FAMILY?.gamma !== undefined
+                  ? Number(calibrationData.categoryFactors.FAMILY.gamma).toFixed(3)
+                  : "0.850"}×
+              </span>
+              <span className="text-[11px] text-slate-500">
+                ({calibrationData?.categoryFactors?.FAMILY?.sample_count ?? 0} samples)
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-400 mt-1">
+              Compensates child/family discount concessions (~15% below standard).
+            </p>
+          </div>
+
+          {/* Action / General */}
+          <div className="bg-slate-950 p-3.5 rounded-lg border border-slate-800">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-slate-300">Action / General</span>
+              <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 border border-amber-500/20">
+                Category
+              </span>
+            </div>
+            <div className="flex items-baseline gap-2 mt-2">
+              <span className="text-xl font-bold font-mono text-emerald-400">
+                {calibrationData?.categoryFactors?.ACTION_GENERAL?.gamma !== undefined
+                  ? Number(calibrationData.categoryFactors.ACTION_GENERAL.gamma).toFixed(3)
+                  : "0.920"}×
+              </span>
+              <span className="text-[11px] text-slate-500">
+                ({calibrationData?.categoryFactors?.ACTION_GENERAL?.sample_count ?? 0} samples)
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-400 mt-1">
+              Standard blockbusters, premium formats, and evening admissions.
+            </p>
+          </div>
+
+          {/* Drama / Adult */}
+          <div className="bg-slate-950 p-3.5 rounded-lg border border-slate-800">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-semibold text-slate-300">Drama / Adult</span>
+              <span className="text-[10px] uppercase font-mono px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-400 border border-purple-500/20">
+                Category
+              </span>
+            </div>
+            <div className="flex items-baseline gap-2 mt-2">
+              <span className="text-xl font-bold font-mono text-emerald-400">
+                {calibrationData?.categoryFactors?.DRAMA_ADULT?.gamma !== undefined
+                  ? Number(calibrationData.categoryFactors.DRAMA_ADULT.gamma).toFixed(3)
+                  : "0.940"}×
+              </span>
+              <span className="text-[11px] text-slate-500">
+                ({calibrationData?.categoryFactors?.DRAMA_ADULT?.sample_count ?? 0} samples)
+              </span>
+            </div>
+            <p className="text-[11px] text-slate-400 mt-1">
+              Senior tickets, mature demographics, and specialized screenings.
+            </p>
+          </div>
+        </div>
+
+        {/* Movie-Specific Calibrations (if present) */}
+        {calibrationData?.movieFactors && calibrationData.movieFactors.length > 0 && (
+          <div className="space-y-2 pt-2 border-t border-slate-800/60">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-medium text-slate-300">
+                Individual Movie Gammas ({calibrationData.movieFactors.length} titles calibrated)
+              </span>
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2">
+              {calibrationData.movieFactors.map((mf) => (
+                <div key={mf.movieId} className="bg-slate-950/80 p-2.5 rounded-lg border border-slate-800 flex items-center justify-between">
+                  <div className="truncate pr-2">
+                    <span className="text-xs font-medium text-white truncate block">
+                      {mf.movieTitle}
+                      <span className="text-[10px] text-slate-500 font-mono font-normal ml-1">#{mf.movieId}</span>
+                    </span>
+                    <span className="text-[10px] text-slate-500">
+                      {mf.category} • {mf.sampleCount} {mf.sampleCount === 1 ? "update" : "updates"}
+                    </span>
+                  </div>
+                  <span className="font-mono text-xs font-bold px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 shrink-0">
+                    {Number(mf.gamma).toFixed(3)}×
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Filter & Search Bar */}

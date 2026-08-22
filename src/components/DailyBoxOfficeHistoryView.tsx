@@ -58,9 +58,9 @@ export function calculateReleaseDayNumber(
 // Helper to format currency compactly
 export function formatCompactCurrency(val: number): string {
   if (val >= 1_000_000) {
-    return `€${(val / 1_000_000).toFixed(2)}M`;
+    return `${(val / 1_000_000).toFixed(2)}M €`;
   }
-  return `€${Math.round(val).toLocaleString("pt-PT")}`;
+  return `${Math.round(val).toLocaleString()} €`;
 }
 
 // Helper to format admissions compactly

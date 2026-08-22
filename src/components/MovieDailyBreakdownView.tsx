@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import {
   Calendar,
-  DollarSign,
+  Euro,
   Users,
   Building,
   Film,
@@ -72,16 +72,11 @@ export const MovieDailyBreakdownView: React.FC<MovieDailyBreakdownViewProps> = (
   }, [movieId]);
 
   const formatCurrency = (val: number) => {
-    return new Intl.NumberFormat("pt-PT", {
-      style: "currency",
-      currency: "EUR",
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    }).format(val);
+    return `${val.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`;
   };
 
   const formatNumber = (val: number) => {
-    return new Intl.NumberFormat("pt-PT").format(val);
+    return new Intl.NumberFormat().format(val);
   };
 
   const renderDelta = (pct: number | null, label?: string) => {
@@ -166,7 +161,7 @@ export const MovieDailyBreakdownView: React.FC<MovieDailyBreakdownViewProps> = (
     date: d.operational_date,
     label: `${d.day_of_week_short} ${d.operational_date.slice(5)}`,
     day_of_week: d.day_of_week,
-    run_day_label: d.run_day_label || `Day ${d.run_day}`,
+    run_day_label: d.run_day_label ? d.run_day_label.replace("Day ", "D") : `D${d.run_day}`,
     is_weekend: d.is_weekend,
     revenue: d.revenue,
     admissions: d.admissions,
@@ -206,7 +201,7 @@ export const MovieDailyBreakdownView: React.FC<MovieDailyBreakdownViewProps> = (
       <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
         <div className="bg-slate-900 border border-slate-800 rounded-xl p-4 shadow-md">
           <div className="text-[11px] text-slate-400 uppercase tracking-wider font-semibold flex items-center gap-1.5 mb-1">
-            <DollarSign className="w-3.5 h-3.5 text-amber-400" />
+            <Euro className="w-3.5 h-3.5 text-amber-400" />
             <span>Total Gross</span>
           </div>
           <div className="text-xl font-black text-amber-400 font-mono">
@@ -224,10 +219,10 @@ export const MovieDailyBreakdownView: React.FC<MovieDailyBreakdownViewProps> = (
             {formatNumber(data.summary.total_admissions)}
           </div>
           <div className="text-[11px] text-slate-500 mt-1">
-            Avg €
+            Avg{" "}
             {data.summary.total_admissions > 0
-              ? (data.summary.total_revenue / data.summary.total_admissions).toFixed(2)
-              : "0.00"}{" "}
+              ? `${(data.summary.total_revenue / data.summary.total_admissions).toFixed(2)} €`
+              : "0.00 €"}{" "}
             / ticket
           </div>
         </div>
@@ -318,7 +313,7 @@ export const MovieDailyBreakdownView: React.FC<MovieDailyBreakdownViewProps> = (
                 tick={{ fill: "#94a3b8", fontSize: 11 }}
                 tickFormatter={(val) => {
                   if (activeChartMetric === "revenue") {
-                    return val >= 1000 ? `€${(val / 1000).toFixed(0)}k` : `€${val}`;
+                    return val >= 1000 ? `${(val / 1000).toFixed(0)}k €` : `${val} €`;
                   }
                   return val >= 1000 ? `${(val / 1000).toFixed(0)}k` : `${val}`;
                 }}
@@ -330,7 +325,11 @@ export const MovieDailyBreakdownView: React.FC<MovieDailyBreakdownViewProps> = (
                   borderRadius: "0.75rem",
                   fontSize: "12px",
                   boxShadow: "0 10px 15px -3px rgba(0, 0, 0, 0.5)",
+                  color: "#f8fafc",
                 }}
+                itemStyle={{ color: "#f8fafc" }}
+                labelStyle={{ color: "#94a3b8", fontWeight: 600, marginBottom: "4px" }}
+                cursor={{ fill: "rgba(148, 163, 184, 0.08)" }}
                 formatter={(value: any) => [
                   activeChartMetric === "revenue" ? formatCurrency(Number(value)) : formatNumber(Number(value)),
                   activeChartMetric === "revenue"
@@ -405,20 +404,20 @@ export const MovieDailyBreakdownView: React.FC<MovieDailyBreakdownViewProps> = (
           <table className="w-full text-left border-collapse text-xs">
             <thead>
               <tr className="bg-slate-950/80 text-slate-400 uppercase text-[10px] tracking-wider border-b border-slate-800">
-                <th className="py-3 px-3 font-semibold text-center">Run Day</th>
-                <th className="py-3 px-4 font-semibold">Date & Day</th>
-                <th className="py-3 px-3 font-semibold text-center">Type</th>
-                <th className="py-3 px-4 font-semibold text-right">Revenue (€)</th>
-                <th className="py-3 px-3 font-semibold text-right">vs Prev Day</th>
-                <th className="py-3 px-3 font-semibold text-right">vs Last Wk</th>
-                <th className="py-3 px-4 font-semibold text-right">Admissions</th>
-                <th className="py-3 px-3 font-semibold text-right">vs Prev Day</th>
-                <th className="py-3 px-3 font-semibold text-right">vs Last Wk</th>
-                <th className="py-3 px-3 font-semibold text-center">Cinemas</th>
-                <th className="py-3 px-2 font-semibold text-center">vs Prev</th>
-                <th className="py-3 px-3 font-semibold text-center">Shows</th>
-                <th className="py-3 px-2 font-semibold text-center">vs Prev</th>
-                <th className="py-3 px-3 font-semibold text-right">Avg Ticket</th>
+                <th className="py-3 px-2 font-semibold text-center">Run Day</th>
+                <th className="py-3 px-3 font-semibold">Date & Day</th>
+                <th className="py-3 px-2 font-semibold text-center">Type</th>
+                <th className="py-3 px-3 font-semibold text-right">Revenue (€)</th>
+                <th className="py-3 px-2 font-semibold text-right">vs Prev Day</th>
+                <th className="py-3 px-2 font-semibold text-right">vs Last Wk</th>
+                <th className="py-3 px-3 font-semibold text-right">Admissions</th>
+                <th className="py-3 px-2 font-semibold text-right">vs Prev Day</th>
+                <th className="py-3 px-2 font-semibold text-right">vs Last Wk</th>
+                <th className="py-3 px-2 font-semibold text-center">Cinemas</th>
+                <th className="py-3 px-1.5 font-semibold text-center">vs Prev</th>
+                <th className="py-3 px-2 font-semibold text-center">Shows</th>
+                <th className="py-3 px-1.5 font-semibold text-center">vs Prev</th>
+                <th className="py-3 px-2 font-semibold text-right">Avg Ticket</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-slate-800/60">
@@ -437,19 +436,19 @@ export const MovieDailyBreakdownView: React.FC<MovieDailyBreakdownViewProps> = (
                     }`}
                   >
                     {/* Run Day */}
-                    <td className="py-3 px-3 text-center whitespace-nowrap">
+                    <td className="py-3 px-2 text-center whitespace-nowrap">
                       <span className="inline-flex items-center justify-center px-2.5 py-1 rounded-lg text-xs font-bold font-mono bg-slate-800 text-amber-400 border border-slate-700/80 shadow-inner">
-                        {day.run_day_label || `Day ${day.run_day}`}
+                        {day.run_day_label ? day.run_day_label.replace("Day ", "D") : `D${day.run_day}`}
                       </span>
                     </td>
 
                     {/* Date & Day */}
-                    <td className="py-3 px-4 whitespace-nowrap">
+                    <td className="py-3 px-3 whitespace-nowrap">
                       <div className="font-semibold text-slate-100 flex items-center gap-1.5">
                         <span>{day.operational_date}</span>
                         {day.is_today && (
-                          <span className="px-1.5 py-0.5 rounded text-[10px] font-bold bg-amber-500 text-slate-950 uppercase tracking-wider animate-pulse">
-                            Live Today
+                          <span className="px-1 py-0.5 rounded text-[8px] font-bold bg-amber-500 text-slate-950 uppercase animate-pulse">
+                            TODAY
                           </span>
                         )}
                       </div>
@@ -457,75 +456,75 @@ export const MovieDailyBreakdownView: React.FC<MovieDailyBreakdownViewProps> = (
                     </td>
 
                     {/* Type Badge (Weekend vs Weekday) */}
-                    <td className="py-3 px-3 text-center whitespace-nowrap">
+                    <td className="py-3 px-2 text-center whitespace-nowrap">
                       {day.is_weekend ? (
                         <span className="inline-block px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30">
-                          Weekend
+                          Wknd
                         </span>
                       ) : (
                         <span className="inline-block px-2 py-0.5 rounded-full text-[10px] font-medium bg-slate-800 text-slate-400 border border-slate-700">
-                          Weekday
+                          Wday
                         </span>
                       )}
                     </td>
 
                     {/* Revenue */}
-                    <td className="py-3 px-4 text-right whitespace-nowrap">
+                    <td className="py-3 px-3 text-right whitespace-nowrap">
                       <div className="font-bold text-amber-400 font-mono text-sm">
                         {formatCurrency(day.revenue)}
                       </div>
                     </td>
 
                     {/* Revenue Change vs Prev Day */}
-                    <td className="py-3 px-3 text-right whitespace-nowrap font-mono">
+                    <td className="py-3 px-2 text-right whitespace-nowrap font-mono">
                       {renderDelta(day.revenue_change_pct, "DoD Revenue")}
                     </td>
 
                     {/* Revenue Change vs Last Week */}
-                    <td className="py-3 px-3 text-right whitespace-nowrap font-mono">
+                    <td className="py-3 px-2 text-right whitespace-nowrap font-mono">
                       {renderDelta(day.prev_week_revenue_change_pct, "WoW Revenue")}
                     </td>
 
                     {/* Admissions */}
-                    <td className="py-3 px-4 text-right whitespace-nowrap">
+                    <td className="py-3 px-3 text-right whitespace-nowrap">
                       <div className="font-semibold text-cyan-400 font-mono">
                         {formatNumber(day.admissions)}
                       </div>
                     </td>
 
                     {/* Admissions Change vs Prev Day */}
-                    <td className="py-3 px-3 text-right whitespace-nowrap font-mono">
+                    <td className="py-3 px-2 text-right whitespace-nowrap font-mono">
                       {renderDelta(day.admissions_change_pct, "DoD Admissions")}
                     </td>
 
                     {/* Admissions Change vs Last Week */}
-                    <td className="py-3 px-3 text-right whitespace-nowrap font-mono">
+                    <td className="py-3 px-2 text-right whitespace-nowrap font-mono">
                       {renderDelta(day.prev_week_admissions_change_pct, "WoW Admissions")}
                     </td>
 
                     {/* Cinemas Count */}
-                    <td className="py-3 px-3 text-center whitespace-nowrap font-mono font-medium text-slate-200">
+                    <td className="py-3 px-2 text-center whitespace-nowrap font-mono font-medium text-slate-200">
                       {day.cinemas_count}
                     </td>
 
                     {/* Cinemas Change vs Prev Day */}
-                    <td className="py-3 px-2 text-center whitespace-nowrap font-mono">
+                    <td className="py-3 px-1.5 text-center whitespace-nowrap font-mono">
                       {renderDelta(day.cinemas_change_pct, "Cinemas")}
                     </td>
 
                     {/* Sessions/Shows Count */}
-                    <td className="py-3 px-3 text-center whitespace-nowrap font-mono font-medium text-slate-200">
+                    <td className="py-3 px-2 text-center whitespace-nowrap font-mono font-medium text-slate-200">
                       {day.sessions_count}
                     </td>
 
                     {/* Sessions Change vs Prev Day */}
-                    <td className="py-3 px-2 text-center whitespace-nowrap font-mono">
+                    <td className="py-3 px-1.5 text-center whitespace-nowrap font-mono">
                       {renderDelta(day.sessions_change_pct, "Shows")}
                     </td>
 
                     {/* Average Ticket Price */}
-                    <td className="py-3 px-4 text-right whitespace-nowrap font-mono text-slate-400 text-xs">
-                      {avgTicket > 0 ? `€${avgTicket.toFixed(2)}` : "—"}
+                    <td className="py-3 px-3 text-right whitespace-nowrap font-mono text-slate-400 text-xs">
+                      {avgTicket > 0 ? `${avgTicket.toFixed(2)} €` : "—"}
                     </td>
                   </tr>
                 );

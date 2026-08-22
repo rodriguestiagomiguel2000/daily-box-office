@@ -900,16 +900,41 @@ export async function generateMoviePerformanceSnapshots(collectionRunDbId: numbe
         ),
         session_prices AS (
           SELECT 
-            session_id,
-            COALESCE(
-              MIN(price) FILTER (WHERE is_default = true AND price > 0),
-              MIN(price) FILTER (WHERE price > 0 AND (ticket_type ILIKE '%normal%' OR ticket_type ILIKE '%adulto%' OR ticket_type ILIKE '%inteiro%' OR ticket_type ILIKE '%standard%') AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND (seats_count IS NULL OR seats_count = 1)),
-              MIN(price) FILTER (WHERE price > 0 AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND ticket_type NOT ILIKE '%crian%' AND ticket_type NOT ILIKE '%estud%' AND ticket_type NOT ILIKE '%sénior%' AND ticket_type NOT ILIKE '%senior%' AND (seats_count IS NULL OR seats_count = 1)),
-              AVG(price) FILTER (WHERE price > 0)
-            ) as avg_price
-          FROM session_ticket_prices
-          WHERE session_id IN (SELECT session_id FROM session_latest_snaps)
-          GROUP BY session_id
+            s.id as session_id,
+            s.movie_id,
+            s.format,
+            base_price.raw_unit_price as resolved_unit_price_raw,
+            COALESCE(cf_movie.gamma, cf_cat.gamma, 1.0) as gamma,
+            ROUND((base_price.raw_unit_price * COALESCE(cf_movie.gamma, cf_cat.gamma, 1.0))::numeric, 2) as resolved_unit_price
+          FROM sessions s
+          LEFT JOIN movies m ON s.movie_id = m.id
+          LEFT JOIN LATERAL (
+            SELECT 
+              COALESCE(
+                MIN(stp.price) FILTER (WHERE stp.is_default = true AND stp.price > 0),
+                MIN(stp.price) FILTER (WHERE stp.price > 0 AND (stp.ticket_type ILIKE '%normal%' OR stp.ticket_type ILIKE '%adulto%' OR stp.ticket_type ILIKE '%inteiro%' OR stp.ticket_type ILIKE '%standard%') AND stp.ticket_type NOT ILIKE '%fam%' AND stp.ticket_type NOT ILIKE '%pax%' AND (stp.seats_count IS NULL OR stp.seats_count = 1)),
+                MIN(stp.price) FILTER (WHERE stp.price > 0 AND stp.ticket_type NOT ILIKE '%fam%' AND stp.ticket_type NOT ILIKE '%pax%' AND stp.ticket_type NOT ILIKE '%crian%' AND stp.ticket_type NOT ILIKE '%estud%' AND stp.ticket_type NOT ILIKE '%sénior%' AND stp.ticket_type NOT ILIKE '%senior%' AND (stp.seats_count IS NULL OR stp.seats_count = 1)),
+                AVG(stp.price) FILTER (WHERE stp.price > 0),
+                CASE 
+                  WHEN s.format ILIKE '%IMAX%' THEN 13.50 
+                  WHEN s.format ILIKE '%3D%' THEN 9.50 
+                  ELSE 8.75 
+                END
+              ) as raw_unit_price
+            FROM session_ticket_prices stp
+            WHERE stp.session_id = s.id
+          ) base_price ON true
+          LEFT JOIN calibration_factors cf_movie ON cf_movie.movie_id = s.movie_id
+          LEFT JOIN calibration_factors cf_cat ON cf_cat.movie_id IS NULL AND cf_cat.category = COALESCE(
+            m.category,
+            CASE 
+              WHEN m.title ILIKE '%animac%' OR m.title ILIKE '%patrulha pata%' OR m.title ILIKE '%minion%' OR m.title ILIKE '%minimo%' OR m.title ILIKE '%famil%' OR m.title ILIKE '%disney%' OR m.title ILIKE '%pixar%' OR m.title ILIKE '%divertida%' OR m.title ILIKE '%toy story%' OR m.title ILIKE '%vaiana%' OR m.title ILIKE '%sonic%' OR m.title ILIKE '%mario%' OR m.title ILIKE '%stitch%' OR m.title ILIKE '%paddington%' OR m.title ILIKE '%shrek%' OR m.title ILIKE '%frozen%' OR m.title ILIKE '%wonka%' OR m.title ILIKE '%barbie%' THEN 'Family / Animation'
+              WHEN m.title ILIKE '%drama%' OR m.title ILIKE '%terror%' OR m.title ILIKE '%horror%' OR m.title ILIKE '%thriller%' OR m.title ILIKE '%crime%' OR m.title ILIKE '%misterio%' OR m.title ILIKE '%romance%' OR m.title ILIKE '%biograf%' THEN 'Drama / Adult'
+              ELSE 'Action / General'
+            END
+          )
+          WHERE s.id IN (SELECT session_id FROM session_latest_snaps)
+          GROUP BY s.id, s.movie_id, s.format, base_price.raw_unit_price, cf_movie.gamma, cf_cat.gamma
         )
         SELECT 
           COUNT(sls.session_id) as showcount_total,
@@ -922,7 +947,10 @@ export async function generateMoviePerformanceSnapshots(collectionRunDbId: numbe
           COALESCE(SUM(st.newly_unavailable), 0) as newly_unavailable,
           COALESCE(SUM(st.newly_available), 0) as newly_available,
           COALESCE(SUM(st.sales_velocity_proxy), 0.0) as sales_velocity,
-          COALESCE(SUM(sls.unavailable_seats * COALESCE(sp.avg_price, CASE WHEN sls.format ILIKE '%IMAX%' THEN 13.50 WHEN sls.format ILIKE '%3D%' THEN 9.50 ELSE 8.75 END)), 0.0) as estimated_revenue
+          ROUND(AVG(sp.resolved_unit_price_raw)::numeric, 2) as avg_raw_price,
+          ROUND(AVG(sp.gamma)::numeric, 3) as avg_gamma,
+          ROUND(AVG(sp.resolved_unit_price)::numeric, 2) as avg_resolved_price,
+          COALESCE(SUM(sls.unavailable_seats * sp.resolved_unit_price), 0.0) as estimated_revenue
         FROM session_latest_snaps sls
         LEFT JOIN session_transitions st ON sls.session_id = st.session_id
         LEFT JOIN session_prices sp ON sls.session_id = sp.session_id;`,
@@ -946,6 +974,9 @@ export async function generateMoviePerformanceSnapshots(collectionRunDbId: numbe
         const occupancyProxy = sellableCapacity > 0 ? unavailableSeats / sellableCapacity : 0.0;
         const revenuePerShow = showcountTotal > 0 ? Math.round((estimatedRevenue / showcountTotal) * 100) / 100 : 0.0;
         const admissionsPerShow = showcountTotal > 0 ? Math.round((estimatedAdmissions / showcountTotal) * 10) / 10 : 0.0;
+        const avgRawPrice = row.avg_raw_price !== null ? parseFloat(row.avg_raw_price) : null;
+        const avgGamma = row.avg_gamma !== null ? parseFloat(row.avg_gamma) : 1.0;
+        const avgResolvedPrice = row.avg_resolved_price !== null ? parseFloat(row.avg_resolved_price) : null;
 
         await query(
           `INSERT INTO movie_performance_snapshots (
@@ -953,8 +984,9 @@ export async function generateMoviePerformanceSnapshots(collectionRunDbId: numbe
             showcount_total, shows_started, shows_completed, shows_remaining,
             sellable_capacity, available_seats, unavailable_seats, occupancy_proxy,
             estimated_admissions, estimated_revenue, revenue_per_show, admissions_per_show,
-            newly_unavailable, newly_available, sales_velocity
-          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19);`,
+            newly_unavailable, newly_available, sales_velocity,
+            resolved_unit_price_raw, resolved_unit_price, gamma
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22);`,
           [
             movie_id,
             operational_date,
@@ -975,6 +1007,9 @@ export async function generateMoviePerformanceSnapshots(collectionRunDbId: numbe
             newlyUnavailable,
             newlyAvailable,
             salesVelocity,
+            avgRawPrice,
+            avgResolvedPrice,
+            avgGamma,
           ]
         );
       }

@@ -1,0 +1,225 @@
+#!/usr/bin/env python3
+"""
+CLI Script: Run ICA Calibration Update Pipeline.
+
+Responsibilities:
+1. Calls ingest_ica_with_raw_log() to download & parse the latest official ICA box office report.
+2. Accepts per-movie resolved unit prices from Postgres (via CLI argument or stdin) so gamma is calibrated
+   against each movie's actual admissions-weighted standard ticket price.
+3. Updates CalibrationService with EMA accumulation, [0.50, 1.30] clipping, and category sample guards.
+4. Outputs a structured JSON summary to stdout for server/api.ts consumption and Postgres persistence.
+"""
+
+import argparse
+from datetime import datetime, timezone
+import json
+import os
+import sys
+from typing import Any, Dict, List, Optional
+
+from ica_ingestion import (
+    ICAMovieRecord,
+    ingest_ica_data,
+    ingest_ica_with_raw_log,
+    normalize_title
+)
+from calibration_service import (
+    CalibrationService,
+    classify_movie_category,
+    DEFAULT_CALIBRATION_FACTORS,
+    DEFAULT_ADULT_PRICE_BASELINE
+)
+
+
+def parse_args():
+    parser = argparse.ArgumentParser(description="Run ICA Calibration Update Pipeline")
+    parser.add_argument(
+        "--prices-json",
+        type=str,
+        default=None,
+        help="JSON string or file path containing per-movie resolved prices mapping"
+    )
+    parser.add_argument(
+        "--default-price",
+        type=float,
+        default=DEFAULT_ADULT_PRICE_BASELINE,
+        help="Fallback reference price baseline when movie is not in database (default: 7.60)"
+    )
+    parser.add_argument(
+        "--min-samples",
+        type=int,
+        default=3,
+        help="Minimum qualifying sample count before updating category factor (default: 3)"
+    )
+    parser.add_argument(
+        "--min-admissions",
+        type=int,
+        default=500,
+        help="Admissions floor for a movie to count toward category calibration (default: 500)"
+    )
+    parser.add_argument(
+        "--ema-alpha",
+        type=float,
+        default=0.70,
+        help="Exponential moving average weight for current week vs history (default: 0.70)"
+    )
+    return parser.parse_args()
+
+
+def load_movie_prices(prices_arg: Optional[str]) -> Dict[str, float]:
+    """Loads movie baseline prices from CLI argument or stdin."""
+    prices: Dict[str, float] = {}
+    raw_text = None
+
+    if prices_arg:
+        if prices_arg == "-":
+            try:
+                raw_text = sys.stdin.read().strip()
+            except Exception:
+                pass
+        elif os.path.exists(prices_arg):
+            try:
+                with open(prices_arg, "r", encoding="utf-8") as f:
+                    raw_text = f.read()
+            except Exception as e:
+                print(f"[run_ica_calibration] Failed to read prices file {prices_arg}: {e}", file=sys.stderr)
+        else:
+            raw_text = prices_arg
+    else:
+        # Check non-blocking if stdin has data ready
+        try:
+            import select
+            if not sys.stdin.isatty() and select.select([sys.stdin], [], [], 0.0)[0]:
+                raw_text = sys.stdin.read().strip()
+        except Exception:
+            pass
+
+    if raw_text:
+        try:
+            parsed = json.loads(raw_text)
+            if isinstance(parsed, dict):
+                # Handle direct dict or wrapped in { "movie_prices": { ... } }
+                movie_dict = parsed.get("movie_prices", parsed)
+                if isinstance(movie_dict, dict):
+                    for k, v in movie_dict.items():
+                        try:
+                            prices[str(k)] = float(v)
+                        except (ValueError, TypeError):
+                            continue
+                elif isinstance(movie_dict, list):
+                    # Handle array of { "title": ..., "resolved_unit_price": ... }
+                    for item in movie_dict:
+                        if isinstance(item, dict):
+                            t = item.get("title") or item.get("normalized_title") or str(item.get("movie_id"))
+                            p = item.get("resolved_unit_price") or item.get("unit_price") or item.get("price")
+                            if t and p:
+                                prices[str(t)] = float(p)
+        except Exception as e:
+            print(f"[run_ica_calibration] Could not parse prices JSON: {e}", file=sys.stderr)
+
+    return prices
+
+
+def main():
+    args = parse_args()
+    movie_prices = load_movie_prices(args.prices_json)
+
+    # 1. Ingest fresh ICA data (with raw log output for dashboard auditing)
+    try:
+        raw_log = ingest_ica_with_raw_log()
+    except Exception as e:
+        print(f"[run_ica_calibration] Error during ICA ingestion: {e}", file=sys.stderr)
+        raw_log = {
+            "id": f"ica-{int(datetime.now(timezone.utc).timestamp() * 1000)}",
+            "source": "ICA",
+            "collectedAt": datetime.now(timezone.utc).isoformat(),
+            "fileName": "ica_ranking_box_office_semanal.xlsx",
+            "recordCount": 0,
+            "status": "FAILED",
+            "rawDetails": {"error": str(e)}
+        }
+
+    # Extract parsed ICAMovieRecord items
+    records: List[ICAMovieRecord] = []
+    raw_movies = raw_log.get("rawDetails", {}).get("movies", [])
+    for rm in raw_movies:
+        records.append(ICAMovieRecord(
+            rank=rm.get("rank", 0),
+            title=rm.get("title", ""),
+            normalized_title=rm.get("normalized_title", normalize_title(rm.get("title", ""))),
+            distributor=rm.get("distributor", ""),
+            director=rm.get("director", ""),
+            weekly_gross_revenue=float(rm.get("weekly_gross_revenue", 0.0)),
+            weekly_admissions=int(rm.get("weekly_admissions", 0)),
+            weekly_screens=int(rm.get("weekly_screens", 0)),
+            accumulated_gross_revenue=float(rm.get("accumulated_gross_revenue", 0.0)),
+            accumulated_admissions=int(rm.get("accumulated_admissions", 0)),
+            days_in_release=int(rm.get("days_in_release", 0)),
+            period_label=rm.get("period_label", ""),
+            atp=float(rm.get("atp", 0.0))
+        ))
+
+    if not records:
+        records = ingest_ica_data()
+
+    # 2. Update Calibration Service
+    cal_service = CalibrationService.get_instance()
+    updated_categories = cal_service.update_from_ica(
+        ica_records=records,
+        movie_baseline_prices=movie_prices,
+        default_adult_price=args.default_price,
+        min_category_samples=args.min_samples,
+        min_admissions_floor=args.min_admissions,
+        ema_alpha=args.ema_alpha
+    )
+
+    # 3. Build detailed report of all updated movies
+    movies_updated: List[Dict[str, Any]] = []
+    norm_baseline = {normalize_title(k): v for k, v in movie_prices.items()}
+
+    for rec in records:
+        norm_t = normalize_title(rec.title)
+        ref_price = args.default_price
+        if norm_t in norm_baseline:
+            ref_price = norm_baseline[norm_t]
+        else:
+            for bp_k, bp_v in norm_baseline.items():
+                if bp_k and (bp_k in norm_t or norm_t in bp_k):
+                    ref_price = bp_v
+                    break
+
+        cat = classify_movie_category(rec.title)
+        gamma_obs = round(rec.atp / ref_price, 3) if ref_price > 0 else 1.0
+        gamma_obs = max(0.50, min(1.30, gamma_obs))
+        gamma_final = cal_service.state.movie_specific_factors.get(norm_t, gamma_obs)
+
+        movies_updated.append({
+            "rank": rec.rank,
+            "title": rec.title,
+            "normalized_title": norm_t,
+            "category": cat,
+            "atp": rec.atp,
+            "resolved_reference_price": ref_price,
+            "gamma_observed": gamma_obs,
+            "gamma_final": gamma_final,
+            "weekly_admissions": rec.weekly_admissions,
+            "weekly_gross_revenue": rec.weekly_gross_revenue,
+            "qualifies_for_category_sample": rec.weekly_admissions >= args.min_admissions
+        })
+
+    result_payload = {
+        "success": True,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "category_factors": cal_service.state.category_factors,
+        "sample_counts": cal_service.state.sample_counts,
+        "movie_factors": cal_service.state.movie_specific_factors,
+        "movies_updated": movies_updated,
+        "total_records_processed": len(records),
+        "raw_log": raw_log
+    }
+
+    print(json.dumps(result_payload, indent=2, ensure_ascii=False))
+
+
+if __name__ == "__main__":
+    main()

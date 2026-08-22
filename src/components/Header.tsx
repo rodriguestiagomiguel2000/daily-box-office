@@ -193,7 +193,7 @@ export const Header: React.FC<HeaderProps> = ({
                 }`}
               >
                 <Database className="w-4 h-4 text-emerald-400" />
-                <span>Dados Reais Ingeridos</span>
+                <span>Raw Ingested Data</span>
               </button>
             )}
           </nav>

@@ -9,7 +9,12 @@ import { getMoviePresaleCurve } from "./presale";
 import { query } from "./db";
 import { scheduler } from "./scheduler";
 import { executeCollectionRun, getActiveProgress, prepareCollectionRun, executeCollectionRunFromPrepared } from "./collector";
-import { resolveSessionUnitPriceJs, recalculateAllPerformanceSnapshots } from "./revenue";
+import { 
+  resolveSessionUnitPriceJs, 
+  recalculateAllPerformanceSnapshots,
+  getMovieResolvedPricesForCalibration,
+  syncCalibrationFactorsToDb
+} from "./revenue";
 import { computeMovieEODForecast, runHistoricalBacktests, getBacktestSummaryMetrics } from "./forecast";
 
 export const apiRouter = Router();
@@ -2195,53 +2200,154 @@ apiRouter.get("/ingestion/raw-logs", async (req, res) => {
   }
 });
 
-// POST /api/ingestion/trigger-ica - Manually triggers ICA scraping & calibration update
-apiRouter.post("/ingestion/trigger-ica", async (req, res) => {
+const CATEGORY_SLUGS: Record<string, string> = {
+  "Family / Animation": "FAMILY",
+  "Action / General": "ACTION_GENERAL",
+  "Drama / Adult": "DRAMA_ADULT",
+};
+
+// GET /api/calibration/factors - returns active category and movie-level calibration gammas
+apiRouter.get("/calibration/factors", async (req, res) => {
   try {
-    const icaData = await runPythonScriptJson("ica_ingestion.py");
-    if (!icaData || !icaData.id) {
-      throw new Error("ICA ingestion script did not return a valid log structure.");
-    }
+    const factorsRes = await query(`
+      SELECT 
+        cf.id,
+        cf.movie_id,
+        m.title as movie_title,
+        cf.category,
+        cf.gamma::float as gamma,
+        cf.sample_count,
+        cf.updated_at
+      FROM calibration_factors cf
+      LEFT JOIN movies m ON cf.movie_id = m.id
+      ORDER BY cf.movie_id NULLS FIRST, cf.category ASC;
+    `);
 
-    // Persist into raw_ingestion_logs
-    await query(
-      `INSERT INTO raw_ingestion_logs (id, source, collected_at, file_name, record_count, status, raw_details, created_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
-       ON CONFLICT (id) DO UPDATE SET
-         status = EXCLUDED.status,
-         record_count = EXCLUDED.record_count,
-         raw_details = EXCLUDED.raw_details;`,
-      [
-        icaData.id,
-        "ICA",
-        icaData.collectedAt || new Date().toISOString(),
-        icaData.fileName || "ica_ranking_box_office_semanal.xlsx",
-        icaData.recordCount || 0,
-        icaData.status || "SUCCESS",
-        JSON.stringify(icaData.rawDetails || {}),
-      ]
-    );
+    const categoryFactors: Record<string, { categoryLabel: string; gamma: number; sample_count: number; updated_at: string }> = {};
+    const movieFactors: Array<{
+      movieId: number;
+      movieTitle: string;
+      category: string;
+      gamma: number;
+      sampleCount: number;
+      updatedAt: string;
+    }> = [];
 
-    // Also update dynamic price calibration factors from this fresh ICA data
-    try {
-      await new Promise<void>((resolve) => {
-        const pyCal = spawn("python3", [
-          "-c",
-          "from calibration_service import CalibrationService; CalibrationService().update_calibration_from_ica()"
-        ], { cwd: process.cwd() });
-        pyCal.on("close", () => resolve());
-      });
-    } catch (calErr) {
-      console.warn("Could not immediately trigger calibration factor update:", calErr);
+    for (const r of factorsRes.rows) {
+      if (r.movie_id === null) {
+        const slug = CATEGORY_SLUGS[r.category] ?? r.category;
+        categoryFactors[slug] = {
+          categoryLabel: r.category,
+          gamma: Number(r.gamma),
+          sample_count: r.sample_count,
+          updated_at: r.updated_at,
+        };
+      } else {
+        movieFactors.push({
+          movieId: r.movie_id,
+          movieTitle: r.movie_title || "Unknown",
+          category: r.category,
+          gamma: Number(r.gamma),
+          sampleCount: r.sample_count,
+          updatedAt: r.updated_at,
+        });
+      }
     }
 
     res.json({
-      success: true,
-      message: "ICA official weekly box office report successfully downloaded, parsed, and logged.",
-      log: icaData,
+      categoryFactors,
+      movieFactors,
+      totalCategoryBaselines: Object.keys(categoryFactors).length,
+      totalMovieFactors: movieFactors.length,
+      emaAlpha: 0.70,
+      clipMin: 0.50,
+      clipMax: 1.30,
     });
   } catch (err: any) {
-    console.error("Error triggering ICA raw ingestion:", err);
+    console.error("Error fetching calibration factors:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/ingestion/trigger-ica - Manually triggers ICA scraping & calibration update
+apiRouter.post("/ingestion/trigger-ica", async (req, res) => {
+  try {
+    // 1. Fetch real observed admissions-weighted reference prices from DB
+    const moviePrices = await getMovieResolvedPricesForCalibration();
+    const pricesJson = JSON.stringify(moviePrices);
+
+    // 2. Run run_ica_calibration_update.py with real reference prices
+    const calibrationOutput = await new Promise<any>((resolve, reject) => {
+      const py = spawn(
+        "python3",
+        ["run_ica_calibration_update.py", "--prices-json", pricesJson],
+        { cwd: process.cwd() }
+      );
+
+      let stdout = "";
+      let stderr = "";
+
+      py.stdout.on("data", (d) => (stdout += d.toString()));
+      py.stderr.on("data", (d) => (stderr += d.toString()));
+
+      py.on("close", (code) => {
+        if (code !== 0) {
+          return reject(new Error(`ICA calibration update script failed (exit code ${code}): ${stderr || stdout}`));
+        }
+        try {
+          const parsed = JSON.parse(stdout.trim());
+          resolve(parsed);
+        } catch (jsonErr: any) {
+          reject(new Error(`Failed to parse ICA calibration output: ${stdout || jsonErr.message}`));
+        }
+      });
+    });
+
+    if (!calibrationOutput.success) {
+      throw new Error(calibrationOutput.error || "ICA calibration pipeline returned failure status.");
+    }
+
+    const logRecord = calibrationOutput.raw_log || calibrationOutput.log_record;
+
+    // 3. Persist into raw_ingestion_logs
+    if (logRecord && logRecord.id) {
+      await query(
+        `INSERT INTO raw_ingestion_logs (id, source, collected_at, file_name, record_count, status, raw_details, created_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+         ON CONFLICT (id) DO UPDATE SET
+           status = EXCLUDED.status,
+           record_count = EXCLUDED.record_count,
+           raw_details = EXCLUDED.raw_details;`,
+        [
+          logRecord.id,
+          "ICA",
+          logRecord.collectedAt || new Date().toISOString(),
+          logRecord.fileName || "ica_ranking_box_office_semanal.xlsx",
+          logRecord.recordCount || 0,
+          logRecord.status || "SUCCESS",
+          JSON.stringify(logRecord.rawDetails || {}),
+        ]
+      );
+    }
+
+    // 4. Sync factors into PostgreSQL calibration_factors table & trigger recalculation
+    const syncStats = await syncCalibrationFactorsToDb(calibrationOutput);
+    console.log(`[ICA Ingestion & Calibration] Sync results: ${syncStats.categoriesUpdated} categories updated, ${syncStats.moviesUpdated} movies updated, ${syncStats.snapshotsRecalculated} snapshots recalculated.`);
+
+    res.json({
+      success: true,
+      message: `ICA official report ingested successfully. Calibrated ${syncStats.categoriesUpdated} category factors and ${syncStats.moviesUpdated} movie gammas. Recalculated ${syncStats.snapshotsRecalculated} performance snapshots.`,
+      log: logRecord,
+      calibration: {
+        category_factors: calibrationOutput.category_factors,
+        sample_counts: calibrationOutput.sample_counts,
+        movie_factors: calibrationOutput.movie_factors,
+        movies_updated: calibrationOutput.movies_updated,
+      },
+      syncStats,
+    });
+  } catch (err: any) {
+    console.error("Error triggering ICA raw ingestion & calibration:", err);
     res.status(500).json({ error: err.message });
   }
 });

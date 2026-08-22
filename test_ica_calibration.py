@@ -190,6 +190,104 @@ class TestICAIngestionAndCalibration(unittest.TestCase):
         )
         self.assertLess(auto_family_rev, raw_rev)  # Confirms child/family discount is applied
 
+    def test_per_movie_reference_price_calibration(self):
+        """Tests that per-movie resolved unit prices correctly determine gamma = ATP / resolved_unit_price."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            cal = CalibrationService(config_path=tmp_path)
+            # Pass custom resolved prices per movie from Postgres
+            movie_prices = {
+                "Patrulha Pata - O Filme dos Dinossauros": 8.46,
+                "Homem-Aranha - Um Novo Dia": 9.36,
+                "A Odisseia": 10.29
+            }
+            cal.update_from_ica(self.sample_records, movie_baseline_prices=movie_prices)
+
+            # Patrulha Pata ATP is 6.28 €. Ref price is 8.46 €.
+            # Expected gamma = 6.28 / 8.46 = 0.742
+            paw_factor = cal.get_calibration_factor(movie_title="Patrulha Pata: O Filme dos Dinossauros")
+            self.assertAlmostEqual(paw_factor, 0.742, places=2)
+
+            # Homem-Aranha ATP is 7.49 €. Ref price is 9.36 €.
+            # Expected gamma = 7.49 / 9.36 = 0.800
+            spidey_factor = cal.get_calibration_factor(movie_title="Homem-Aranha: Um Novo Dia")
+            self.assertAlmostEqual(spidey_factor, 0.800, places=2)
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+    def test_ema_accumulation_across_weeks(self):
+        """Tests that repeated updates blend with previous factors via Exponential Moving Average (EMA)."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            cal = CalibrationService(config_path=tmp_path)
+            movie_prices = {"Patrulha Pata - O Filme dos Dinossauros": 8.46}
+
+            # Week 1 update: ATP = 6.28, Gamma = 6.28 / 8.46 = 0.742
+            cal.update_from_ica(self.sample_records, movie_baseline_prices=movie_prices, ema_alpha=0.70)
+            self.assertAlmostEqual(cal.state.movie_specific_factors["patrulha pata o filme dos dinossauros"], 0.742, places=2)
+
+            # Week 2 update: suppose ATP rises to 7.00 for the new week (observed gamma = 7.00 / 8.46 = 0.827)
+            # EMA = 0.70 * 0.827 + 0.30 * 0.742 = 0.5789 + 0.2226 = 0.8015
+            modified_records = list(self.sample_records)
+            for i, r in enumerate(modified_records):
+                if "Patrulha Pata" in r.title:
+                    modified_records[i] = ICAMovieRecord(
+                        rank=r.rank,
+                        title=r.title,
+                        normalized_title=r.normalized_title,
+                        weekly_gross_revenue=70000.0,
+                        weekly_admissions=10000,
+                        atp=7.00
+                    )
+            cal.update_from_ica(modified_records, movie_baseline_prices=movie_prices, ema_alpha=0.70)
+            new_gamma = cal.state.movie_specific_factors["patrulha pata o filme dos dinossauros"]
+            self.assertAlmostEqual(new_gamma, 0.802, places=2)
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+    def test_minimum_sample_count_guard(self):
+        """Tests that categories with fewer than min_category_samples retain their default baseline."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            cal = CalibrationService(config_path=tmp_path)
+            # Filter records to only 1 Drama movie (e.g. O Fim de Oak Street)
+            one_drama_record = [r for r in self.sample_records if "Oak Street" in r.title]
+            
+            # Update with min_category_samples = 3
+            cal.update_from_ica(one_drama_record, min_category_samples=3)
+
+            # Drama / Adult should NOT be updated because sample count is 1 < 3
+            self.assertEqual(cal.state.category_factors[CATEGORY_DRAMA_ADULT], 0.93)
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+    def test_extreme_gamma_bounds_clipping(self):
+        """Tests that extreme anomalous ratios are strictly clipped to [0.50, 1.30]."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            cal = CalibrationService(config_path=tmp_path)
+            anomalous_records = [
+                ICAMovieRecord(rank=1, title="Filme Quase Grátis", normalized_title="filme quase gratis", weekly_gross_revenue=100.0, weekly_admissions=1000, atp=0.10),
+                ICAMovieRecord(rank=2, title="Filme Hiper Caro", normalized_title="filme hiper caro", weekly_gross_revenue=100000.0, weekly_admissions=1000, atp=100.0)
+            ]
+            cal.update_from_ica(anomalous_records, default_adult_price=7.60)
+            self.assertEqual(cal.state.movie_specific_factors["filme quase gratis"], 0.50)
+            self.assertEqual(cal.state.movie_specific_factors["filme hiper caro"], 1.30)
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
 
 if __name__ == "__main__":
     unittest.main()

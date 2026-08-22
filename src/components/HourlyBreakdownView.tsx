@@ -155,7 +155,7 @@ export const HourlyBreakdownView: React.FC<HourlyBreakdownViewProps> = ({
     if (delta === 0 || delta === undefined || delta === null) {
       return (
         <span className="text-slate-500 font-mono text-xs">
-          {isCurrency ? "€0.00" : "0"} (0%)
+          {isCurrency ? "0.00 €" : "0"} (0%)
         </span>
       );
     }
@@ -178,10 +178,10 @@ export const HourlyBreakdownView: React.FC<HourlyBreakdownViewProps> = ({
         <span>
           {sign}
           {isCurrency
-            ? `€${Math.abs(delta).toLocaleString(undefined, {
+            ? `${Math.abs(delta).toLocaleString(undefined, {
                 minimumFractionDigits: 2,
                 maximumFractionDigits: 2,
-              })}`
+              })} €`
             : Math.abs(delta).toLocaleString()}
           {pct}
         </span>
@@ -409,11 +409,11 @@ export const HourlyBreakdownView: React.FC<HourlyBreakdownViewProps> = ({
               <span className="text-xs font-normal text-slate-400 font-sans">admissions</span>
             </div>
             <div className="text-sm font-bold text-emerald-400 font-mono mt-0.5">
-              €{data.summary.total_revenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              {data.summary.total_revenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €
             </div>
             <div className="text-[11px] text-slate-400 font-mono mt-0.5">
               ATP: {data.summary.total_tickets > 0
-                ? `€${(data.summary.total_revenue / data.summary.total_tickets).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                ? `${(data.summary.total_revenue / data.summary.total_tickets).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`
                 : "—"}
             </div>
             {isComparing && data.compare_summary && (
@@ -421,7 +421,7 @@ export const HourlyBreakdownView: React.FC<HourlyBreakdownViewProps> = ({
                 <span className="text-indigo-300 font-mono">
                   {compareDate}: {data.compare_summary.total_tickets.toLocaleString()} · ATP{" "}
                   {data.compare_summary.total_tickets > 0
-                    ? `€${(data.compare_summary.total_revenue / data.compare_summary.total_tickets).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                    ? `${(data.compare_summary.total_revenue / data.compare_summary.total_tickets).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €`
                     : "—"}
                 </span>
                 {renderDeltaPill(
@@ -449,7 +449,7 @@ export const HourlyBreakdownView: React.FC<HourlyBreakdownViewProps> = ({
               <span className="text-xs font-normal text-slate-400 font-sans">seats</span>
             </div>
             <div className="text-sm font-bold text-cyan-300 font-mono mt-0.5">
-              €{(data.summary.baseline_revenue ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              {(data.summary.baseline_revenue ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €
             </div>
             <div className="text-[11px] text-slate-400 mt-1">
               Opening sweep baseline state before 09:00
@@ -484,7 +484,7 @@ export const HourlyBreakdownView: React.FC<HourlyBreakdownViewProps> = ({
               <span className="text-xs font-normal text-slate-400 font-sans">tickets</span>
             </div>
             <div className="text-sm font-bold text-slate-200 font-mono mt-0.5">
-              €{(data.summary.walkup_revenue ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+              {(data.summary.walkup_revenue ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €
             </div>
             <div className="text-[11px] text-slate-400 mt-1">
               Total sales generated during operational hours
@@ -519,7 +519,7 @@ export const HourlyBreakdownView: React.FC<HourlyBreakdownViewProps> = ({
               <span className="text-xs font-normal text-slate-400 font-sans">net tickets</span>
             </div>
             <div className="text-sm font-bold text-slate-200 font-mono mt-0.5">
-              €{(data.summary.peak_revenue ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} peak rev
+              {(data.summary.peak_revenue ?? 0).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} € peak rev
             </div>
             <div className="text-xs text-slate-400 mt-1">
               Avg Pace: <span className="font-semibold text-purple-400">{data.summary.avg_hourly_tickets || 0}</span> tickets/hr
@@ -534,7 +534,7 @@ export const HourlyBreakdownView: React.FC<HourlyBreakdownViewProps> = ({
           <div className="flex items-center gap-2">
             <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
             <span>
-              <strong>Unified Reconciliation Active:</strong> Cumulative progression starts with Pre-Sales Baseline and adds Net Hourly Flow ({data.summary.gross_tickets?.toLocaleString()} gross claims minus {(data.summary.returns_tickets ?? 0).toLocaleString()} returns), reconciling to the exact snapshot total of <strong>{data.summary.total_tickets.toLocaleString()} admissions / €{data.summary.total_revenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</strong>.
+              <strong>Unified Reconciliation Active:</strong> Cumulative progression starts with Pre-Sales Baseline and adds Net Hourly Flow ({data.summary.gross_tickets?.toLocaleString()} gross claims minus {(data.summary.returns_tickets ?? 0).toLocaleString()} returns), reconciling to the exact snapshot total of <strong>{data.summary.total_tickets.toLocaleString()} admissions / {data.summary.total_revenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €</strong>.
             </span>
           </div>
           {flowMode === "gross" && (
@@ -597,7 +597,7 @@ export const HourlyBreakdownView: React.FC<HourlyBreakdownViewProps> = ({
                     tickLine={false}
                     tickFormatter={(val) =>
                       chartMetric === "revenue"
-                        ? `€${val >= 1000 ? `${(val / 1000).toFixed(0)}k` : val}`
+                        ? `${val >= 1000 ? `${(val / 1000).toFixed(0)}k` : val} €`
                         : val >= 1000
                         ? `${(val / 1000).toFixed(0)}k`
                         : val
@@ -650,10 +650,10 @@ export const HourlyBreakdownView: React.FC<HourlyBreakdownViewProps> = ({
                             <div className="text-[11px] text-slate-400 flex items-center justify-between">
                               <span>Est. Revenue:</span>
                               <span className="font-mono text-emerald-400">
-                                €{primaryRev.toLocaleString(undefined, {
+                                {primaryRev.toLocaleString(undefined, {
                                   minimumFractionDigits: 2,
                                   maximumFractionDigits: 2,
-                                })}
+                                })} €
                               </span>
                             </div>
                             {flowMode === "net" && item.gross_tickets_sold !== undefined && (
@@ -676,10 +676,10 @@ export const HourlyBreakdownView: React.FC<HourlyBreakdownViewProps> = ({
                               <div className="text-[11px] text-slate-400 flex items-center justify-between">
                                 <span>Est. Revenue:</span>
                                 <span className="font-mono text-indigo-300">
-                                  €{compRev?.toLocaleString(undefined, {
+                                  {compRev?.toLocaleString(undefined, {
                                     minimumFractionDigits: 2,
                                     maximumFractionDigits: 2,
-                                  })}
+                                  })} €
                                 </span>
                               </div>
 
@@ -744,7 +744,7 @@ export const HourlyBreakdownView: React.FC<HourlyBreakdownViewProps> = ({
                     tickLine={false}
                     tickFormatter={(val) =>
                       chartMetric === "revenue"
-                        ? `€${val >= 1000 ? `${(val / 1000).toFixed(0)}k` : val}`
+                        ? `${val >= 1000 ? `${(val / 1000).toFixed(0)}k` : val} €`
                         : val >= 1000
                         ? `${(val / 1000).toFixed(0)}k`
                         : val
@@ -782,17 +782,17 @@ export const HourlyBreakdownView: React.FC<HourlyBreakdownViewProps> = ({
                             <div className="text-[11px] text-slate-400 flex items-center justify-between">
                               <span>Est. Revenue:</span>
                               <span className="font-mono text-emerald-400">
-                                €{primaryRev.toLocaleString(undefined, {
+                                {primaryRev.toLocaleString(undefined, {
                                   minimumFractionDigits: 2,
                                   maximumFractionDigits: 2,
-                                })}
+                                })} €
                               </span>
                             </div>
                             {!item.is_baseline && (
                               <div className="text-[10px] text-slate-500 flex items-center justify-between pt-0.5">
                                 <span>Hour Flow Rate:</span>
                                 <span className="font-mono text-amber-300/90">
-                                  +{item.tickets_sold.toLocaleString()} tickets (€{item.estimated_revenue.toLocaleString()})
+                                  +{item.tickets_sold.toLocaleString()} tickets ({item.estimated_revenue.toLocaleString()} €)
                                 </span>
                               </div>
                             )}
@@ -808,10 +808,10 @@ export const HourlyBreakdownView: React.FC<HourlyBreakdownViewProps> = ({
                               <div className="text-[11px] text-slate-400 flex items-center justify-between">
                                 <span>Est. Revenue:</span>
                                 <span className="font-mono text-indigo-300">
-                                  €{compRev?.toLocaleString(undefined, {
+                                  {compRev?.toLocaleString(undefined, {
                                     minimumFractionDigits: 2,
                                     maximumFractionDigits: 2,
-                                  })}
+                                  })} €
                                 </span>
                               </div>
 
@@ -984,12 +984,12 @@ export const HourlyBreakdownView: React.FC<HourlyBreakdownViewProps> = ({
                       </td>
                       <td className="py-3 px-4 text-right text-emerald-400 font-semibold">
                         {displayRev !== 0 ? (
-                          `€${displayRev.toLocaleString(undefined, {
+                          `${displayRev.toLocaleString(undefined, {
                             minimumFractionDigits: 2,
                             maximumFractionDigits: 2,
-                          })}`
+                          })} €`
                         ) : (
-                          <span className="text-slate-600">€0.00</span>
+                          <span className="text-slate-600">0.00 €</span>
                         )}
                       </td>
 
@@ -1006,12 +1006,12 @@ export const HourlyBreakdownView: React.FC<HourlyBreakdownViewProps> = ({
                           </td>
                           <td className="py-3 px-4 text-right text-indigo-300 font-semibold">
                             {compDisplayRev !== undefined && compDisplayRev !== 0 ? (
-                              `€${compDisplayRev.toLocaleString(undefined, {
+                              `${compDisplayRev.toLocaleString(undefined, {
                                 minimumFractionDigits: 2,
                                 maximumFractionDigits: 2,
-                              })}`
+                              })} €`
                             ) : (
-                              <span className="text-slate-600">€0.00</span>
+                              <span className="text-slate-600">0.00 €</span>
                             )}
                           </td>
                           <td className="py-3 px-4 text-right">
@@ -1042,16 +1042,16 @@ export const HourlyBreakdownView: React.FC<HourlyBreakdownViewProps> = ({
                         )}
                       </td>
                       <td className="py-3 px-4 text-right text-slate-200 font-bold">
-                        €{item.cumulative_revenue.toLocaleString(undefined, {
+                        {item.cumulative_revenue.toLocaleString(undefined, {
                           minimumFractionDigits: 2,
                           maximumFractionDigits: 2,
-                        })}
+                        })} €
                         {isComparing && item.compare_cumulative_revenue !== undefined && (
                           <div className="text-[10px] text-indigo-400 font-normal">
-                            Comp: €{item.compare_cumulative_revenue.toLocaleString(undefined, {
+                            Comp: {item.compare_cumulative_revenue.toLocaleString(undefined, {
                               minimumFractionDigits: 2,
                               maximumFractionDigits: 2,
-                            })}
+                            })} €
                           </div>
                         )}
                       </td>
@@ -1070,10 +1070,10 @@ export const HourlyBreakdownView: React.FC<HourlyBreakdownViewProps> = ({
                     {data.summary.total_tickets.toLocaleString()}
                   </td>
                   <td className="py-3.5 px-4 text-right text-emerald-400 text-sm">
-                    €{data.summary.total_revenue.toLocaleString(undefined, {
+                    {data.summary.total_revenue.toLocaleString(undefined, {
                       minimumFractionDigits: 2,
                       maximumFractionDigits: 2,
-                    })}
+                    })} €
                   </td>
 
                   {isComparing && data.compare_summary && (
@@ -1082,10 +1082,10 @@ export const HourlyBreakdownView: React.FC<HourlyBreakdownViewProps> = ({
                         {data.compare_summary.total_tickets.toLocaleString()}
                       </td>
                       <td className="py-3.5 px-4 text-right text-indigo-300 text-sm">
-                        €{data.compare_summary.total_revenue.toLocaleString(undefined, {
+                        {data.compare_summary.total_revenue.toLocaleString(undefined, {
                           minimumFractionDigits: 2,
                           maximumFractionDigits: 2,
-                        })}
+                        })} €
                       </td>
                       <td className="py-3.5 px-4 text-right">
                         <div className="flex flex-col items-end gap-0.5">
@@ -1110,10 +1110,10 @@ export const HourlyBreakdownView: React.FC<HourlyBreakdownViewProps> = ({
                     {data.summary.total_tickets.toLocaleString()}
                   </td>
                   <td className="py-3.5 px-4 text-right text-emerald-400 text-sm">
-                    €{data.summary.total_revenue.toLocaleString(undefined, {
+                    {data.summary.total_revenue.toLocaleString(undefined, {
                       minimumFractionDigits: 2,
                       maximumFractionDigits: 2,
-                    })}
+                    })} €
                   </td>
                 </tr>
               </tfoot>

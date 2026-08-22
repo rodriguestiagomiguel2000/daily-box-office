@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import {
   TrendingUp,
   Ticket,
-  DollarSign,
+  Euro,
   Calendar,
   Building,
   Layers,
@@ -165,10 +165,10 @@ export const MoviePresaleCurveView: React.FC<MoviePresaleCurveViewProps> = ({
         <div className="bg-slate-900 border border-slate-800 rounded-2xl p-4">
           <div className="flex items-center justify-between text-slate-400 mb-1">
             <span className="text-xs font-medium uppercase tracking-wider">Estimated Presale Gross</span>
-            <DollarSign className="w-4 h-4 text-emerald-400" />
+            <Euro className="w-4 h-4 text-emerald-400" />
           </div>
           <div className="text-2xl font-bold text-white">
-            €{latestBucket ? latestBucket.cumulative_revenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : "0.00"}
+            {latestBucket ? `€${latestBucket.cumulative_revenue.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}` : "€0.00"}
           </div>
           <div className="text-[11px] text-emerald-400/90 mt-1">
             Based on resolved NOS seat pricing

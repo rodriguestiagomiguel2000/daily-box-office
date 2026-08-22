@@ -157,7 +157,7 @@ export const IntradayForecastCard: React.FC<IntradayForecastCardProps> = ({
               Final EOD Revenue
             </div>
             <div className="text-3xl font-black text-amber-400 mt-1">
-              €{actual_revenue.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+              {actual_revenue.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })} €
             </div>
             <div className="text-xs text-slate-400 mt-1">
               {actual_admissions.toLocaleString()} admissions • {(actual_occupancy * 100).toFixed(1)}% final occupancy
@@ -171,7 +171,7 @@ export const IntradayForecastCard: React.FC<IntradayForecastCardProps> = ({
             <div className="text-xl font-bold text-slate-200 mt-1 flex items-center gap-1.5">
               {comparisons.yesterday_eod_revenue !== null ? (
                 <>
-                  <span>€{comparisons.yesterday_eod_revenue.toLocaleString()}</span>
+                  <span>{comparisons.yesterday_eod_revenue.toLocaleString()} €</span>
                   {comparisons.change_vs_yesterday_eod !== null && (
                     <span
                       className={`text-xs px-2 py-0.5 rounded-full font-bold flex items-center ${
@@ -201,7 +201,7 @@ export const IntradayForecastCard: React.FC<IntradayForecastCardProps> = ({
             <div className="text-xl font-bold text-slate-200 mt-1 flex items-center gap-1.5">
               {comparisons.last_week_eod_revenue !== null ? (
                 <>
-                  <span>€{comparisons.last_week_eod_revenue.toLocaleString()}</span>
+                  <span>{comparisons.last_week_eod_revenue.toLocaleString()} €</span>
                   {comparisons.change_vs_last_week_eod !== null && (
                     <span
                       className={`text-xs px-2 py-0.5 rounded-full font-bold flex items-center ${
@@ -234,10 +234,10 @@ export const IntradayForecastCard: React.FC<IntradayForecastCardProps> = ({
               <Sparkles className="w-3.5 h-3.5" />
             </div>
             <div className="text-3xl font-black text-amber-400 mt-1">
-              €{forecast.expected.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+              {forecast.expected.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })} €
             </div>
             <div className="text-xs text-slate-300 mt-1 font-medium">
-              Range: €{forecast.low.toLocaleString()} – €{forecast.high.toLocaleString()}
+              Range: {forecast.low.toLocaleString()} € – {forecast.high.toLocaleString()} €
             </div>
           </div>
 
@@ -248,7 +248,7 @@ export const IntradayForecastCard: React.FC<IntradayForecastCardProps> = ({
               <span className="text-[11px] font-mono text-cyan-400">@ {latest_data_time}</span>
             </div>
             <div className="text-2xl font-black text-slate-100 mt-1">
-              €{actual_revenue.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })}
+              {actual_revenue.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 0 })} €
             </div>
             <div className="text-xs text-slate-400 mt-1">
               {actual_admissions.toLocaleString()} admissions • {remaining_shows} future shows remaining
@@ -263,7 +263,7 @@ export const IntradayForecastCard: React.FC<IntradayForecastCardProps> = ({
             <div className="text-xl font-bold text-slate-200 mt-1 flex items-center gap-1.5">
               {comparisons.yesterday_eod_revenue !== null ? (
                 <>
-                  <span>€{comparisons.yesterday_eod_revenue.toLocaleString()}</span>
+                  <span>{comparisons.yesterday_eod_revenue.toLocaleString()} €</span>
                   {comparisons.change_vs_yesterday_eod !== null && (
                     <span
                       className={`text-xs px-2 py-0.5 rounded-full font-bold flex items-center ${
@@ -294,7 +294,7 @@ export const IntradayForecastCard: React.FC<IntradayForecastCardProps> = ({
             <div className="text-xl font-bold text-slate-200 mt-1 flex items-center gap-1.5">
               {comparisons.last_week_eod_revenue !== null ? (
                 <>
-                  <span>€{comparisons.last_week_eod_revenue.toLocaleString()}</span>
+                  <span>{comparisons.last_week_eod_revenue.toLocaleString()} €</span>
                   {comparisons.change_vs_last_week_eod !== null && (
                     <span
                       className={`text-xs px-2 py-0.5 rounded-full font-bold flex items-center ${
@@ -362,10 +362,10 @@ export const IntradayForecastCard: React.FC<IntradayForecastCardProps> = ({
                         {(curve.weight * 100).toFixed(0)}%
                       </td>
                       <td className="py-2 px-2 text-right">
-                        €{curve.eod_revenue.toLocaleString()}
+                        {curve.eod_revenue.toLocaleString()} €
                       </td>
                       <td className="py-2 px-2 text-right text-slate-400">
-                        €{curve.cutoff_revenue.toLocaleString()}
+                        {curve.cutoff_revenue.toLocaleString()} €
                       </td>
                       <td className="py-2 px-2 text-right text-cyan-400">
                         {(curve.fraction_achieved_at_cutoff * 100).toFixed(1)}%
@@ -374,7 +374,7 @@ export const IntradayForecastCard: React.FC<IntradayForecastCardProps> = ({
                         {(curve.remaining_ratio ?? curve.momentum_ratio ?? 0).toFixed(2)}x
                       </td>
                       <td className="py-2 px-2 text-right font-bold text-slate-100">
-                        €{curve.projected_eod.toLocaleString()}
+                        {curve.projected_eod.toLocaleString()} €
                       </td>
                     </tr>
                   ))}

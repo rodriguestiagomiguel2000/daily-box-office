@@ -104,12 +104,20 @@ export function resolveSessionUnitPriceJs(
 /**
  * Returns the canonical SQL subquery for session pricing resolution.
  * 
- * Note on why unweighted averaging was wrong:
- * Averaging distinct ticket-type prices unweighted systematically overestimates revenue
- * because discounted tickets represent a large volume of actual attendance.
- * We prefer the single standard/default adult ticket price (MIN price where is_default = true
- * or ticket_type ILIKE '%normal%') and only fall back to an average across all non-zero prices
- * as a last resort.
+ * Applies empirical calibration factors (gamma) from official ICA reports:
+ * 1. Base unit price is resolved via standard priority (DEFAULT_FLAG -> STANDARD_NAME -> SINGLE_NON_CONCESSION -> AVG -> FORMAT_FALLBACK).
+ * 2. Multiplies by the movie-specific calibration factor (gamma) from calibration_factors table if matched.
+ * 3. Otherwise falls back to the movie's category factor ('Family / Animation', 'Action / General', 'Drama / Adult').
+ * 4. Otherwise falls back to gamma = 1.0.
+ * 
+ * Outputs:
+ * - session_id
+ * - movie_id
+ * - operational_date
+ * - format
+ * - resolved_unit_price_raw (uncalibrated standard adult ticket price)
+ * - gamma (the calibration discount/premium factor)
+ * - resolved_unit_price (calibrated price = ROUND(raw * gamma, 2))
  */
 export function getSessionPricesSqlCte(): string {
   return `
@@ -119,27 +127,44 @@ export function getSessionPricesSqlCte(): string {
         s.movie_id,
         s.operational_date,
         s.format,
-        COALESCE(
-          MIN(stp.price) FILTER (WHERE stp.is_default = true AND stp.price > 0),
-          MIN(stp.price) FILTER (WHERE stp.price > 0 AND (stp.ticket_type ILIKE '%normal%' OR stp.ticket_type ILIKE '%adulto%' OR stp.ticket_type ILIKE '%inteiro%' OR stp.ticket_type ILIKE '%standard%') AND stp.ticket_type NOT ILIKE '%fam%' AND stp.ticket_type NOT ILIKE '%pax%' AND (stp.seats_count IS NULL OR stp.seats_count = 1)),
-          MIN(stp.price) FILTER (WHERE stp.price > 0 AND stp.ticket_type NOT ILIKE '%fam%' AND stp.ticket_type NOT ILIKE '%pax%' AND stp.ticket_type NOT ILIKE '%crian%' AND stp.ticket_type NOT ILIKE '%estud%' AND stp.ticket_type NOT ILIKE '%sénior%' AND stp.ticket_type NOT ILIKE '%senior%' AND (stp.seats_count IS NULL OR stp.seats_count = 1)),
-          AVG(stp.price) FILTER (WHERE stp.price > 0),
-          CASE 
-            WHEN s.format ILIKE '%IMAX%' THEN 13.50 
-            WHEN s.format ILIKE '%3D%' THEN 9.50 
-            ELSE 8.75 
-          END
-        ) as resolved_unit_price
+        base_price.raw_unit_price as resolved_unit_price_raw,
+        COALESCE(cf_movie.gamma, cf_cat.gamma, 1.0) as gamma,
+        ROUND((base_price.raw_unit_price * COALESCE(cf_movie.gamma, cf_cat.gamma, 1.0))::numeric, 2) as resolved_unit_price
       FROM sessions s
-      LEFT JOIN session_ticket_prices stp ON stp.session_id = s.id
-      GROUP BY s.id, s.movie_id, s.operational_date, s.format
+      LEFT JOIN movies m ON s.movie_id = m.id
+      LEFT JOIN LATERAL (
+        SELECT 
+          COALESCE(
+            MIN(stp.price) FILTER (WHERE stp.is_default = true AND stp.price > 0),
+            MIN(stp.price) FILTER (WHERE stp.price > 0 AND (stp.ticket_type ILIKE '%normal%' OR stp.ticket_type ILIKE '%adulto%' OR stp.ticket_type ILIKE '%inteiro%' OR stp.ticket_type ILIKE '%standard%') AND stp.ticket_type NOT ILIKE '%fam%' AND stp.ticket_type NOT ILIKE '%pax%' AND (stp.seats_count IS NULL OR stp.seats_count = 1)),
+            MIN(stp.price) FILTER (WHERE stp.price > 0 AND stp.ticket_type NOT ILIKE '%fam%' AND stp.ticket_type NOT ILIKE '%pax%' AND stp.ticket_type NOT ILIKE '%crian%' AND stp.ticket_type NOT ILIKE '%estud%' AND stp.ticket_type NOT ILIKE '%sénior%' AND stp.ticket_type NOT ILIKE '%senior%' AND (stp.seats_count IS NULL OR stp.seats_count = 1)),
+            AVG(stp.price) FILTER (WHERE stp.price > 0),
+            CASE 
+              WHEN s.format ILIKE '%IMAX%' THEN 13.50 
+              WHEN s.format ILIKE '%3D%' THEN 9.50 
+              ELSE 8.75 
+            END
+          ) as raw_unit_price
+        FROM session_ticket_prices stp
+        WHERE stp.session_id = s.id
+      ) base_price ON true
+      LEFT JOIN calibration_factors cf_movie ON cf_movie.movie_id = s.movie_id
+      LEFT JOIN calibration_factors cf_cat ON cf_cat.movie_id IS NULL AND cf_cat.category = COALESCE(
+        m.category,
+        CASE 
+          WHEN m.title ILIKE '%animac%' OR m.title ILIKE '%patrulha pata%' OR m.title ILIKE '%minion%' OR m.title ILIKE '%minimo%' OR m.title ILIKE '%famil%' OR m.title ILIKE '%disney%' OR m.title ILIKE '%pixar%' OR m.title ILIKE '%divertida%' OR m.title ILIKE '%toy story%' OR m.title ILIKE '%vaiana%' OR m.title ILIKE '%sonic%' OR m.title ILIKE '%mario%' OR m.title ILIKE '%stitch%' OR m.title ILIKE '%paddington%' OR m.title ILIKE '%shrek%' OR m.title ILIKE '%frozen%' OR m.title ILIKE '%wonka%' OR m.title ILIKE '%barbie%' THEN 'Family / Animation'
+          WHEN m.title ILIKE '%drama%' OR m.title ILIKE '%terror%' OR m.title ILIKE '%horror%' OR m.title ILIKE '%thriller%' OR m.title ILIKE '%crime%' OR m.title ILIKE '%misterio%' OR m.title ILIKE '%romance%' OR m.title ILIKE '%biograf%' THEN 'Drama / Adult'
+          ELSE 'Action / General'
+        END
+      )
+      GROUP BY s.id, s.movie_id, s.operational_date, s.format, base_price.raw_unit_price, cf_movie.gamma, cf_cat.gamma
     )
   `;
 }
 
 /**
  * Recalculate stored performance snapshots in movie_performance_snapshots
- * using canonical unit prices for consistency across historical tables.
+ * using calibrated canonical unit prices for consistency across historical tables.
  */
 export async function recalculateAllPerformanceSnapshots(movieId?: number, operationalDate?: string): Promise<number> {
   const whereClauses: string[] = [];
@@ -163,20 +188,37 @@ export async function recalculateAllPerformanceSnapshots(movieId?: number, opera
         s.movie_id,
         s.operational_date,
         s.format,
-        COALESCE(
-          MIN(stp.price) FILTER (WHERE stp.is_default = true AND stp.price > 0),
-          MIN(stp.price) FILTER (WHERE stp.price > 0 AND (stp.ticket_type ILIKE '%normal%' OR stp.ticket_type ILIKE '%adulto%' OR stp.ticket_type ILIKE '%inteiro%' OR stp.ticket_type ILIKE '%standard%') AND stp.ticket_type NOT ILIKE '%fam%' AND stp.ticket_type NOT ILIKE '%pax%' AND (stp.seats_count IS NULL OR stp.seats_count = 1)),
-          MIN(stp.price) FILTER (WHERE stp.price > 0 AND stp.ticket_type NOT ILIKE '%fam%' AND stp.ticket_type NOT ILIKE '%pax%' AND stp.ticket_type NOT ILIKE '%crian%' AND stp.ticket_type NOT ILIKE '%estud%' AND stp.ticket_type NOT ILIKE '%sénior%' AND stp.ticket_type NOT ILIKE '%senior%' AND (stp.seats_count IS NULL OR stp.seats_count = 1)),
-          AVG(stp.price) FILTER (WHERE stp.price > 0),
-          CASE 
-            WHEN s.format ILIKE '%IMAX%' THEN 13.50 
-            WHEN s.format ILIKE '%3D%' THEN 9.50 
-            ELSE 8.75 
-          END
-        ) as resolved_unit_price
+        base_price.raw_unit_price as resolved_unit_price_raw,
+        COALESCE(cf_movie.gamma, cf_cat.gamma, 1.0) as gamma,
+        ROUND((base_price.raw_unit_price * COALESCE(cf_movie.gamma, cf_cat.gamma, 1.0))::numeric, 2) as resolved_unit_price
       FROM sessions s
-      LEFT JOIN session_ticket_prices stp ON stp.session_id = s.id
-      GROUP BY s.id, s.movie_id, s.operational_date, s.format
+      LEFT JOIN movies m ON s.movie_id = m.id
+      LEFT JOIN LATERAL (
+        SELECT 
+          COALESCE(
+            MIN(stp.price) FILTER (WHERE stp.is_default = true AND stp.price > 0),
+            MIN(stp.price) FILTER (WHERE stp.price > 0 AND (stp.ticket_type ILIKE '%normal%' OR stp.ticket_type ILIKE '%adulto%' OR stp.ticket_type ILIKE '%inteiro%' OR stp.ticket_type ILIKE '%standard%') AND stp.ticket_type NOT ILIKE '%fam%' AND stp.ticket_type NOT ILIKE '%pax%' AND (stp.seats_count IS NULL OR stp.seats_count = 1)),
+            MIN(stp.price) FILTER (WHERE stp.price > 0 AND stp.ticket_type NOT ILIKE '%fam%' AND stp.ticket_type NOT ILIKE '%pax%' AND stp.ticket_type NOT ILIKE '%crian%' AND stp.ticket_type NOT ILIKE '%estud%' AND stp.ticket_type NOT ILIKE '%sénior%' AND stp.ticket_type NOT ILIKE '%senior%' AND (stp.seats_count IS NULL OR stp.seats_count = 1)),
+            AVG(stp.price) FILTER (WHERE stp.price > 0),
+            CASE 
+              WHEN s.format ILIKE '%IMAX%' THEN 13.50 
+              WHEN s.format ILIKE '%3D%' THEN 9.50 
+              ELSE 8.75 
+            END
+          ) as raw_unit_price
+        FROM session_ticket_prices stp
+        WHERE stp.session_id = s.id
+      ) base_price ON true
+      LEFT JOIN calibration_factors cf_movie ON cf_movie.movie_id = s.movie_id
+      LEFT JOIN calibration_factors cf_cat ON cf_cat.movie_id IS NULL AND cf_cat.category = COALESCE(
+        m.category,
+        CASE 
+          WHEN m.title ILIKE '%animac%' OR m.title ILIKE '%patrulha pata%' OR m.title ILIKE '%minion%' OR m.title ILIKE '%minimo%' OR m.title ILIKE '%famil%' OR m.title ILIKE '%disney%' OR m.title ILIKE '%pixar%' OR m.title ILIKE '%divertida%' OR m.title ILIKE '%toy story%' OR m.title ILIKE '%vaiana%' OR m.title ILIKE '%sonic%' OR m.title ILIKE '%mario%' OR m.title ILIKE '%stitch%' OR m.title ILIKE '%paddington%' OR m.title ILIKE '%shrek%' OR m.title ILIKE '%frozen%' OR m.title ILIKE '%wonka%' OR m.title ILIKE '%barbie%' THEN 'Family / Animation'
+          WHEN m.title ILIKE '%drama%' OR m.title ILIKE '%terror%' OR m.title ILIKE '%horror%' OR m.title ILIKE '%thriller%' OR m.title ILIKE '%crime%' OR m.title ILIKE '%misterio%' OR m.title ILIKE '%romance%' OR m.title ILIKE '%biograf%' THEN 'Drama / Adult'
+          ELSE 'Action / General'
+        END
+      )
+      GROUP BY s.id, s.movie_id, s.operational_date, s.format, base_price.raw_unit_price, cf_movie.gamma, cf_cat.gamma
     ),
     recalculated_snapshots AS (
       SELECT 
@@ -186,6 +228,9 @@ export async function recalculateAllPerformanceSnapshots(movieId?: number, opera
         mps.snapshot_timestamp,
         mps.showcount_total,
         mps.estimated_admissions,
+        ROUND(AVG(sp.resolved_unit_price_raw)::numeric, 2) as avg_raw_price,
+        ROUND(AVG(sp.gamma)::numeric, 3) as avg_gamma,
+        ROUND(AVG(sp.resolved_unit_price)::numeric, 2) as avg_resolved_price,
         COALESCE(SUM(ss.unavailable_seats * sp.resolved_unit_price), 0.0) as new_estimated_revenue
       FROM movie_performance_snapshots mps
       JOIN sessions s ON s.movie_id = mps.movie_id 
@@ -203,13 +248,223 @@ export async function recalculateAllPerformanceSnapshots(movieId?: number, opera
     UPDATE movie_performance_snapshots mps
     SET 
       estimated_revenue = ROUND(rs.new_estimated_revenue::numeric, 2),
-      revenue_per_show = CASE WHEN mps.showcount_total > 0 THEN ROUND((rs.new_estimated_revenue / mps.showcount_total)::numeric, 2) ELSE 0.0 END
+      revenue_per_show = CASE WHEN mps.showcount_total > 0 THEN ROUND((rs.new_estimated_revenue / mps.showcount_total)::numeric, 2) ELSE 0.0 END,
+      resolved_unit_price_raw = rs.avg_raw_price,
+      resolved_unit_price = rs.avg_resolved_price,
+      gamma = rs.avg_gamma
     FROM recalculated_snapshots rs
     WHERE mps.id = rs.snapshot_id;
   `;
 
   const res = await query(querySql, params);
   return res.rowCount || 0;
+}
+
+/**
+ * Computes the admissions-weighted average raw resolved unit price per movie from Postgres.
+ * This is used to feed real observed reference prices into the ICA calibration pipeline.
+ */
+export async function getMovieResolvedPricesForCalibration(): Promise<Record<string, number>> {
+  try {
+    const res = await query<{
+      movie_id: number;
+      title: string;
+      resolved_price: string | number;
+      total_weighted_revenue?: string | number;
+      total_admissions_weight?: string | number;
+    }>(`
+      WITH session_raw_prices AS (
+        SELECT 
+          s.id as session_id,
+          s.movie_id,
+          COALESCE(
+            MIN(stp.price) FILTER (WHERE stp.is_default = true AND stp.price > 0),
+            MIN(stp.price) FILTER (WHERE stp.price > 0 AND (stp.ticket_type ILIKE '%normal%' OR stp.ticket_type ILIKE '%adulto%' OR stp.ticket_type ILIKE '%inteiro%' OR stp.ticket_type ILIKE '%standard%') AND stp.ticket_type NOT ILIKE '%fam%' AND stp.ticket_type NOT ILIKE '%pax%' AND (stp.seats_count IS NULL OR stp.seats_count = 1)),
+            MIN(stp.price) FILTER (WHERE stp.price > 0 AND stp.ticket_type NOT ILIKE '%fam%' AND stp.ticket_type NOT ILIKE '%pax%' AND stp.ticket_type NOT ILIKE '%crian%' AND stp.ticket_type NOT ILIKE '%estud%' AND stp.ticket_type NOT ILIKE '%sénior%' AND stp.ticket_type NOT ILIKE '%senior%' AND (stp.seats_count IS NULL OR stp.seats_count = 1)),
+            AVG(stp.price) FILTER (WHERE stp.price > 0),
+            CASE WHEN s.format ILIKE '%IMAX%' THEN 13.50 WHEN s.format ILIKE '%3D%' THEN 9.50 ELSE 8.75 END
+          ) as raw_unit_price,
+          COALESCE(MAX(ss.unavailable_seats), 1) as admissions_weight
+        FROM sessions s
+        JOIN movies m ON s.movie_id = m.id
+        LEFT JOIN session_ticket_prices stp ON stp.session_id = s.id
+        LEFT JOIN seat_snapshots ss ON ss.session_id = s.id
+        GROUP BY s.id, s.movie_id, s.format
+      )
+      SELECT 
+        m.id as movie_id,
+        m.title,
+        ROUND(
+          (SUM(srp.raw_unit_price * srp.admissions_weight) / NULLIF(SUM(srp.admissions_weight), 0))::numeric, 
+          2
+        ) as resolved_price,
+        SUM(srp.raw_unit_price * srp.admissions_weight) as total_weighted_revenue,
+        SUM(srp.admissions_weight) as total_admissions_weight
+      FROM movies m
+      JOIN session_raw_prices srp ON srp.movie_id = m.id
+      GROUP BY m.id, m.title;
+    `);
+
+    function normalizeTitle(s: string): string {
+      return s
+        .toLowerCase()
+        .normalize("NFD")
+        .replace(/[\u0300-\u036f]/g, "")
+        .replace(/[^a-z0-9 ]/g, " ")
+        .replace(/\s+/g, " ")
+        .trim();
+    }
+
+    const mapping: Record<string, number> = {};
+    const titleGroups: Record<string, { totalRevenue: number; totalAdmissions: number; originalTitles: Set<string> }> = {};
+
+    for (const r of res.rows) {
+      const pr = Number(r.resolved_price);
+      const rev = Number(r.total_weighted_revenue || 0);
+      const adm = Number(r.total_admissions_weight || 0);
+
+      if (pr > 0) {
+        // Keep per-movie_id entries unchanged and independent
+        mapping[String(r.movie_id)] = pr;
+
+        // Group by normalized title to combine versions sharing the same title
+        const normKey = normalizeTitle(r.title);
+        if (!titleGroups[normKey]) {
+          titleGroups[normKey] = { totalRevenue: 0, totalAdmissions: 0, originalTitles: new Set() };
+        }
+        titleGroups[normKey].totalRevenue += (adm > 0 ? rev : pr * 1);
+        titleGroups[normKey].totalAdmissions += (adm > 0 ? adm : 1);
+        titleGroups[normKey].originalTitles.add(r.title);
+      }
+    }
+
+    // Write admissions-weighted price for title-keyed entries
+    for (const group of Object.values(titleGroups)) {
+      if (group.totalAdmissions > 0) {
+        const blendedPrice = Number((group.totalRevenue / group.totalAdmissions).toFixed(2));
+        for (const rawTitle of group.originalTitles) {
+          mapping[rawTitle] = blendedPrice;
+        }
+      }
+    }
+
+    return mapping;
+  } catch (err) {
+    console.error("Failed to compute movie resolved prices for calibration:", err);
+    return {};
+  }
+}
+
+/**
+ * Persists ICA calibration results into the PostgreSQL calibration_factors table
+ * and updates movie categories, then runs snapshot recalculation.
+ */
+export async function syncCalibrationFactorsToDb(calibrationData: {
+  category_factors?: Record<string, number>;
+  sample_counts?: Record<string, number>;
+  movie_factors?: Record<string, number>;
+  movies_updated?: Array<{
+    title: string;
+    normalized_title?: string;
+    category?: string;
+    gamma_final?: number;
+    gamma_observed?: number;
+  }>;
+}): Promise<{ categoriesUpdated: number; moviesUpdated: number; snapshotsRecalculated: number }> {
+  let categoriesUpdated = 0;
+  let moviesUpdated = 0;
+
+  // 1. Sync category factors
+  if (calibrationData.category_factors) {
+    for (const [cat, gamma] of Object.entries(calibrationData.category_factors)) {
+      const samples = (calibrationData.sample_counts && calibrationData.sample_counts[cat]) || 0;
+      await query(
+        `INSERT INTO calibration_factors (category, gamma, sample_count, updated_at)
+         VALUES ($1, $2, $3, NOW())
+         ON CONFLICT (category) WHERE movie_id IS NULL
+         DO UPDATE SET gamma = EXCLUDED.gamma, sample_count = EXCLUDED.sample_count, updated_at = NOW();`,
+        [cat, Number(gamma), samples]
+      );
+      categoriesUpdated++;
+    }
+  }
+
+  // 2. Fetch all movies from DB to match titles
+  const allMovies = await query<{ id: number; title: string }>("SELECT id, title FROM movies;");
+
+  function normalize(s: string): string {
+    return s
+      .toLowerCase()
+      .normalize("NFD")
+      .replace(/[\u0300-\u036f]/g, "")
+      .replace(/[^a-z0-9 ]/g, " ")
+      .replace(/\s+/g, " ")
+      .trim();
+  }
+
+  const factorMap = calibrationData.movie_factors || {};
+  const updatedList = calibrationData.movies_updated || [];
+
+  for (const m of allMovies.rows) {
+    const normTitle = normalize(m.title);
+
+    let matchedGamma: number | null = null;
+    let matchedCategory: string | null = null;
+
+    // Check in movies_updated array first
+    for (const mu of updatedList) {
+      const muNorm = mu.normalized_title || normalize(mu.title);
+      if (normTitle === muNorm || normTitle.includes(muNorm) || muNorm.includes(normTitle)) {
+        matchedGamma = mu.gamma_final || mu.gamma_observed || null;
+        matchedCategory = mu.category || null;
+        break;
+      }
+    }
+
+    // Check direct factorMap
+    if (matchedGamma === null) {
+      if (factorMap[normTitle] !== undefined) {
+        matchedGamma = factorMap[normTitle];
+      } else {
+        for (const [k, g] of Object.entries(factorMap)) {
+          const kNorm = normalize(k);
+          if (normTitle === kNorm || normTitle.includes(kNorm) || kNorm.includes(normTitle)) {
+            matchedGamma = g;
+            break;
+          }
+        }
+      }
+    }
+
+    if (matchedGamma !== null) {
+      const cat = matchedCategory || (
+        normTitle.includes("patrulha") || normTitle.includes("minion") || normTitle.includes("toy story") || normTitle.includes("vaiana") || normTitle.includes("animac")
+          ? "Family / Animation"
+          : normTitle.includes("drama") || normTitle.includes("terror") || normTitle.includes("oak street")
+          ? "Drama / Adult"
+          : "Action / General"
+      );
+
+      // Update movie category
+      await query("UPDATE movies SET category = $1 WHERE id = $2;", [cat, m.id]);
+
+      // Upsert movie-specific calibration factor
+      await query(
+        `INSERT INTO calibration_factors (movie_id, category, gamma, sample_count, updated_at)
+         VALUES ($1, $2, $3, 1, NOW())
+         ON CONFLICT (movie_id) WHERE movie_id IS NOT NULL
+         DO UPDATE SET gamma = EXCLUDED.gamma, category = EXCLUDED.category, sample_count = calibration_factors.sample_count + 1, updated_at = NOW();`,
+        [m.id, cat, Number(matchedGamma)]
+      );
+      moviesUpdated++;
+    }
+  }
+
+  // 3. Recalculate all performance snapshots with new calibration factors
+  const snapshotsRecalculated = await recalculateAllPerformanceSnapshots();
+  console.log(`[calibration] Synced factors to DB (${categoriesUpdated} categories, ${moviesUpdated} movies). Recalculated ${snapshotsRecalculated} snapshots.`);
+
+  return { categoriesUpdated, moviesUpdated, snapshotsRecalculated };
 }
 
 export interface PricingResolutionMetadata {

@@ -197,7 +197,7 @@ export const SessionDetailModal: React.FC<SessionDetailModalProps> = ({ sessionI
                             <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
                             <XAxis dataKey="time" stroke="#64748b" fontSize={11} />
                             <YAxis stroke="#64748b" fontSize={11} />
-                            <Tooltip contentStyle={{ backgroundColor: "#0f172a", borderColor: "#334155", borderRadius: "8px", fontSize: "12px" }} />
+                            <Tooltip contentStyle={{ backgroundColor: "#0f172a", borderColor: "#334155", borderRadius: "8px", fontSize: "12px", color: "#f8fafc" }} itemStyle={{ color: "#f8fafc" }} labelStyle={{ color: "#94a3b8", fontWeight: 600, marginBottom: "4px" }} />
                             <Line type="monotone" dataKey="unavailable" name="Unavailable" stroke="#f59e0b" strokeWidth={2} dot={{ r: 3 }} />
                           </LineChart>
                         </ResponsiveContainer>
@@ -216,7 +216,7 @@ export const SessionDetailModal: React.FC<SessionDetailModalProps> = ({ sessionI
                             <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
                             <XAxis dataKey="time" stroke="#64748b" fontSize={11} />
                             <YAxis stroke="#64748b" fontSize={11} />
-                            <Tooltip contentStyle={{ backgroundColor: "#0f172a", borderColor: "#334155", borderRadius: "8px", fontSize: "12px" }} />
+                            <Tooltip contentStyle={{ backgroundColor: "#0f172a", borderColor: "#334155", borderRadius: "8px", fontSize: "12px", color: "#f8fafc" }} itemStyle={{ color: "#f8fafc" }} labelStyle={{ color: "#94a3b8", fontWeight: 600, marginBottom: "4px" }} />
                             <Line type="monotone" dataKey="available" name="Available" stroke="#10b981" strokeWidth={2} dot={{ r: 3 }} />
                           </LineChart>
                         </ResponsiveContainer>
@@ -235,7 +235,7 @@ export const SessionDetailModal: React.FC<SessionDetailModalProps> = ({ sessionI
                             <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
                             <XAxis dataKey="time" stroke="#64748b" fontSize={11} />
                             <YAxis stroke="#64748b" fontSize={11} />
-                            <Tooltip contentStyle={{ backgroundColor: "#0f172a", borderColor: "#334155", borderRadius: "8px", fontSize: "12px" }} />
+                            <Tooltip contentStyle={{ backgroundColor: "#0f172a", borderColor: "#334155", borderRadius: "8px", fontSize: "12px", color: "#f8fafc" }} itemStyle={{ color: "#f8fafc" }} labelStyle={{ color: "#94a3b8", fontWeight: 600, marginBottom: "4px" }} />
                             <Bar dataKey="newly_unavailable" name="Newly Unavailable" fill="#06b6d4" radius={[4, 4, 0, 0]} />
                           </BarChart>
                         </ResponsiveContainer>
@@ -254,7 +254,7 @@ export const SessionDetailModal: React.FC<SessionDetailModalProps> = ({ sessionI
                             <CartesianGrid strokeDasharray="3 3" stroke="#334155" />
                             <XAxis dataKey="time" stroke="#64748b" fontSize={11} />
                             <YAxis stroke="#64748b" fontSize={11} />
-                            <Tooltip contentStyle={{ backgroundColor: "#0f172a", borderColor: "#334155", borderRadius: "8px", fontSize: "12px" }} />
+                            <Tooltip contentStyle={{ backgroundColor: "#0f172a", borderColor: "#334155", borderRadius: "8px", fontSize: "12px", color: "#f8fafc" }} itemStyle={{ color: "#f8fafc" }} labelStyle={{ color: "#94a3b8", fontWeight: 600, marginBottom: "4px" }} />
                             <Line type="monotone" dataKey="velocity" name="Velocity (tix/hr)" stroke="#a855f7" strokeWidth={2} dot={{ r: 3 }} />
                           </LineChart>
                         </ResponsiveContainer>
