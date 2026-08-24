@@ -24,6 +24,8 @@ from ica_ingestion import (
     match_scraped_title_to_ica,
     parse_ica_excel,
     get_sample_ica_records,
+    are_titles_lenient_match,
+    calculate_title_similarity,
 )
 from calibration_service import (
     CalibrationService,
@@ -54,6 +56,50 @@ class TestICAIngestionAndCalibration(unittest.TestCase):
         # Diacritics
         self.assertEqual(normalize_title("À Noite no Museu"), "a noite no museu")
         self.assertEqual(normalize_title("Cães & Gatos"), "caes gatos")
+
+    def test_lenient_title_matching_cases(self):
+        """
+        Tests lenient title matching across real-world variations, including
+        stopword discrepancies (e.g. 'Mínimos e os Monstros' vs 'Mínimos e Monstros').
+        """
+        ica_catalog = [
+            "Mínimos e Monstros",
+            "Homem-Aranha: Um Novo Dia",
+            "A Bela e o Monstro",
+            "Patrulha Pata: O Filme dos Dinossauros",
+            "Toy Story 5",
+            "Avatar: O Caminho da Água"
+        ]
+
+        # 1. User specified case: NOS website has "Mínimos e os Monstros", ICA has "Mínimos e Monstros"
+        match_minimos = match_scraped_title_to_ica("Mínimos e os Monstros", ica_catalog)
+        self.assertIsNotNone(match_minimos)
+        self.assertEqual(match_minimos[0], "Mínimos e Monstros")
+        self.assertGreaterEqual(match_minimos[1], 0.90)
+
+        # 2. Reverse direction and format tag
+        match_minimos_tag = match_scraped_title_to_ica("Mínimos e Monstros (3D) (VP)", ["Mínimos e os Monstros"])
+        self.assertIsNotNone(match_minimos_tag)
+        self.assertEqual(match_minimos_tag[0], "Mínimos e os Monstros")
+
+        # 3. Stopword omission: "Bela e Monstro" vs "A Bela e o Monstro"
+        match_bela = match_scraped_title_to_ica("Bela e Monstro (2D)", ica_catalog)
+        self.assertIsNotNone(match_bela)
+        self.assertEqual(match_bela[0], "A Bela e o Monstro")
+
+        # 4. Avatar with colon vs dash and accents
+        match_avatar = match_scraped_title_to_ica("Avatar - Caminho da Agua (3D)", ica_catalog)
+        self.assertIsNotNone(match_avatar)
+        self.assertEqual(match_avatar[0], "Avatar: O Caminho da Água")
+
+        # 5. Negative test: Sequels with different numbers MUST NOT match
+        match_sequel = match_scraped_title_to_ica("Toy Story 4", ica_catalog)
+        self.assertIsNone(match_sequel)
+
+        # 6. Test are_titles_lenient_match direct function
+        self.assertTrue(are_titles_lenient_match("Mínimos e os Monstros", "Mínimos e Monstros"))
+        self.assertTrue(are_titles_lenient_match("Patrulha Pata: O Filme", "Patrulha Pata - O Filme (VP)"))
+        self.assertFalse(are_titles_lenient_match("Toy Story 2", "Toy Story 3"))
 
     def test_title_matching_exact_and_fuzzy(self):
         """Tests exact, containment, and fuzzy difflib title matching against ICA catalog."""
@@ -284,6 +330,198 @@ class TestICAIngestionAndCalibration(unittest.TestCase):
             cal.update_from_ica(anomalous_records, default_adult_price=7.60)
             self.assertEqual(cal.state.movie_specific_factors["filme quase gratis"], 0.50)
             self.assertEqual(cal.state.movie_specific_factors["filme hiper caro"], 1.30)
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+    def test_dual_period_excel_parsing(self):
+        """Tests that parse_ica_excel extracts both SEMANAL and FDS DETALHE sheets from a single workbook."""
+        # Construct an in-memory .xlsx zip with workbook, sharedStrings, and two sheets
+        bio = io.BytesIO()
+        with zipfile.ZipFile(bio, 'w', zipfile.ZIP_DEFLATED) as zf:
+            # workbook.xml
+            wb_xml = (
+                b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                b'<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" '
+                b'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">'
+                b'<sheets>'
+                b'<sheet name="RANKING_SEMANAL" sheetId="1" r:id="rId1"/>'
+                b'<sheet name="FDS DETALHE" sheetId="2" r:id="rId2"/>'
+                b'</sheets>'
+                b'</workbook>'
+            )
+            zf.writestr('xl/workbook.xml', wb_xml)
+
+            # workbook.xml.rels
+            wb_rels = (
+                b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                b'<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">'
+                b'<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>'
+                b'<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet2.xml"/>'
+                b'</Relationships>'
+            )
+            zf.writestr('xl/_rels/workbook.xml.rels', wb_rels)
+
+            # sharedStrings.xml
+            sst_items = [
+                "RANKING DA SEMANA 13-08-2026 a 19-08-2026", # 0
+                "TÍTULO", # 1
+                "A Odisseia", # 2
+                "Cinemundo", # 3
+                "Christopher Nolan", # 4
+                "EUA", # 5
+                "FDS DETALHE 14-08-2026 a 17-08-2026", # 6
+                "Patrulha Pata", # 7
+                "NOS Lusomundo", # 8
+                "Cal Brunker", # 9
+                "CAN" # 10
+            ]
+            sst_xml = (
+                b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                b'<sst xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" count="11" uniqueCount="11">'
+                + b''.join(f'<si><t>{s}</t></si>'.encode('utf-8') for s in sst_items)
+                + b'</sst>'
+            )
+            zf.writestr('xl/sharedStrings.xml', sst_xml)
+
+            # sheet1.xml (SEMANAL)
+            sheet1_xml = (
+                b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                b'<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+                b'<sheetData>'
+                b'<row r="1"><c r="A1" t="s"><v>0</v></c></row>'
+                b'<row r="2"><c r="A2"><v>1</v></c><c r="B2" t="s"><v>1</v></c></row>'
+                b'<row r="3">'
+                b'<c r="A3"><v>1</v></c>' # Rank 1
+                b'<c r="B3" t="s"><v>2</v></c>' # A Odisseia
+                b'<c r="C3" t="s"><v>3</v></c>'
+                b'<c r="D3" t="s"><v>4</v></c>'
+                b'<c r="E3" t="s"><v>5</v></c>'
+                b'<c r="F3"><v>80</v></c>' # screens
+                b'<c r="G3"><v>697187.75</v></c>' # gross
+                b'<c r="H3"><v>76220</v></c>' # adm
+                b'<c r="I3"><v>80</v></c>'
+                b'<c r="J3"><v>2000000.00</v></c>'
+                b'<c r="K3"><v>200000</v></c>'
+                b'<c r="L3"><v>35</v></c>'
+                b'</row>'
+                b'</sheetData>'
+                b'</worksheet>'
+            )
+            zf.writestr('xl/worksheets/sheet1.xml', sheet1_xml)
+
+            # sheet2.xml (FDS DETALHE)
+            sheet2_xml = (
+                b'<?xml version="1.0" encoding="UTF-8" standalone="yes"?>'
+                b'<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">'
+                b'<sheetData>'
+                b'<row r="1"><c r="A1" t="s"><v>6</v></c></row>'
+                b'<row r="2"><c r="A2"><v>1</v></c><c r="B2" t="s"><v>1</v></c></row>'
+                b'<row r="3">'
+                b'<c r="A3"><v>1</v></c>' # Rank 1
+                b'<c r="B3" t="s"><v>2</v></c>' # A Odisseia
+                b'<c r="C3" t="s"><v>3</v></c>'
+                b'<c r="D3" t="s"><v>4</v></c>'
+                b'<c r="E3" t="s"><v>5</v></c>'
+                b'<c r="F3"><v>80</v></c>' # screens
+                b'<c r="G3"><v>450000.00</v></c>' # gross
+                b'<c r="H3"><v>47000</v></c>' # adm
+                b'<c r="I3"><v>80</v></c>'
+                b'<c r="J3"><v>2000000.00</v></c>'
+                b'<c r="K3"><v>200000</v></c>'
+                b'<c r="L3"><v>35</v></c>'
+                b'</row>'
+                b'<row r="4">'
+                b'<c r="A4"><v>2</v></c>' # Rank 2
+                b'<c r="B4" t="s"><v>7</v></c>' # Patrulha Pata
+                b'<c r="C4" t="s"><v>8</v></c>'
+                b'<c r="D4" t="s"><v>9</v></c>'
+                b'<c r="E4" t="s"><v>10</v></c>'
+                b'<c r="F4"><v>60</v></c>' # screens
+                b'<c r="G4"><v>150000.00</v></c>' # gross
+                b'<c r="H4"><v>23000</v></c>' # adm
+                b'<c r="I4"><v>60</v></c>'
+                b'<c r="J4"><v>500000.00</v></c>'
+                b'<c r="K4"><v>80000</v></c>'
+                b'<c r="L4"><v>14</v></c>'
+                b'</row>'
+                b'</sheetData>'
+                b'</worksheet>'
+            )
+            zf.writestr('xl/worksheets/sheet2.xml', sheet2_xml)
+
+        bio.seek(0)
+        records = parse_ica_excel(bio)
+        
+        # Verify both sheets were parsed
+        self.assertEqual(len(records), 3) # 1 from weekly, 2 from weekend
+        weekly_recs = [r for r in records if r.period_type == "weekly"]
+        weekend_recs = [r for r in records if r.period_type == "weekend"]
+
+        self.assertEqual(len(weekly_recs), 1)
+        self.assertEqual(len(weekend_recs), 2)
+        self.assertEqual(weekly_recs[0].title, "A Odisseia")
+        self.assertEqual(weekly_recs[0].period_type, "weekly")
+        self.assertEqual(weekend_recs[0].title, "A Odisseia")
+        self.assertEqual(weekend_recs[0].period_type, "weekend")
+        self.assertEqual(weekend_recs[1].title, "Patrulha Pata")
+        self.assertEqual(weekend_recs[1].period_type, "weekend")
+
+    def test_dual_period_calibration_sequential_ema_and_sample_counts(self):
+        """Tests that update_from_ica matches period-specific reference prices and applies sequential EMA updates."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            cal = CalibrationService(config_path=tmp_path)
+
+            # Weekly record for A Odisseia: gross=697187.75, adm=76220 -> ATP = 9.15
+            weekly_odisseia = ICAMovieRecord(
+                rank=1,
+                title="A Odisseia",
+                normalized_title="a odisseia",
+                weekly_gross_revenue=697187.75,
+                weekly_admissions=76220,
+                period_type="weekly",
+                atp=9.15
+            )
+
+            # Weekend record for A Odisseia: gross=450000.0, adm=47000 -> ATP = 9.57
+            weekend_odisseia = ICAMovieRecord(
+                rank=1,
+                title="A Odisseia",
+                normalized_title="a odisseia",
+                weekly_gross_revenue=450000.0,
+                weekly_admissions=47000,
+                period_type="weekend",
+                atp=9.57
+            )
+
+            # Dual-period resolved prices from Postgres
+            movie_prices = {
+                "weekly": {
+                    "A Odisseia": 10.29
+                },
+                "weekend": {
+                    "A Odisseia": 10.50
+                }
+            }
+
+            # Step 1: weekly obs gamma = 9.15 / 10.29 = 0.889
+            # Step 2: weekend obs gamma = 9.57 / 10.50 = 0.911
+            # Sequential EMA (alpha=0.70):
+            # gamma_m = 0.70 * 0.911 + 0.30 * 0.889 = 0.6377 + 0.2667 = 0.904
+            cal.update_from_ica(
+                [weekly_odisseia, weekend_odisseia],
+                movie_baseline_prices=movie_prices,
+                ema_alpha=0.70
+            )
+
+            final_gamma = cal.state.movie_specific_factors["a odisseia"]
+            self.assertAlmostEqual(final_gamma, 0.904, places=2)
+
+            # Category sample counts should have counted 2 qualifying observations (weekly + weekend)
+            self.assertEqual(cal.state.sample_counts[CATEGORY_ACTION_GENERAL], 2)
         finally:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)

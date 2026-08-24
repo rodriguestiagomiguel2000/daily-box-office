@@ -1,6 +1,5 @@
 import { query } from "./db";
 import { normalizeDateStr, addDays, getDayDifference } from "./boxoffice";
-import { getSessionPricesSqlCte } from "./revenue";
 
 export interface PresaleBucket {
   days_before_release: number; // e.g. 7 for T-7, 0 for T-0
@@ -191,7 +190,29 @@ export async function getMoviePresaleCurve(movieId: number): Promise<MoviePresal
     cinemas_count: number;
     total_capacity: number;
   }>(
-    `WITH ${getSessionPricesSqlCte()},
+    `WITH session_prices AS (
+      SELECT 
+        s.id as session_id,
+        s.movie_id,
+        s.operational_date,
+        s.format,
+        COALESCE(
+          MIN(stp.price) FILTER (WHERE stp.is_default = true AND stp.price > 0),
+          MIN(stp.price) FILTER (WHERE stp.price > 0 AND (stp.ticket_type ILIKE '%normal%' OR stp.ticket_type ILIKE '%adulto%' OR stp.ticket_type ILIKE '%inteiro%' OR stp.ticket_type ILIKE '%standard%') AND stp.ticket_type NOT ILIKE '%fam%' AND stp.ticket_type NOT ILIKE '%pax%' AND (stp.seats_count IS NULL OR stp.seats_count = 1)),
+          MIN(stp.price) FILTER (WHERE stp.price > 0 AND stp.ticket_type NOT ILIKE '%fam%' AND stp.ticket_type NOT ILIKE '%pax%' AND stp.ticket_type NOT ILIKE '%crian%' AND stp.ticket_type NOT ILIKE '%estud%' AND stp.ticket_type NOT ILIKE '%sénior%' AND stp.ticket_type NOT ILIKE '%senior%' AND (stp.seats_count IS NULL OR stp.seats_count = 1)),
+          AVG(stp.price) FILTER (WHERE stp.price > 0),
+          CASE 
+            WHEN s.format ILIKE '%IMAX%' THEN 13.50 
+            WHEN s.format ILIKE '%3D%' THEN 9.50 
+            ELSE 8.75 
+          END
+        ) as resolved_unit_price
+      FROM sessions s
+      LEFT JOIN session_ticket_prices stp ON stp.session_id = s.id
+      WHERE s.movie_id = $1 
+        AND (s.operational_date = $2 OR TO_CHAR((s.starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD') = $2)
+      GROUP BY s.id, s.movie_id, s.operational_date, s.format
+    ),
     opening_sessions AS (
       SELECT 
         s.id as session_id,
@@ -303,7 +324,29 @@ export async function getMoviePresaleCurve(movieId: number): Promise<MoviePresal
     estimated_revenue: number;
     occupancy_proxy: number;
   }>(
-    `WITH ${getSessionPricesSqlCte()},
+    `WITH session_prices AS (
+      SELECT 
+        s.id as session_id,
+        s.movie_id,
+        s.operational_date,
+        s.format,
+        COALESCE(
+          MIN(stp.price) FILTER (WHERE stp.is_default = true AND stp.price > 0),
+          MIN(stp.price) FILTER (WHERE stp.price > 0 AND (stp.ticket_type ILIKE '%normal%' OR stp.ticket_type ILIKE '%adulto%' OR stp.ticket_type ILIKE '%inteiro%' OR stp.ticket_type ILIKE '%standard%') AND stp.ticket_type NOT ILIKE '%fam%' AND stp.ticket_type NOT ILIKE '%pax%' AND (stp.seats_count IS NULL OR stp.seats_count = 1)),
+          MIN(stp.price) FILTER (WHERE stp.price > 0 AND stp.ticket_type NOT ILIKE '%fam%' AND stp.ticket_type NOT ILIKE '%pax%' AND stp.ticket_type NOT ILIKE '%crian%' AND stp.ticket_type NOT ILIKE '%estud%' AND stp.ticket_type NOT ILIKE '%sénior%' AND stp.ticket_type NOT ILIKE '%senior%' AND (stp.seats_count IS NULL OR stp.seats_count = 1)),
+          AVG(stp.price) FILTER (WHERE stp.price > 0),
+          CASE 
+            WHEN s.format ILIKE '%IMAX%' THEN 13.50 
+            WHEN s.format ILIKE '%3D%' THEN 9.50 
+            ELSE 8.75 
+          END
+        ) as resolved_unit_price
+      FROM sessions s
+      LEFT JOIN session_ticket_prices stp ON stp.session_id = s.id
+      WHERE s.movie_id = $1 
+        AND (s.operational_date = $2 OR TO_CHAR((s.starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD') = $2)
+      GROUP BY s.id, s.movie_id, s.operational_date, s.format
+    ),
     opening_sessions AS (
       SELECT 
         s.id as session_id,

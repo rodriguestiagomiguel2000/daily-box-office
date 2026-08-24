@@ -182,7 +182,44 @@ export async function recalculateAllPerformanceSnapshots(movieId?: number, opera
   const whereStr = whereClauses.length > 0 ? `WHERE ${whereClauses.join(" AND ")}` : "";
 
   const querySql = `
-    WITH ${getSessionPricesSqlCte()},
+    WITH session_prices AS (
+      SELECT 
+        s.id as session_id,
+        s.movie_id,
+        s.operational_date,
+        s.format,
+        base_price.raw_unit_price as resolved_unit_price_raw,
+        COALESCE(cf_movie.gamma, cf_cat.gamma, 1.0) as gamma,
+        ROUND((base_price.raw_unit_price * COALESCE(cf_movie.gamma, cf_cat.gamma, 1.0))::numeric, 2) as resolved_unit_price
+      FROM sessions s
+      LEFT JOIN movies m ON s.movie_id = m.id
+      LEFT JOIN LATERAL (
+        SELECT 
+          COALESCE(
+            MIN(stp.price) FILTER (WHERE stp.is_default = true AND stp.price > 0),
+            MIN(stp.price) FILTER (WHERE stp.price > 0 AND (stp.ticket_type ILIKE '%normal%' OR stp.ticket_type ILIKE '%adulto%' OR stp.ticket_type ILIKE '%inteiro%' OR stp.ticket_type ILIKE '%standard%') AND stp.ticket_type NOT ILIKE '%fam%' AND stp.ticket_type NOT ILIKE '%pax%' AND (stp.seats_count IS NULL OR stp.seats_count = 1)),
+            MIN(stp.price) FILTER (WHERE stp.price > 0 AND stp.ticket_type NOT ILIKE '%fam%' AND stp.ticket_type NOT ILIKE '%pax%' AND stp.ticket_type NOT ILIKE '%crian%' AND stp.ticket_type NOT ILIKE '%estud%' AND stp.ticket_type NOT ILIKE '%sénior%' AND stp.ticket_type NOT ILIKE '%senior%' AND (stp.seats_count IS NULL OR stp.seats_count = 1)),
+            AVG(stp.price) FILTER (WHERE stp.price > 0),
+            CASE 
+              WHEN s.format ILIKE '%IMAX%' THEN 13.50 
+              WHEN s.format ILIKE '%3D%' THEN 9.50 
+              ELSE 8.75 
+            END
+          ) as raw_unit_price
+        FROM session_ticket_prices stp
+        WHERE stp.session_id = s.id
+      ) base_price ON true
+      LEFT JOIN calibration_factors cf_movie ON cf_movie.movie_id = s.movie_id
+      LEFT JOIN calibration_factors cf_cat ON cf_cat.movie_id IS NULL AND cf_cat.category = COALESCE(
+        m.category,
+        CASE 
+          WHEN m.title ILIKE '%animac%' OR m.title ILIKE '%patrulha pata%' OR m.title ILIKE '%minion%' OR m.title ILIKE '%minimo%' OR m.title ILIKE '%famil%' OR m.title ILIKE '%disney%' OR m.title ILIKE '%pixar%' OR m.title ILIKE '%divertida%' OR m.title ILIKE '%toy story%' OR m.title ILIKE '%vaiana%' OR m.title ILIKE '%sonic%' OR m.title ILIKE '%mario%' OR m.title ILIKE '%stitch%' OR m.title ILIKE '%paddington%' OR m.title ILIKE '%shrek%' OR m.title ILIKE '%frozen%' OR m.title ILIKE '%wonka%' OR m.title ILIKE '%barbie%' THEN 'Family / Animation'
+          WHEN m.title ILIKE '%drama%' OR m.title ILIKE '%terror%' OR m.title ILIKE '%horror%' OR m.title ILIKE '%thriller%' OR m.title ILIKE '%crime%' OR m.title ILIKE '%misterio%' OR m.title ILIKE '%romance%' OR m.title ILIKE '%biograf%' THEN 'Drama / Adult'
+          ELSE 'Action / General'
+        END
+      )
+      GROUP BY s.id, s.movie_id, s.operational_date, s.format, base_price.raw_unit_price, cf_movie.gamma, cf_cat.gamma
+    ),
     recalculated_snapshots AS (
       SELECT 
         mps.id as snapshot_id,
@@ -223,12 +260,141 @@ export async function recalculateAllPerformanceSnapshots(movieId?: number, opera
   return res.rowCount || 0;
 }
 
+const STOPWORDS_SET = new Set([
+  "o", "a", "os", "as", "um", "uma", "uns", "umas",
+  "de", "da", "do", "das", "dos", "em", "na", "no", "nas", "nos",
+  "e", "ou", "para", "pra", "pro", "pras", "pros", "por", "com", "sem",
+  "filme", "filmes", "cinema",
+  "the", "a", "an", "and", "or", "of", "in", "to", "for", "with", "without", "on", "at", "by", "from", "movie", "film"
+]);
+
+export function normalizeMovieTitle(s: string): string {
+  if (!s) return "";
+  let text = s
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+
+  // Strip format tags in parentheses or brackets
+  const formatPattern = /(?:\b(?:2d|3d|imax|vip|atmos|4dx|4d|d-box|screenx|vo|vp|dob|leg|versao\s+portuguesa|versao\s+original)\b|v\.o\.|v\.p\.)/gi;
+  text = text.replace(/\s*\([^)]*(?:2d|3d|imax|vip|atmos|4dx|4d|d-box|screenx|vo|vp|dob|leg|versao\s+portuguesa|versao\s+original|v\.o\.|v\.p\.)[^)]*\)/gi, "");
+  text = text.replace(/\s*\[[^\]]*(?:2d|3d|imax|vip|atmos|4dx|4d|d-box|screenx|vo|vp|dob|leg|versao\s+portuguesa|versao\s+original|v\.o\.|v\.p\.)[^\]]*\]/gi, "");
+  text = text.replace(formatPattern, "");
+
+  // Strip years (19xx, 20xx)
+  text = text.replace(/\s*\((?:19|20)\d{2}\)/g, "");
+  text = text.replace(/\s*\[(?:19|20)\d{2}\]/g, "");
+
+  // Replace special characters with space
+  text = text.replace(/[^a-z0-9 ]/g, " ");
+  return text.replace(/\s+/g, " ").trim();
+}
+
+export function extractCoreTokens(normTitle: string): string[] {
+  const words = normTitle.match(/[a-z0-9]+/g) || [];
+  const filtered = words.filter(w => !STOPWORDS_SET.has(w));
+  return filtered.length > 0 ? filtered : words;
+}
+
+export function calculateTitleSimilarity(t1: string, t2: string): number {
+  if (!t1 || !t2) return 0;
+  const n1 = normalizeMovieTitle(t1);
+  const n2 = normalizeMovieTitle(t2);
+  if (!n1 || !n2) return 0;
+  if (n1 === n2) return 1.0;
+
+  // Number consistency check: e.g. Toy Story 4 vs Toy Story 5
+  const nums1 = n1.match(/\b\d+\b/g) || [];
+  const nums2 = n2.match(/\b\d+\b/g) || [];
+  if (nums1.length > 0 && nums2.length > 0 && nums1.join(",") !== nums2.join(",")) {
+    return 0.0;
+  }
+
+  // Direct substring / containment
+  if (n1.includes(n2) || n2.includes(n1)) {
+    const shorter = n1.length <= n2.length ? n1 : n2;
+    const longer = n1.length > n2.length ? n1 : n2;
+    if (shorter.length >= 5) {
+      return Math.max(0.88, shorter.length / longer.length);
+    }
+  }
+
+  // Core content token comparison (stripping 'os', 'e', 'de', 'the', etc.)
+  const core1 = extractCoreTokens(n1);
+  const core2 = extractCoreTokens(n2);
+
+  if (core1.length > 0 && core2.length > 0) {
+    if (core1.join(" ") === core2.join(" ")) {
+      return 0.98;
+    }
+
+    const set1 = new Set(core1);
+    const set2 = new Set(core2);
+
+    let intersectionCount = 0;
+    for (const w of set1) {
+      if (set2.has(w)) intersectionCount++;
+    }
+
+    const unionCount = new Set([...core1, ...core2]).size;
+    const jaccard = unionCount > 0 ? intersectionCount / unionCount : 0;
+
+    const isSubset1 = core1.every(w => set2.has(w));
+    const isSubset2 = core2.every(w => set1.has(w));
+
+    if (isSubset1 || isSubset2) {
+      if (intersectionCount >= 2 || (intersectionCount === 1 && !STOPWORDS_SET.has(core1[0]) && core1[0].length >= 4)) {
+        return Math.max(0.85, 0.75 + 0.20 * jaccard);
+      }
+    }
+
+    if (jaccard >= 0.60) {
+      return Math.max(0.80, jaccard);
+    }
+  }
+
+  // Bigram Dice coefficient for character similarity
+  function getBigrams(str: string): Set<string> {
+    const bigrams = new Set<string>();
+    for (let i = 0; i < str.length - 1; i++) {
+      bigrams.add(str.substring(i, i + 2));
+    }
+    return bigrams;
+  }
+
+  const b1 = getBigrams(n1);
+  const b2 = getBigrams(n2);
+  let common = 0;
+  for (const b of b1) {
+    if (b2.has(b)) common++;
+  }
+  const dice = (b1.size + b2.size) > 0 ? (2 * common) / (b1.size + b2.size) : 0;
+
+  return Math.round(dice * 1000) / 1000;
+}
+
+export function areTitlesLenientMatch(t1: string, t2: string, minSimilarity = 0.70): boolean {
+  return calculateTitleSimilarity(t1, t2) >= minSimilarity;
+}
+
 /**
  * Computes the admissions-weighted average raw resolved unit price per movie from Postgres.
- * This is used to feed real observed reference prices into the ICA calibration pipeline.
+ * Returns both weekly (all sessions) and weekend (Thu-Sun sessions) resolved price maps
+ * to feed period-matched reference prices into the ICA calibration pipeline.
  */
-export async function getMovieResolvedPricesForCalibration(): Promise<Record<string, number>> {
-  try {
+export async function getMovieResolvedPricesForCalibration(): Promise<{
+  weekly: Record<string, number>;
+  weekend: Record<string, number>;
+}> {
+  async function computeResolvedPriceMap(filterWeekend: boolean = false): Promise<Record<string, number>> {
+    const weekendFilterClause = filterWeekend
+      ? `WHERE CASE 
+          WHEN s.starts_at IS NOT NULL THEN EXTRACT(DOW FROM (s.starts_at AT TIME ZONE 'Europe/Lisbon' - INTERVAL '6 hours')) IN (0, 4, 5, 6)
+          WHEN s.operational_date ~ '^\\d{4}-\\d{2}-\\d{2}' THEN EXTRACT(DOW FROM s.operational_date::date) IN (0, 4, 5, 6)
+          ELSE false
+        END`
+      : "";
+
     const res = await query<{
       movie_id: number;
       title: string;
@@ -240,19 +406,28 @@ export async function getMovieResolvedPricesForCalibration(): Promise<Record<str
         SELECT 
           s.id as session_id,
           s.movie_id,
-          COALESCE(
-            MIN(stp.price) FILTER (WHERE stp.is_default = true AND stp.price > 0),
-            MIN(stp.price) FILTER (WHERE stp.price > 0 AND (stp.ticket_type ILIKE '%normal%' OR stp.ticket_type ILIKE '%adulto%' OR stp.ticket_type ILIKE '%inteiro%' OR stp.ticket_type ILIKE '%standard%') AND stp.ticket_type NOT ILIKE '%fam%' AND stp.ticket_type NOT ILIKE '%pax%' AND (stp.seats_count IS NULL OR stp.seats_count = 1)),
-            MIN(stp.price) FILTER (WHERE stp.price > 0 AND stp.ticket_type NOT ILIKE '%fam%' AND stp.ticket_type NOT ILIKE '%pax%' AND stp.ticket_type NOT ILIKE '%crian%' AND stp.ticket_type NOT ILIKE '%estud%' AND stp.ticket_type NOT ILIKE '%sénior%' AND stp.ticket_type NOT ILIKE '%senior%' AND (stp.seats_count IS NULL OR stp.seats_count = 1)),
-            AVG(stp.price) FILTER (WHERE stp.price > 0),
-            CASE WHEN s.format ILIKE '%IMAX%' THEN 13.50 WHEN s.format ILIKE '%3D%' THEN 9.50 ELSE 8.75 END
-          ) as raw_unit_price,
-          COALESCE(MAX(ss.unavailable_seats), 1) as admissions_weight
+          base_price.raw_unit_price,
+          COALESCE(ss.admissions_weight, 1) as admissions_weight
         FROM sessions s
         JOIN movies m ON s.movie_id = m.id
-        LEFT JOIN session_ticket_prices stp ON stp.session_id = s.id
-        LEFT JOIN seat_snapshots ss ON ss.session_id = s.id
-        GROUP BY s.id, s.movie_id, s.format
+        LEFT JOIN LATERAL (
+          SELECT 
+            COALESCE(
+              MIN(stp.price) FILTER (WHERE stp.is_default = true AND stp.price > 0),
+              MIN(stp.price) FILTER (WHERE stp.price > 0 AND (stp.ticket_type ILIKE '%normal%' OR stp.ticket_type ILIKE '%adulto%' OR stp.ticket_type ILIKE '%inteiro%' OR stp.ticket_type ILIKE '%standard%') AND stp.ticket_type NOT ILIKE '%fam%' AND stp.ticket_type NOT ILIKE '%pax%' AND (stp.seats_count IS NULL OR stp.seats_count = 1)),
+              MIN(stp.price) FILTER (WHERE stp.price > 0 AND stp.ticket_type NOT ILIKE '%fam%' AND stp.ticket_type NOT ILIKE '%pax%' AND stp.ticket_type NOT ILIKE '%crian%' AND stp.ticket_type NOT ILIKE '%estud%' AND stp.ticket_type NOT ILIKE '%sénior%' AND stp.ticket_type NOT ILIKE '%senior%' AND (stp.seats_count IS NULL OR stp.seats_count = 1)),
+              AVG(stp.price) FILTER (WHERE stp.price > 0),
+              CASE WHEN s.format ILIKE '%IMAX%' THEN 13.50 WHEN s.format ILIKE '%3D%' THEN 9.50 ELSE 8.75 END
+            ) as raw_unit_price
+          FROM session_ticket_prices stp
+          WHERE stp.session_id = s.id
+        ) base_price ON true
+        LEFT JOIN LATERAL (
+          SELECT MAX(unavailable_seats) as admissions_weight
+          FROM seat_snapshots
+          WHERE session_id = s.id
+        ) ss ON true
+        ${weekendFilterClause}
       )
       SELECT 
         m.id as movie_id,
@@ -268,16 +443,6 @@ export async function getMovieResolvedPricesForCalibration(): Promise<Record<str
       GROUP BY m.id, m.title;
     `);
 
-    function normalizeTitle(s: string): string {
-      return s
-        .toLowerCase()
-        .normalize("NFD")
-        .replace(/[\u0300-\u036f]/g, "")
-        .replace(/[^a-z0-9 ]/g, " ")
-        .replace(/\s+/g, " ")
-        .trim();
-    }
-
     const mapping: Record<string, number> = {};
     const titleGroups: Record<string, { totalRevenue: number; totalAdmissions: number; originalTitles: Set<string> }> = {};
 
@@ -291,7 +456,7 @@ export async function getMovieResolvedPricesForCalibration(): Promise<Record<str
         mapping[String(r.movie_id)] = pr;
 
         // Group by normalized title to combine versions sharing the same title
-        const normKey = normalizeTitle(r.title);
+        const normKey = normalizeMovieTitle(r.title);
         if (!titleGroups[normKey]) {
           titleGroups[normKey] = { totalRevenue: 0, totalAdmissions: 0, originalTitles: new Set() };
         }
@@ -307,14 +472,23 @@ export async function getMovieResolvedPricesForCalibration(): Promise<Record<str
         const blendedPrice = Number((group.totalRevenue / group.totalAdmissions).toFixed(2));
         for (const rawTitle of group.originalTitles) {
           mapping[rawTitle] = blendedPrice;
+          mapping[normalizeMovieTitle(rawTitle)] = blendedPrice;
         }
       }
     }
 
     return mapping;
+  }
+
+  try {
+    const [weekly, weekend] = await Promise.all([
+      computeResolvedPriceMap(false),
+      computeResolvedPriceMap(true),
+    ]);
+    return { weekly, weekend };
   } catch (err) {
     console.error("Failed to compute movie resolved prices for calibration:", err);
-    return {};
+    return { weekly: {}, weekend: {} };
   }
 }
 
@@ -355,45 +529,39 @@ export async function syncCalibrationFactorsToDb(calibrationData: {
   // 2. Fetch all movies from DB to match titles
   const allMovies = await query<{ id: number; title: string }>("SELECT id, title FROM movies;");
 
-  function normalize(s: string): string {
-    return s
-      .toLowerCase()
-      .normalize("NFD")
-      .replace(/[\u0300-\u036f]/g, "")
-      .replace(/[^a-z0-9 ]/g, " ")
-      .replace(/\s+/g, " ")
-      .trim();
-  }
-
   const factorMap = calibrationData.movie_factors || {};
   const updatedList = calibrationData.movies_updated || [];
 
   for (const m of allMovies.rows) {
-    const normTitle = normalize(m.title);
+    const normTitle = normalizeMovieTitle(m.title);
 
     let matchedGamma: number | null = null;
     let matchedCategory: string | null = null;
+    let bestSimilarity = 0;
 
-    // Check in movies_updated array first
+    // Check in movies_updated array first (exact, substring, or lenient similarity)
     for (const mu of updatedList) {
-      const muNorm = mu.normalized_title || normalize(mu.title);
-      if (normTitle === muNorm || normTitle.includes(muNorm) || muNorm.includes(normTitle)) {
+      const muNorm = mu.normalized_title || normalizeMovieTitle(mu.title);
+      const sim = calculateTitleSimilarity(normTitle, muNorm);
+      if (sim > bestSimilarity && sim >= 0.70) {
+        bestSimilarity = sim;
         matchedGamma = mu.gamma_final || mu.gamma_observed || null;
         matchedCategory = mu.category || null;
-        break;
       }
     }
 
-    // Check direct factorMap
-    if (matchedGamma === null) {
+    // Check direct factorMap if not already matched with high confidence
+    if (matchedGamma === null || bestSimilarity < 0.90) {
       if (factorMap[normTitle] !== undefined) {
         matchedGamma = factorMap[normTitle];
+        bestSimilarity = 1.0;
       } else {
         for (const [k, g] of Object.entries(factorMap)) {
-          const kNorm = normalize(k);
-          if (normTitle === kNorm || normTitle.includes(kNorm) || kNorm.includes(normTitle)) {
+          const kNorm = normalizeMovieTitle(k);
+          const sim = calculateTitleSimilarity(normTitle, kNorm);
+          if (sim > bestSimilarity && sim >= 0.70) {
+            bestSimilarity = sim;
             matchedGamma = g;
-            break;
           }
         }
       }
@@ -401,7 +569,7 @@ export async function syncCalibrationFactorsToDb(calibrationData: {
 
     if (matchedGamma !== null) {
       const cat = matchedCategory || (
-        normTitle.includes("patrulha") || normTitle.includes("minion") || normTitle.includes("toy story") || normTitle.includes("vaiana") || normTitle.includes("animac")
+        normTitle.includes("patrulha") || normTitle.includes("minion") || normTitle.includes("minimo") || normTitle.includes("toy story") || normTitle.includes("vaiana") || normTitle.includes("animac")
           ? "Family / Animation"
           : normTitle.includes("drama") || normTitle.includes("terror") || normTitle.includes("oak street")
           ? "Drama / Adult"

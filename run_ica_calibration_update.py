@@ -21,7 +21,9 @@ from ica_ingestion import (
     ICAMovieRecord,
     ingest_ica_data,
     ingest_ica_with_raw_log,
-    normalize_title
+    normalize_title,
+    calculate_title_similarity,
+    are_titles_lenient_match
 )
 from calibration_service import (
     CalibrationService,
@@ -66,9 +68,9 @@ def parse_args():
     return parser.parse_args()
 
 
-def load_movie_prices(prices_arg: Optional[str]) -> Dict[str, float]:
-    """Loads movie baseline prices from CLI argument or stdin."""
-    prices: Dict[str, float] = {}
+def load_movie_prices(prices_arg: Optional[str]) -> Dict[str, Any]:
+    """Loads movie baseline prices from CLI argument or stdin, supporting period-keyed or flat mappings."""
+    prices: Dict[str, Any] = {}
     raw_text = None
 
     if prices_arg:
@@ -101,11 +103,15 @@ def load_movie_prices(prices_arg: Optional[str]) -> Dict[str, float]:
                 # Handle direct dict or wrapped in { "movie_prices": { ... } }
                 movie_dict = parsed.get("movie_prices", parsed)
                 if isinstance(movie_dict, dict):
-                    for k, v in movie_dict.items():
-                        try:
-                            prices[str(k)] = float(v)
-                        except (ValueError, TypeError):
-                            continue
+                    if "weekly" in movie_dict or "weekend" in movie_dict:
+                        prices["weekly"] = {str(k): float(v) for k, v in movie_dict.get("weekly", {}).items() if v is not None and float(v) > 0}
+                        prices["weekend"] = {str(k): float(v) for k, v in movie_dict.get("weekend", {}).items() if v is not None and float(v) > 0}
+                    else:
+                        for k, v in movie_dict.items():
+                            try:
+                                prices[str(k)] = float(v)
+                            except (ValueError, TypeError):
+                                continue
                 elif isinstance(movie_dict, list):
                     # Handle array of { "title": ..., "resolved_unit_price": ... }
                     for item in movie_dict:
@@ -156,6 +162,7 @@ def main():
             accumulated_admissions=int(rm.get("accumulated_admissions", 0)),
             days_in_release=int(rm.get("days_in_release", 0)),
             period_label=rm.get("period_label", ""),
+            period_type=rm.get("period_type", "weekly"),
             atp=float(rm.get("atp", 0.0))
         ))
 
@@ -175,29 +182,83 @@ def main():
 
     # 3. Build detailed report of all updated movies
     movies_updated: List[Dict[str, Any]] = []
-    norm_baseline = {normalize_title(k): v for k, v in movie_prices.items()}
+
+    def get_norm_map(p_map: Dict[str, Any]) -> Dict[str, float]:
+        if not isinstance(p_map, dict):
+            return {}
+        return {normalize_title(k): float(v) for k, v in p_map.items() if v is not None and float(v) > 0}
+
+    if "weekly" in movie_prices or "weekend" in movie_prices:
+        weekly_norm = get_norm_map(movie_prices.get("weekly", {}))
+        weekend_norm = get_norm_map(movie_prices.get("weekend", {}))
+    else:
+        flat_norm = get_norm_map(movie_prices)
+        weekly_norm = flat_norm
+        weekend_norm = flat_norm
 
     for rec in records:
         norm_t = normalize_title(rec.title)
+        p_type = getattr(rec, "period_type", "weekly")
+        active_norm = weekend_norm if p_type == "weekend" else weekly_norm
+        fallback_norm = weekly_norm if p_type == "weekend" else weekend_norm
+
         ref_price = args.default_price
-        if norm_t in norm_baseline:
-            ref_price = norm_baseline[norm_t]
+        if norm_t in active_norm:
+            ref_price = active_norm[norm_t]
         else:
-            for bp_k, bp_v in norm_baseline.items():
+            for bp_k, bp_v in active_norm.items():
                 if bp_k and (bp_k in norm_t or norm_t in bp_k):
                     ref_price = bp_v
                     break
+            else:
+                # Lenient fuzzy / stopword-relaxed matching in active map
+                best_k: Optional[str] = None
+                best_sim: float = 0.0
+                for bp_k in active_norm:
+                    sim = calculate_title_similarity(norm_t, bp_k)
+                    if sim > best_sim:
+                        best_sim = sim
+                        best_k = bp_k
+                if best_k and best_sim >= 0.70:
+                    ref_price = active_norm[best_k]
+                elif norm_t in fallback_norm:
+                    ref_price = fallback_norm[norm_t]
+                else:
+                    for bp_k, bp_v in fallback_norm.items():
+                        if bp_k and (bp_k in norm_t or norm_t in bp_k):
+                            ref_price = bp_v
+                            break
+                    else:
+                        best_k = None
+                        best_sim = 0.0
+                        for bp_k in fallback_norm:
+                            sim = calculate_title_similarity(norm_t, bp_k)
+                            if sim > best_sim:
+                                best_sim = sim
+                                best_k = bp_k
+                        if best_k and best_sim >= 0.70:
+                            ref_price = fallback_norm[best_k]
 
         cat = classify_movie_category(rec.title)
         gamma_obs = round(rec.atp / ref_price, 3) if ref_price > 0 else 1.0
         gamma_obs = max(0.50, min(1.30, gamma_obs))
-        gamma_final = cal_service.state.movie_specific_factors.get(norm_t, gamma_obs)
+
+        # Lookup gamma final with lenient fallback
+        gamma_final = cal_service.state.movie_specific_factors.get(norm_t)
+        if gamma_final is None:
+            for k_factor, v_factor in cal_service.state.movie_specific_factors.items():
+                if are_titles_lenient_match(norm_t, k_factor):
+                    gamma_final = v_factor
+                    break
+            else:
+                gamma_final = gamma_obs
 
         movies_updated.append({
             "rank": rec.rank,
             "title": rec.title,
             "normalized_title": norm_t,
             "category": cat,
+            "period_type": p_type,
             "atp": rec.atp,
             "resolved_reference_price": ref_price,
             "gamma_observed": gamma_obs,

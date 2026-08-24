@@ -47,6 +47,7 @@ export const RawIngestionTab: React.FC<RawIngestionTabProps> = ({
   const [sourceFilter, setSourceFilter] = useState<"ALL" | "ICA" | "NOS">("ALL");
   const [statusFilter, setStatusFilter] = useState<"ALL" | "SUCCESS" | "FAILED">("ALL");
   const [copiedJson, setCopiedJson] = useState<boolean>(false);
+  const [icaPeriodFilter, setIcaPeriodFilter] = useState<"ALL" | "WEEKLY" | "WEEKEND">("ALL");
   const [actionMessage, setActionMessage] = useState<{ text: string; type: "success" | "error" } | null>(null);
 
   // Fetch raw ingestion logs from GET /api/ingestion/raw-logs and calibration factors
@@ -741,60 +742,209 @@ export const RawIngestionTab: React.FC<RawIngestionTabProps> = ({
                 </div>
               </div>
 
-              {/* ICA Specific Structured Overview */}
-              {selectedLog.source === "ICA" && selectedLog.rawDetails?.movies && (
-                <div className="space-y-3">
-                  <div className="flex items-center justify-between">
-                    <h4 className="text-xs font-bold uppercase tracking-wider text-slate-400 flex items-center gap-1.5">
-                      <Film className="w-4 h-4 text-emerald-400" />
-                      Parsed Official Chart Titles ({selectedLog.rawDetails.movies.length})
-                    </h4>
-                    {selectedLog.rawDetails.overall_average_ticket_price && (
-                      <span className="text-xs text-amber-400 font-mono">
-                        Official Overall ATP: <strong>€{selectedLog.rawDetails.overall_average_ticket_price}</strong>
-                      </span>
-                    )}
-                  </div>
+              {/* ICA Specific Structured Overview with Separated Weekly & Weekend Charts */}
+              {selectedLog.source === "ICA" && selectedLog.rawDetails?.movies && (() => {
+                const raw = selectedLog.rawDetails;
+                const allMovies = raw.movies || [];
+                const weeklyMovies = raw.weekly_movies || allMovies.filter((m: any) => m.period_type === "weekly");
+                const weekendMovies = raw.weekend_movies || allMovies.filter((m: any) => m.period_type === "weekend");
 
-                  <div className="border border-slate-800 rounded-lg overflow-hidden max-h-72 overflow-y-auto">
-                    <table className="w-full text-left text-xs">
-                      <thead className="bg-slate-950 text-slate-400 border-b border-slate-800 text-[11px] uppercase sticky top-0">
-                        <tr>
-                          <th className="py-2 px-3">#</th>
-                          <th className="py-2 px-3">Title</th>
-                          <th className="py-2 px-3 text-right">Weekly Gross (€)</th>
-                          <th className="py-2 px-3 text-right">Admissions</th>
-                          <th className="py-2 px-3 text-right">ATP (€)</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-slate-800/60 bg-slate-900/60 font-mono">
-                        {selectedLog.rawDetails.movies.map((m: any, idx: number) => (
-                          <tr key={idx} className="hover:bg-slate-800/40">
-                            <td className="py-2 px-3 text-slate-500 font-bold">{m.rank || idx + 1}</td>
-                            <td className="py-2 px-3 font-sans text-slate-200 font-medium">
-                              {m.title}
-                              {m.distributor && (
-                                <span className="block text-[10px] font-sans text-slate-500">
-                                  {m.distributor}
-                                </span>
-                              )}
-                            </td>
-                            <td className="py-2 px-3 text-right text-emerald-400">
-                              €{Number(m.weekly_gross_revenue || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
-                            </td>
-                            <td className="py-2 px-3 text-right text-slate-300">
-                              {Number(m.weekly_admissions || 0).toLocaleString()}
-                            </td>
-                            <td className="py-2 px-3 text-right text-amber-400 font-bold">
-                              €{Number(m.atp || 0).toFixed(2)}
-                            </td>
+                const displayedMovies =
+                  icaPeriodFilter === "WEEKLY"
+                    ? weeklyMovies
+                    : icaPeriodFilter === "WEEKEND"
+                    ? weekendMovies
+                    : allMovies;
+
+                return (
+                  <div className="space-y-4">
+                    {/* Period Summary Metric Cards */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                      {/* Weekly Summary Card */}
+                      <div className="bg-slate-950/80 border border-blue-900/40 rounded-xl p-3.5 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-1.5">
+                            <span className="w-2 h-2 rounded-full bg-blue-400"></span>
+                            <span className="text-xs font-bold text-blue-300 uppercase tracking-wider">
+                              Weekly Official Chart (7-Day)
+                            </span>
+                          </div>
+                          <span className="text-[11px] font-mono text-blue-400 bg-blue-950/60 px-2 py-0.5 rounded border border-blue-800/50">
+                            {weeklyMovies.length} titles
+                          </span>
+                        </div>
+                        {raw.weekly_period_label && (
+                          <div className="text-[11px] text-slate-400 truncate" title={raw.weekly_period_label}>
+                            {raw.weekly_period_label}
+                          </div>
+                        )}
+                        <div className="grid grid-cols-3 gap-2 pt-1 border-t border-slate-800/60 text-xs font-mono">
+                          <div>
+                            <span className="text-[10px] text-slate-500 block">Gross</span>
+                            <span className="text-emerald-400 font-bold">
+                              €{Number(raw.total_weekly_gross_eur || weeklyMovies.reduce((s: number, m: any) => s + (m.weekly_gross_revenue || 0), 0)).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-slate-500 block">Admissions</span>
+                            <span className="text-slate-200">
+                              {Number(raw.total_weekly_admissions || weeklyMovies.reduce((s: number, m: any) => s + (m.weekly_admissions || 0), 0)).toLocaleString()}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-slate-500 block">Weekly ATP</span>
+                            <span className="text-amber-400 font-bold">
+                              €{Number(raw.weekly_average_ticket_price || (weeklyMovies.length > 0 ? (weeklyMovies.reduce((s: number, m: any) => s + (m.weekly_gross_revenue || 0), 0) / (weeklyMovies.reduce((s: number, m: any) => s + (m.weekly_admissions || 0), 0) || 1)) : 0)).toFixed(2)}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Weekend Summary Card */}
+                      <div className="bg-slate-950/80 border border-purple-900/40 rounded-xl p-3.5 space-y-2">
+                        <div className="flex items-center justify-between">
+                          <div className="flex items-center gap-1.5">
+                            <span className="w-2 h-2 rounded-full bg-purple-400"></span>
+                            <span className="text-xs font-bold text-purple-300 uppercase tracking-wider">
+                              Weekend Official Chart (Thu–Sun)
+                            </span>
+                          </div>
+                          <span className="text-[11px] font-mono text-purple-400 bg-purple-950/60 px-2 py-0.5 rounded border border-purple-800/50">
+                            {weekendMovies.length} titles
+                          </span>
+                        </div>
+                        {raw.weekend_period_label && (
+                          <div className="text-[11px] text-slate-400 truncate" title={raw.weekend_period_label}>
+                            {raw.weekend_period_label}
+                          </div>
+                        )}
+                        <div className="grid grid-cols-3 gap-2 pt-1 border-t border-slate-800/60 text-xs font-mono">
+                          <div>
+                            <span className="text-[10px] text-slate-500 block">Gross</span>
+                            <span className="text-emerald-400 font-bold">
+                              €{Number(raw.total_weekend_gross_eur || weekendMovies.reduce((s: number, m: any) => s + (m.weekly_gross_revenue || 0), 0)).toLocaleString(undefined, { maximumFractionDigits: 0 })}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-slate-500 block">Admissions</span>
+                            <span className="text-slate-200">
+                              {Number(raw.total_weekend_admissions || weekendMovies.reduce((s: number, m: any) => s + (m.weekly_admissions || 0), 0)).toLocaleString()}
+                            </span>
+                          </div>
+                          <div>
+                            <span className="text-[10px] text-slate-500 block">Weekend ATP</span>
+                            <span className="text-amber-400 font-bold">
+                              €{Number(raw.weekend_average_ticket_price || (weekendMovies.length > 0 ? (weekendMovies.reduce((s: number, m: any) => s + (m.weekly_gross_revenue || 0), 0) / (weekendMovies.reduce((s: number, m: any) => s + (m.weekly_admissions || 0), 0) || 1)) : 0)).toFixed(2)}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Filter Segmented Control & Header */}
+                    <div className="flex flex-wrap items-center justify-between gap-2 pt-1">
+                      <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-lg border border-slate-800 text-xs font-medium">
+                        <button
+                          type="button"
+                          onClick={() => setIcaPeriodFilter("ALL")}
+                          className={`px-2.5 py-1 rounded transition-colors ${
+                            icaPeriodFilter === "ALL"
+                              ? "bg-slate-800 text-white font-bold"
+                              : "text-slate-400 hover:text-slate-200"
+                          }`}
+                        >
+                          All Official Records ({allMovies.length})
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setIcaPeriodFilter("WEEKLY")}
+                          className={`px-2.5 py-1 rounded transition-colors flex items-center gap-1.5 ${
+                            icaPeriodFilter === "WEEKLY"
+                              ? "bg-blue-900/60 text-blue-200 font-bold border border-blue-700/50"
+                              : "text-slate-400 hover:text-slate-200"
+                          }`}
+                        >
+                          <span className="w-1.5 h-1.5 rounded-full bg-blue-400"></span>
+                          Weekly ({weeklyMovies.length})
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setIcaPeriodFilter("WEEKEND")}
+                          className={`px-2.5 py-1 rounded transition-colors flex items-center gap-1.5 ${
+                            icaPeriodFilter === "WEEKEND"
+                              ? "bg-purple-900/60 text-purple-200 font-bold border border-purple-700/50"
+                              : "text-slate-400 hover:text-slate-200"
+                          }`}
+                        >
+                          <span className="w-1.5 h-1.5 rounded-full bg-purple-400"></span>
+                          Weekend ({weekendMovies.length})
+                        </button>
+                      </div>
+
+                      {raw.overall_average_ticket_price && (
+                        <span className="text-xs text-amber-400 font-mono">
+                          Benchmark ATP: <strong>€{raw.overall_average_ticket_price}</strong>
+                        </span>
+                      )}
+                    </div>
+
+                    {/* Table of Parsed Movies */}
+                    <div className="border border-slate-800 rounded-lg overflow-hidden max-h-80 overflow-y-auto">
+                      <table className="w-full text-left text-xs">
+                        <thead className="bg-slate-950 text-slate-400 border-b border-slate-800 text-[11px] uppercase sticky top-0">
+                          <tr>
+                            <th className="py-2 px-3">#</th>
+                            <th className="py-2 px-3">Type</th>
+                            <th className="py-2 px-3">Title</th>
+                            <th className="py-2 px-3 text-right">Screens</th>
+                            <th className="py-2 px-3 text-right">Gross (€)</th>
+                            <th className="py-2 px-3 text-right">Admissions</th>
+                            <th className="py-2 px-3 text-right">ATP (€)</th>
                           </tr>
-                        ))}
-                      </tbody>
-                    </table>
+                        </thead>
+                        <tbody className="divide-y divide-slate-800/60 bg-slate-900/60 font-mono">
+                          {displayedMovies.map((m: any, idx: number) => (
+                            <tr key={idx} className="hover:bg-slate-800/40">
+                              <td className="py-2 px-3 text-slate-500 font-bold">{m.rank || idx + 1}</td>
+                              <td className="py-2 px-3">
+                                <span
+                                  className={`text-[10px] uppercase font-bold px-1.5 py-0.5 rounded border ${
+                                    m.period_type === "weekend"
+                                      ? "bg-purple-950/60 text-purple-300 border-purple-800/60"
+                                      : "bg-blue-950/60 text-blue-300 border-blue-800/60"
+                                  }`}
+                                >
+                                  {m.period_type || "weekly"}
+                                </span>
+                              </td>
+                              <td className="py-2 px-3 font-sans text-slate-200 font-medium">
+                                {m.title}
+                                {m.distributor && (
+                                  <span className="block text-[10px] font-sans text-slate-500">
+                                    {m.distributor} {m.country_of_origin ? `(${m.country_of_origin})` : ""}
+                                  </span>
+                                )}
+                              </td>
+                              <td className="py-2 px-3 text-right text-slate-400">
+                                {m.weekly_screens || "-"}
+                              </td>
+                              <td className="py-2 px-3 text-right text-emerald-400">
+                                €{Number(m.weekly_gross_revenue || 0).toLocaleString(undefined, { minimumFractionDigits: 2 })}
+                              </td>
+                              <td className="py-2 px-3 text-right text-slate-300">
+                                {Number(m.weekly_admissions || 0).toLocaleString()}
+                              </td>
+                              <td className="py-2 px-3 text-right text-amber-400 font-bold">
+                                €{Number(m.atp || 0).toFixed(2)}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
                   </div>
-                </div>
-              )}
+                );
+              })()}
 
               {/* NOS Specific Structured Overview */}
               {selectedLog.source === "NOS" && (

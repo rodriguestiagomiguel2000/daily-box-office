@@ -41,13 +41,27 @@ class ICAMovieRecord:
     accumulated_admissions: int = 0
     days_in_release: int = 0
     period_label: str = ""
+    period_type: str = "weekly"  # "weekly" or "weekend"
     atp: float = 0.0  # Average Ticket Price for the period (Revenue / Admissions)
     atp_accumulated: float = 0.0
 
 
 # ---------------------------------------------------------------------------
-# Title Normalization & Matching
+# Title Normalization & Lenient Matching
 # ---------------------------------------------------------------------------
+
+STOPWORDS_PT_EN = {
+    # Portuguese articles, conjunctions, prepositions, common qualifiers
+    'o', 'a', 'os', 'as', 'um', 'uma', 'uns', 'umas',
+    'de', 'da', 'do', 'das', 'dos', 'em', 'na', 'no', 'nas', 'nos',
+    'e', 'ou', 'para', 'pra', 'pro', 'pras', 'pros', 'por', 'pelo', 'pela', 'pelos', 'pelas',
+    'com', 'sem', 'sob', 'sobre', 'ao', 'aos', 'aqui', 'ali',
+    'filme', 'filmes', 'cinema',
+    # English articles, conjunctions, prepositions
+    'the', 'a', 'an', 'and', 'or', 'of', 'in', 'to', 'for', 'with', 'without',
+    'on', 'at', 'by', 'from', 'into', 'movie', 'film',
+}
+
 
 def normalize_title(title: str) -> str:
     """
@@ -56,7 +70,7 @@ def normalize_title(title: str) -> str:
     
     Operations:
     1. Lowercase conversion
-    2. Strips accents/diacritics (e.g. 'Odisseia' vs 'Odisséia', 'Patrulha Pata' vs 'Patrulha Pátá')
+    2. Strips accents/diacritics (e.g. 'Mínimos' vs 'Minimos', 'Odisséia' vs 'Odisseia')
     3. Strips format tags: (2D), (3D), (IMAX), (VIP), (VP), (VO), (DOB), (LEG), (ATMOS), (4DX), (V.O.), (V.P.)
     4. Strips year qualifiers: (2024), (2025), (2026), etc.
     5. Strips punctuation, hyphens, colons, quotes and collapses spaces
@@ -88,13 +102,122 @@ def normalize_title(title: str) -> str:
     return text
 
 
+def extract_title_tokens(title_or_norm: str, strip_stopwords: bool = True) -> List[str]:
+    """
+    Extracts ordered list of alphanumeric words from a title, optionally removing common stopwords.
+    """
+    norm = normalize_title(title_or_norm) if not title_or_norm.islower() else title_or_norm
+    words = re.findall(r'[a-z0-9]+', norm)
+    if strip_stopwords:
+        filtered = [w for w in words if w not in STOPWORDS_PT_EN]
+        return filtered if filtered else words
+    return words
+
+
+def extract_title_numbers(title_or_norm: str) -> List[str]:
+    """
+    Extracts numeric tokens from title (e.g. '2' from 'Toy Story 2' or '5' from 'Toy Story 5').
+    """
+    norm = normalize_title(title_or_norm)
+    return re.findall(r'\b\d+\b', norm)
+
+
+def calculate_title_similarity(title1: str, title2: str) -> float:
+    """
+    Calculates a comprehensive multi-factor similarity score [0.0 - 1.0] between two movie titles,
+    taking into account exact normalized match, stopword leniency, token set overlap,
+    and sequence similarity.
+    """
+    if not title1 or not title2:
+        return 0.0
+
+    norm1 = normalize_title(title1)
+    norm2 = normalize_title(title2)
+
+    if not norm1 or not norm2:
+        return 0.0
+
+    # 1. Exact normalized match
+    if norm1 == norm2:
+        return 1.0
+
+    # Guard: If both titles have numbers (e.g. sequel numbers 2 vs 3, 4 vs 5), they MUST match
+    nums1 = extract_title_numbers(norm1)
+    nums2 = extract_title_numbers(norm2)
+    if nums1 and nums2 and nums1 != nums2:
+        return 0.0
+
+    # 2. Direct Substring / Containment
+    if norm1 in norm2 or norm2 in norm1:
+        shorter = min(norm1, norm2, key=len)
+        longer = max(norm1, norm2, key=len)
+        containment_ratio = len(shorter) / len(longer)
+        # High confidence for containment if shorter is meaningful
+        if len(shorter) >= 5:
+            return max(0.88, containment_ratio)
+
+    # 3. Core content token comparison (stripping Portuguese/English stopwords like 'os', 'e', 'de', 'the')
+    core_tokens1 = extract_title_tokens(norm1, strip_stopwords=True)
+    core_tokens2 = extract_title_tokens(norm2, strip_stopwords=True)
+
+    if core_tokens1 and core_tokens2:
+        # Exact token sequence or token set match
+        # e.g., "Mínimos e os Monstros" -> ['minimos', 'monstros']
+        #       "Mínimos e Monstros"    -> ['minimos', 'monstros']
+        if core_tokens1 == core_tokens2:
+            return 0.98
+
+        set1 = set(core_tokens1)
+        set2 = set(core_tokens2)
+
+        if set1 == set2:
+            return 0.95
+
+        # Subset matching: e.g. all core tokens of one are present in the other
+        intersection = set1 & set2
+        union = set1 | set2
+        jaccard = len(intersection) / len(union) if union else 0.0
+
+        if set1.issubset(set2) or set2.issubset(set1):
+            if len(intersection) >= 2 or (len(intersection) == 1 and list(intersection)[0] not in STOPWORDS_PT_EN and len(list(intersection)[0]) >= 4):
+                return max(0.85, 0.75 + 0.20 * jaccard)
+
+        # High Jaccard token overlap
+        if jaccard >= 0.60:
+            return max(0.80, jaccard)
+
+    # 4. Difflib sequence similarity ratio on full normalized strings
+    full_seq_ratio = SequenceMatcher(None, norm1, norm2).ratio()
+    if full_seq_ratio >= 0.75:
+        return round(full_seq_ratio, 3)
+
+    # 5. Sequence similarity on core joined tokens
+    if core_tokens1 and core_tokens2:
+        core_str1 = " ".join(core_tokens1)
+        core_str2 = " ".join(core_tokens2)
+        core_seq_ratio = SequenceMatcher(None, core_str1, core_str2).ratio()
+        if core_seq_ratio >= 0.75:
+            return round(core_seq_ratio, 3)
+
+    return round(full_seq_ratio, 3)
+
+
+def are_titles_lenient_match(title1: str, title2: str, min_similarity: float = 0.70) -> bool:
+    """
+    Returns True if two titles represent the same movie under lenient matching rules.
+    Handles variations like 'Mínimos e os Monstros' vs 'Mínimos e Monstros', missing articles,
+    format tags, and minor punctuation/spelling differences.
+    """
+    return calculate_title_similarity(title1, title2) >= min_similarity
+
+
 def match_scraped_title_to_ica(
     scraped_title: str,
     ica_titles: List[str],
     threshold: float = 0.65
 ) -> Optional[Tuple[str, float]]:
     """
-    Fuzzy and exact matching between a cinema scraped title and a list of ICA titles.
+    Fuzzy and lenient matching between a cinema scraped title and a list of ICA titles.
     
     Returns:
         Tuple of (matched_ica_title, similarity_score) or None if no match meets threshold.
@@ -102,36 +225,13 @@ def match_scraped_title_to_ica(
     if not scraped_title or not ica_titles:
         return None
 
-    norm_scraped = normalize_title(scraped_title)
-    if not norm_scraped:
-        return None
-
     best_match: Optional[str] = None
     best_score: float = 0.0
 
     for ica_t in ica_titles:
-        norm_ica = normalize_title(ica_t)
-        if not norm_ica:
-            continue
-
-        # Exact normalized match
-        if norm_scraped == norm_ica:
-            return (ica_t, 1.0)
-
-        # Substring / containment match
-        if norm_scraped in norm_ica or norm_ica in norm_scraped:
-            containment_score = len(min(norm_scraped, norm_ica, key=len)) / len(max(norm_scraped, norm_ica, key=len))
-            # Boost score for containment
-            effective_score = max(0.85, containment_score)
-            if effective_score > best_score:
-                best_score = effective_score
-                best_match = ica_t
-            continue
-
-        # Difflib sequence similarity ratio
-        ratio = SequenceMatcher(None, norm_scraped, norm_ica).ratio()
-        if ratio > best_score:
-            best_score = ratio
+        sim = calculate_title_similarity(scraped_title, ica_t)
+        if sim > best_score:
+            best_score = sim
             best_match = ica_t
 
     if best_match and best_score >= threshold:
@@ -194,7 +294,7 @@ def parse_ica_excel(content: Union[str, bytes, io.BytesIO]) -> List[ICAMovieReco
             rel_map = {r.attrib.get('Id'): r.attrib.get('Target') for r in rels_root.findall('.//r:Relationship', rels_ns)}
 
             for sheet in wb_root.findall('.//main:sheet', ns):
-                s_name = sheet.attrib.get('name', '')
+                s_name = sheet.attrib.get('name', '').strip()
                 r_id = sheet.attrib.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}id')
                 target = rel_map.get(r_id, '')
                 if target:
@@ -209,21 +309,33 @@ def parse_ica_excel(content: Union[str, bytes, io.BytesIO]) -> List[ICAMovieReco
             if name.startswith('xl/worksheets/sheet') and name.endswith('.xml'):
                 target_sheet_paths.append(('SHEET', name))
 
-    # Priority sheet names to search: RANKING_SEMANAL, FDS DETALHE, FDS, SHEET
-    def sheet_priority(item: Tuple[str, str]) -> int:
-        name = item[0].upper()
-        if 'RANKING_SEMANAL' in name or 'SEMANAL' in name:
-            return 0
-        if 'FDS DETALHE' in name or 'DETALHE' in name:
-            return 1
-        if 'FDS' in name:
-            return 2
-        return 10
+    # Explicitly filter out aggregate evolution, accumulated tables, national debut rankings, menu, etc.
+    IGNORED_SHEET_KEYWORDS = ['EVOLUCAO', 'ACUMULADO', 'ESTREIAS', 'GERAL', 'NACIONAIS', 'MAIS_VISTOS', 'MENU', 'PAISES']
+    MONTHS_PT = {'JANEIRO', 'FEVEREIRO', 'MARÇO', 'ABRIL', 'MAIO', 'JUNHO', 'JULHO', 'AGOSTO', 'SETEMBRO', 'OUTUBRO', 'NOVEMBRO', 'DEZEMBRO'}
 
-    target_sheet_paths.sort(key=sheet_priority)
+    has_fds_detalhe = any('FDS DETALHE' in s[0].upper() or 'DETALHE' in s[0].upper() for s in target_sheet_paths)
+
+    def parse_num(val_str: str) -> float:
+        if not val_str:
+            return 0.0
+        cleaned = str(val_str).replace(' ', '').replace(',', '.')
+        try:
+            return float(cleaned)
+        except ValueError:
+            return 0.0
 
     # 3. Parse worksheets
     for sheet_name, sheet_path in target_sheet_paths:
+        s_name_upper = sheet_name.upper()
+
+        # Skip non-ranking sheets
+        if any(ign in s_name_upper for ign in IGNORED_SHEET_KEYWORDS):
+            continue
+
+        # Skip duplicate simplified FDS sheet when detailed FDS DETALHE is already present
+        if 'FDS' in s_name_upper and not ('DETALHE' in s_name_upper) and has_fds_detalhe:
+            continue
+
         if sheet_path not in zf.namelist():
             continue
 
@@ -233,8 +345,11 @@ def parse_ica_excel(content: Union[str, bytes, io.BytesIO]) -> List[ICAMovieReco
             log.warning(f"Failed to read sheet xml at {sheet_path}: {e}")
             continue
 
+        # Determine period type based on sheet name
+        is_weekend = 'FDS' in s_name_upper or 'DETALHE' in s_name_upper or 'WEEKEND' in s_name_upper or 'FIM' in s_name_upper
+        sheet_period_type = "weekend" if is_weekend else "weekly"
+
         period_label = ""
-        header_found = False
         sheet_records: List[ICAMovieRecord] = []
 
         for row in sheet_root.findall('.//main:row', ns):
@@ -252,79 +367,116 @@ def parse_ica_excel(content: Union[str, bytes, io.BytesIO]) -> List[ICAMovieReco
             if not row_cells:
                 continue
 
-            # Check for header period label (e.g. "RANKING DA SEMANA 13-08-2026 a 19-08-2026")
+            # Check for header period label (e.g. "RANKING DA SEMANA..." or "RANKING DE FIM DE SEMANA...")
             for cell_val in row_cells.values():
-                if 'RANKING' in cell_val.upper() and ('SEMANA' in cell_val.upper() or 'WEEK' in cell_val.upper()):
+                c_upper = cell_val.upper()
+                if 'RANKING' in c_upper and ('SEMANA' in c_upper or 'WEEK' in c_upper or 'FDS' in c_upper or 'FIM' in c_upper or 'DETALHE' in c_upper):
                     period_label = cell_val
                     break
 
-            # Check if this row marks header columns
-            row_str = ' '.join(row_cells.values()).upper()
-            if 'TÍTULO' in row_str or 'TITLE' in row_str:
-                header_found = True
-                continue
+            # Handle FDS DETALHE layout (Rank in B, Title in C) vs standard layout (Rank in A, Title in B)
+            if 'DETALHE' in s_name_upper and row_cells.get('B', '').isdigit() and row_cells.get('C', '') and row_cells.get('C', '').upper() not in MONTHS_PT:
+                rank_str = row_cells.get('B', '')
+                title = row_cells.get('C', '')
 
-            # Data rows: usually start with an integer rank in column A
-            rank_str = row_cells.get('A', '')
-            title = row_cells.get('B', '')
+                if (
+                    rank_str.isdigit()
+                    and 1 <= int(rank_str) <= 200
+                    and title
+                    and title.upper() not in ['TOTAL', 'SUBTOTAL', 'TÍTULO', 'TITLE', 'FILME', 'FILM']
+                ):
+                    try:
+                        rank = int(rank_str)
+                        director = row_cells.get('E', '')
+                        distributor = row_cells.get('F', '')
+                        country = row_cells.get('G', '')
+                        days = int(parse_num(row_cells.get('K', '0')))
+                        gross = round(parse_num(row_cells.get('M', '0')), 2)
+                        adm = int(parse_num(row_cells.get('Q', '0')))
+                        screens = int(parse_num(row_cells.get('U', '0')))
+                        acc_gross = round(parse_num(row_cells.get('X', '0')), 2)
+                        acc_adm = int(parse_num(row_cells.get('Y', '0')))
+                        atp_period = round(gross / adm, 2) if adm > 0 else 0.0
+                        atp_accum = round(acc_gross / acc_adm, 2) if acc_adm > 0 else 0.0
 
-            if rank_str.isdigit() and title and title.upper() not in ['TOTAL', 'SUBTOTAL']:
-                try:
-                    rank = int(rank_str)
-                    distributor = row_cells.get('C', '')
-                    director = row_cells.get('D', '')
-                    country = row_cells.get('E', '')
+                        rec = ICAMovieRecord(
+                            rank=rank,
+                            title=title,
+                            normalized_title=normalize_title(title),
+                            distributor=distributor,
+                            director=director,
+                            country_of_origin=country,
+                            weekly_screens=screens,
+                            weekly_gross_revenue=gross,
+                            weekly_admissions=adm,
+                            accumulated_screens=screens,
+                            accumulated_gross_revenue=acc_gross,
+                            accumulated_admissions=acc_adm,
+                            days_in_release=days,
+                            period_label=period_label or "Weekend Ranking",
+                            period_type="weekend",
+                            atp=atp_period,
+                            atp_accumulated=atp_accum
+                        )
+                        sheet_records.append(rec)
+                    except Exception as row_err:
+                        log.debug(f"Row parsing skipped in FDS DETALHE: {row_err}")
+            else:
+                # Column A has rank, Column B has Title
+                rank_str = row_cells.get('A', '')
+                title = row_cells.get('B', '')
 
-                    def parse_num(val_str: str) -> float:
-                        if not val_str:
-                            return 0.0
-                        cleaned = val_str.replace(' ', '').replace(',', '.')
-                        try:
-                            return float(cleaned)
-                        except ValueError:
-                            return 0.0
+                if (
+                    rank_str.isdigit()
+                    and 1 <= int(rank_str) <= 200
+                    and title
+                    and title.upper() not in MONTHS_PT
+                    and title.upper() not in ['TOTAL', 'SUBTOTAL', 'TÍTULO', 'TITLE', 'FILME', 'FILM']
+                ):
+                    try:
+                        rank = int(rank_str)
+                        distributor = row_cells.get('C', '')
+                        director = row_cells.get('D', '')
+                        country = row_cells.get('E', '')
+                        screens = int(parse_num(row_cells.get('F', '0')))
+                        gross = round(parse_num(row_cells.get('G', '0')), 2)
+                        adm = int(parse_num(row_cells.get('H', '0')))
+                        acc_screens = int(parse_num(row_cells.get('I', '0')))
+                        acc_gross = round(parse_num(row_cells.get('J', '0')), 2)
+                        acc_adm = int(parse_num(row_cells.get('K', '0')))
+                        days = int(parse_num(row_cells.get('L', '0')))
 
-                    weekly_screens = int(parse_num(row_cells.get('F', '0')))
-                    weekly_gross = round(parse_num(row_cells.get('G', '0')), 2)
-                    weekly_adm = int(parse_num(row_cells.get('H', '0')))
+                        atp_period = round(gross / adm, 2) if adm > 0 else 0.0
+                        atp_accum = round(acc_gross / acc_adm, 2) if acc_adm > 0 else 0.0
 
-                    accum_screens = int(parse_num(row_cells.get('I', '0')))
-                    accum_gross = round(parse_num(row_cells.get('J', '0')), 2)
-                    accum_adm = int(parse_num(row_cells.get('K', '0')))
-                    days = int(parse_num(row_cells.get('L', '0')))
-
-                    # Compute official ATP
-                    atp_period = round(weekly_gross / weekly_adm, 2) if weekly_adm > 0 else 0.0
-                    atp_accum = round(accum_gross / accum_adm, 2) if accum_adm > 0 else 0.0
-
-                    rec = ICAMovieRecord(
-                        rank=rank,
-                        title=title,
-                        normalized_title=normalize_title(title),
-                        distributor=distributor,
-                        director=director,
-                        country_of_origin=country,
-                        weekly_screens=weekly_screens,
-                        weekly_gross_revenue=weekly_gross,
-                        weekly_admissions=weekly_adm,
-                        accumulated_screens=accum_screens,
-                        accumulated_gross_revenue=accum_gross,
-                        accumulated_admissions=accum_adm,
-                        days_in_release=days,
-                        period_label=period_label,
-                        atp=atp_period,
-                        atp_accumulated=atp_accum
-                    )
-                    sheet_records.append(rec)
-                except Exception as row_err:
-                    log.debug(f"Row parsing skipped: {row_err}")
+                        rec = ICAMovieRecord(
+                            rank=rank,
+                            title=title,
+                            normalized_title=normalize_title(title),
+                            distributor=distributor,
+                            director=director,
+                            country_of_origin=country,
+                            weekly_screens=screens,
+                            weekly_gross_revenue=gross,
+                            weekly_admissions=adm,
+                            accumulated_screens=acc_screens,
+                            accumulated_gross_revenue=acc_gross,
+                            accumulated_admissions=acc_adm,
+                            days_in_release=days,
+                            period_label=period_label or f"{sheet_period_type.capitalize()} Ranking",
+                            period_type=sheet_period_type,
+                            atp=atp_period,
+                            atp_accumulated=atp_accum
+                        )
+                        sheet_records.append(rec)
+                    except Exception as row_err:
+                        log.debug(f"Row parsing skipped in {sheet_name}: {row_err}")
 
         if sheet_records:
-            log.info(f"Successfully extracted {len(sheet_records)} ICA movie records from sheet '{sheet_name}'.")
+            log.info(f"Successfully extracted {len(sheet_records)} ICA movie records from sheet '{sheet_name}' (period_type: {sheet_period_type}).")
             records.extend(sheet_records)
-            # If we extracted high-quality records from the weekly ranking sheet, we have what we need
-            if 'RANKING_SEMANAL' in sheet_name.upper() or 'SEMANAL' in sheet_name.upper():
-                break
+
+    return records
 
     return records
 
@@ -428,11 +580,43 @@ def ingest_ica_with_raw_log() -> Dict[str, Any]:
         else "ica_ranking_box_office_semanal.xlsx"
     )
     
+    weekly_records = [r for r in records if r.period_type == "weekly"]
+    weekend_records = [r for r in records if r.period_type == "weekend"]
+
+    tot_weekly_gross = round(sum(r.weekly_gross_revenue for r in weekly_records), 2)
+    tot_weekly_adm = sum(r.weekly_admissions for r in weekly_records)
+    weekly_atp = round(tot_weekly_gross / tot_weekly_adm, 2) if tot_weekly_adm > 0 else 0.0
+
+    tot_weekend_gross = round(sum(r.weekly_gross_revenue for r in weekend_records), 2)
+    tot_weekend_adm = sum(r.weekly_admissions for r in weekend_records)
+    weekend_atp = round(tot_weekend_gross / tot_weekend_adm, 2) if tot_weekend_adm > 0 else 0.0
+
     tot_gross = round(sum(r.weekly_gross_revenue for r in records), 2)
     tot_adm = sum(r.weekly_admissions for r in records)
-    avg_atp = round(tot_gross / tot_adm, 2) if tot_adm > 0 else 0.0
-    
-    period = records[0].period_label if records else "Semana Oficial ICA"
+    avg_atp = weekly_atp or weekend_atp or (round(tot_gross / tot_adm, 2) if tot_adm > 0 else 0.0)
+
+    weekly_period = weekly_records[0].period_label if weekly_records else "Semana Oficial ICA"
+    weekend_period = weekend_records[0].period_label if weekend_records else "Fim-de-Semana Oficial ICA"
+
+    def record_to_dict(r: ICAMovieRecord) -> Dict[str, Any]:
+        return {
+            "rank": r.rank,
+            "title": r.title,
+            "normalized_title": r.normalized_title,
+            "distributor": r.distributor,
+            "director": r.director,
+            "country_of_origin": r.country_of_origin,
+            "weekly_gross_revenue": r.weekly_gross_revenue,
+            "weekly_admissions": r.weekly_admissions,
+            "weekly_screens": r.weekly_screens,
+            "accumulated_gross_revenue": r.accumulated_gross_revenue,
+            "accumulated_admissions": r.accumulated_admissions,
+            "days_in_release": r.days_in_release,
+            "atp": r.atp,
+            "atp_accumulated": r.atp_accumulated,
+            "period_label": r.period_label,
+            "period_type": r.period_type
+        }
 
     return {
         "id": f"ica-{now_ms}",
@@ -445,28 +629,21 @@ def ingest_ica_with_raw_log() -> Dict[str, Any]:
             "source_type": "OFFICIAL_GOVERNMENT_BOX_OFFICE",
             "url": source_url or ICA_BOX_OFFICE_URL,
             "is_live_download": is_live,
-            "period_label": period,
-            "total_weekly_gross_eur": tot_gross,
-            "total_weekly_admissions": tot_adm,
+            "period_label": weekly_period or weekend_period,
+            "weekly_period_label": weekly_period,
+            "weekend_period_label": weekend_period,
+            "weekly_record_count": len(weekly_records),
+            "weekend_record_count": len(weekend_records),
+            "total_weekly_gross_eur": tot_weekly_gross,
+            "total_weekly_admissions": tot_weekly_adm,
+            "weekly_average_ticket_price": weekly_atp,
+            "total_weekend_gross_eur": tot_weekend_gross,
+            "total_weekend_admissions": tot_weekend_adm,
+            "weekend_average_ticket_price": weekend_atp,
             "overall_average_ticket_price": avg_atp,
-            "movies": [
-                {
-                    "rank": r.rank,
-                    "title": r.title,
-                    "normalized_title": r.normalized_title,
-                    "distributor": r.distributor,
-                    "director": r.director,
-                    "weekly_gross_revenue": r.weekly_gross_revenue,
-                    "weekly_admissions": r.weekly_admissions,
-                    "weekly_screens": r.weekly_screens,
-                    "accumulated_gross_revenue": r.accumulated_gross_revenue,
-                    "accumulated_admissions": r.accumulated_admissions,
-                    "days_in_release": r.days_in_release,
-                    "atp": r.atp,
-                    "period_label": r.period_label
-                }
-                for r in records
-            ]
+            "weekly_movies": [record_to_dict(r) for r in weekly_records],
+            "weekend_movies": [record_to_dict(r) for r in weekend_records],
+            "movies": [record_to_dict(r) for r in records]
         }
     }
 
@@ -477,21 +654,21 @@ def get_sample_ica_records() -> List[ICAMovieRecord]:
     Reflects actual representative box office data across Family, Action, and Drama titles.
     """
     raw_samples = [
-        # (Rank, Title, Gross (€), Admissions, Days, Category)
-        (1, "Homem-Aranha: Um Novo Dia", 914161.31, 122039, "Destin Daniel Cretton", "Big Picture 2 Films", 21),   # ATP = 7.49 € (Action/General)
-        (2, "A Odisseia", 697187.75, 76220, "Christopher Nolan", "Cinemundo", 35),                                  # ATP = 9.15 € (Premium/IMAX heavy)
-        (3, "Patrulha Pata: O Filme dos Dinossauros", 206354.30, 32877, "Cal Brunker", "NOS Lusomundo", 14),        # ATP = 6.28 € (Family/Animation)
-        (4, "Ooh Lá Lá 2", 129969.93, 18998, "Julien Hervé", "NOS Lusomundo", 7),                                    # ATP = 6.84 € (General/Comedy)
-        (5, "Mínimos e Monstros", 122991.94, 19403, "Pierre Coffin", "Cinemundo", 49),                              # ATP = 6.34 € (Family/Animation)
-        (6, "O Fim de Oak Street", 104971.48, 15103, "David Robert Mitchell", "NOS Lusomundo", 7),                  # ATP = 6.95 € (Drama/Adult/Thriller)
-        (7, "Apenas Uma Noite", 79089.94, 11585, "Will Gluck", "Cinemundo", 7),                                     # ATP = 6.83 € (Drama/Adult)
-        (8, "Playback", 73078.59, 10706, "Sérgio Graciano", "NOS Lusomundo", 14),                                   # ATP = 6.83 € (Drama/Portuguese)
-        (9, "Toy Story 5", 63718.03, 9951, "Andrew Stanton", "NOS Lusomundo", 63),                                  # ATP = 6.40 € (Family/Animation)
-        (10, "Vaiana", 52878.82, 8264, "Thomas Kail", "NOS Lusomundo", 42),                                         # ATP = 6.40 € (Family/Animation)
+        # (Rank, Title, Gross (€), Admissions, Days, Director, Distributor, PeriodType)
+        (1, "Homem-Aranha: Um Novo Dia", 914161.31, 122039, 21, "Destin Daniel Cretton", "Big Picture 2 Films", "weekly"),   # ATP = 7.49 € (Action/General)
+        (2, "A Odisseia", 697187.75, 76220, 35, "Christopher Nolan", "Cinemundo", "weekly"),                                  # ATP = 9.15 € (Premium/IMAX heavy)
+        (3, "Patrulha Pata: O Filme dos Dinossauros", 206354.30, 32877, 14, "Cal Brunker", "NOS Lusomundo", "weekly"),        # ATP = 6.28 € (Family/Animation)
+        (4, "Ooh Lá Lá 2", 129969.93, 18998, 7, "Julien Hervé", "NOS Lusomundo", "weekly"),                                    # ATP = 6.84 € (General/Comedy)
+        (5, "Mínimos e Monstros", 122991.94, 19403, 49, "Pierre Coffin", "Cinemundo", "weekly"),                              # ATP = 6.34 € (Family/Animation)
+        (6, "O Fim de Oak Street", 104971.48, 15103, 7, "David Robert Mitchell", "NOS Lusomundo", "weekly"),                  # ATP = 6.95 € (Drama/Adult/Thriller)
+        (7, "Apenas Uma Noite", 79089.94, 11585, 7, "Will Gluck", "Cinemundo", "weekly"),                                     # ATP = 6.83 € (Drama/Adult)
+        (8, "Playback", 73078.59, 10706, 14, "Sérgio Graciano", "NOS Lusomundo", "weekly"),                                   # ATP = 6.83 € (Drama/Portuguese)
+        (9, "Toy Story 5", 63718.03, 9951, 63, "Andrew Stanton", "NOS Lusomundo", "weekly"),                                  # ATP = 6.40 € (Family/Animation)
+        (10, "Vaiana", 52878.82, 8264, 42, "Thomas Kail", "NOS Lusomundo", "weekly"),                                         # ATP = 6.40 € (Family/Animation)
     ]
 
     records: List[ICAMovieRecord] = []
-    for rank, title, gross, adm, director, dist, days in raw_samples:
+    for rank, title, gross, adm, days, director, dist, ptype in raw_samples:
         atp = round(gross / adm, 2) if adm > 0 else 0.0
         records.append(ICAMovieRecord(
             rank=rank,
@@ -503,6 +680,7 @@ def get_sample_ica_records() -> List[ICAMovieRecord]:
             weekly_admissions=adm,
             days_in_release=days,
             period_label="WEEKLY BENCHMARK REFERENCE",
+            period_type=ptype,
             atp=atp
         ))
     return records

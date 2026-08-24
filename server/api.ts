@@ -13,8 +13,7 @@ import {
   resolveSessionUnitPriceJs, 
   recalculateAllPerformanceSnapshots,
   getMovieResolvedPricesForCalibration,
-  syncCalibrationFactorsToDb,
-  getSessionPricesSqlCte
+  syncCalibrationFactorsToDb
 } from "./revenue";
 import { computeMovieEODForecast, runHistoricalBacktests, getBacktestSummaryMetrics } from "./forecast";
 
@@ -985,7 +984,19 @@ export async function getOrComputeMovieSnapshotsBatch(
             AND st.transition_timestamp <= mt.target_ts
           ORDER BY st.session_id, st.transition_timestamp DESC
         ),
-        ${getSessionPricesSqlCte()}
+        session_prices AS (
+          SELECT 
+            session_id,
+            COALESCE(
+              MIN(price) FILTER (WHERE is_default = true AND price > 0),
+              MIN(price) FILTER (WHERE price > 0 AND (ticket_type ILIKE '%normal%' OR ticket_type ILIKE '%adulto%' OR ticket_type ILIKE '%inteiro%' OR ticket_type ILIKE '%standard%') AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND (seats_count IS NULL OR seats_count = 1)),
+              MIN(price) FILTER (WHERE price > 0 AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND ticket_type NOT ILIKE '%crian%' AND ticket_type NOT ILIKE '%estud%' AND ticket_type NOT ILIKE '%sénior%' AND ticket_type NOT ILIKE '%senior%' AND (seats_count IS NULL OR seats_count = 1)),
+              AVG(price) FILTER (WHERE price > 0)
+            ) as avg_price
+          FROM session_ticket_prices
+          WHERE session_id IN (SELECT session_id FROM session_latest_snaps)
+          GROUP BY session_id
+        )
         SELECT 
           COUNT(sls.session_id) as showcount_total,
           COUNT(CASE WHEN sls.starts_at <= mt.target_ts THEN 1 END) as shows_started,
@@ -997,7 +1008,7 @@ export async function getOrComputeMovieSnapshotsBatch(
           COALESCE(SUM(st.newly_unavailable), 0) as newly_unavailable,
           COALESCE(SUM(st.newly_available), 0) as newly_available,
           COALESCE(SUM(st.sales_velocity_proxy), 0.0) as sales_velocity,
-          COALESCE(SUM(sls.unavailable_seats * COALESCE(sp.resolved_unit_price, CASE WHEN sls.format ILIKE '%IMAX%' THEN 13.50 WHEN sls.format ILIKE '%3D%' THEN 9.50 ELSE 8.75 END)), 0.0) as estimated_revenue
+          COALESCE(SUM(sls.unavailable_seats * COALESCE(sp.avg_price, CASE WHEN sls.format ILIKE '%IMAX%' THEN 13.50 WHEN sls.format ILIKE '%3D%' THEN 9.50 ELSE 8.75 END)), 0.0) as estimated_revenue
         FROM session_latest_snaps sls
         LEFT JOIN session_transitions st ON sls.session_id = st.session_id
         LEFT JOIN session_prices sp ON sls.session_id = sp.session_id
@@ -1478,11 +1489,22 @@ apiRouter.get("/movies/:id/hourly-breakdown", async (req, res) => {
             AND (s.operational_date = $2 OR TO_CHAR((s.starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD') = $2)
           ORDER BY s.id, ss.collected_at DESC
         ),
-        ${getSessionPricesSqlCte()}
+        session_prices AS (
+          SELECT 
+            session_id,
+            COALESCE(
+              MIN(price) FILTER (WHERE is_default = true AND price > 0),
+              MIN(price) FILTER (WHERE price > 0 AND (ticket_type ILIKE '%normal%' OR ticket_type ILIKE '%adulto%' OR ticket_type ILIKE '%inteiro%' OR ticket_type ILIKE '%standard%') AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND (seats_count IS NULL OR seats_count = 1)),
+              MIN(price) FILTER (WHERE price > 0 AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND ticket_type NOT ILIKE '%crian%' AND ticket_type NOT ILIKE '%estud%' AND ticket_type NOT ILIKE '%sénior%' AND ticket_type NOT ILIKE '%senior%' AND (seats_count IS NULL OR seats_count = 1)),
+              AVG(price) FILTER (WHERE price > 0)
+            ) as avg_price
+          FROM session_ticket_prices
+          GROUP BY session_id
+        )
         SELECT 
           COUNT(*) as total_sessions,
           COALESCE(SUM(sl.unavailable_seats), 0)::int as total_admissions,
-          COALESCE(SUM(sl.unavailable_seats * COALESCE(sp.resolved_unit_price, CASE WHEN s.format ILIKE '%IMAX%' THEN 13.50 WHEN s.format ILIKE '%3D%' THEN 9.50 ELSE 8.75 END)), 0.0)::numeric as total_revenue
+          COALESCE(SUM(sl.unavailable_seats * COALESCE(sp.avg_price, CASE WHEN s.format ILIKE '%IMAX%' THEN 13.50 WHEN s.format ILIKE '%3D%' THEN 9.50 ELSE 8.75 END)), 0.0)::numeric as total_revenue
         FROM session_latest sl
         JOIN sessions s ON sl.session_id = s.id
         LEFT JOIN session_prices sp ON sl.session_id = sp.session_id;`,
@@ -1509,11 +1531,22 @@ apiRouter.get("/movies/:id/hourly-breakdown", async (req, res) => {
             AND (s.operational_date = $2 OR TO_CHAR((s.starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD') = $2)
           ORDER BY s.id, ss.collected_at ASC
         ),
-        ${getSessionPricesSqlCte()}
+        session_prices AS (
+          SELECT 
+            session_id,
+            COALESCE(
+              MIN(price) FILTER (WHERE is_default = true AND price > 0),
+              MIN(price) FILTER (WHERE price > 0 AND (ticket_type ILIKE '%normal%' OR ticket_type ILIKE '%adulto%' OR ticket_type ILIKE '%inteiro%' OR ticket_type ILIKE '%standard%') AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND (seats_count IS NULL OR seats_count = 1)),
+              MIN(price) FILTER (WHERE price > 0 AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND ticket_type NOT ILIKE '%crian%' AND ticket_type NOT ILIKE '%estud%' AND ticket_type NOT ILIKE '%sénior%' AND ticket_type NOT ILIKE '%senior%' AND (seats_count IS NULL OR seats_count = 1)),
+              AVG(price) FILTER (WHERE price > 0)
+            ) as avg_price
+          FROM session_ticket_prices
+          GROUP BY session_id
+        )
         SELECT 
           COUNT(*) as total_sessions,
           COALESCE(SUM(sf.unavailable_seats), 0)::int as baseline_seats,
-          COALESCE(SUM(sf.unavailable_seats * COALESCE(sp.resolved_unit_price, CASE WHEN s.format ILIKE '%IMAX%' THEN 13.50 WHEN s.format ILIKE '%3D%' THEN 9.50 ELSE 8.75 END)), 0.0)::numeric as baseline_revenue
+          COALESCE(SUM(sf.unavailable_seats * COALESCE(sp.avg_price, CASE WHEN s.format ILIKE '%IMAX%' THEN 13.50 WHEN s.format ILIKE '%3D%' THEN 9.50 ELSE 8.75 END)), 0.0)::numeric as baseline_revenue
         FROM session_first sf
         JOIN sessions s ON sf.session_id = s.id
         LEFT JOIN session_prices sp ON sf.session_id = sp.session_id;`,
@@ -1525,15 +1558,26 @@ apiRouter.get("/movies/:id/hourly-breakdown", async (req, res) => {
 
       // 3. Fetch hourly seat transitions with both NET and GROSS metrics
       const transRes = await query(
-        `WITH ${getSessionPricesSqlCte()}
+        `WITH session_prices AS (
+          SELECT 
+            session_id,
+            COALESCE(
+              MIN(price) FILTER (WHERE is_default = true AND price > 0),
+              MIN(price) FILTER (WHERE price > 0 AND (ticket_type ILIKE '%normal%' OR ticket_type ILIKE '%adulto%' OR ticket_type ILIKE '%inteiro%' OR ticket_type ILIKE '%standard%') AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND (seats_count IS NULL OR seats_count = 1)),
+              MIN(price) FILTER (WHERE price > 0 AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND ticket_type NOT ILIKE '%crian%' AND ticket_type NOT ILIKE '%estud%' AND ticket_type NOT ILIKE '%sénior%' AND ticket_type NOT ILIKE '%senior%' AND (seats_count IS NULL OR seats_count = 1)),
+              AVG(price) FILTER (WHERE price > 0)
+            ) as avg_price
+          FROM session_ticket_prices
+          GROUP BY session_id
+        )
         SELECT 
           EXTRACT(HOUR FROM st.transition_timestamp AT TIME ZONE 'Europe/Lisbon')::int as lisbon_hour,
           COALESCE(SUM(st.newly_unavailable), 0)::int as gross_tickets,
-          COALESCE(SUM(st.newly_unavailable * COALESCE(sp.resolved_unit_price, CASE WHEN s.format ILIKE '%IMAX%' THEN 13.50 WHEN s.format ILIKE '%3D%' THEN 9.50 ELSE 8.75 END)), 0.0)::numeric as gross_revenue,
+          COALESCE(SUM(st.newly_unavailable * COALESCE(sp.avg_price, CASE WHEN s.format ILIKE '%IMAX%' THEN 13.50 WHEN s.format ILIKE '%3D%' THEN 9.50 ELSE 8.75 END)), 0.0)::numeric as gross_revenue,
           COALESCE(SUM(st.newly_available), 0)::int as returns_tickets,
-          COALESCE(SUM(st.newly_available * COALESCE(sp.resolved_unit_price, CASE WHEN s.format ILIKE '%IMAX%' THEN 13.50 WHEN s.format ILIKE '%3D%' THEN 9.50 ELSE 8.75 END)), 0.0)::numeric as returns_revenue,
+          COALESCE(SUM(st.newly_available * COALESCE(sp.avg_price, CASE WHEN s.format ILIKE '%IMAX%' THEN 13.50 WHEN s.format ILIKE '%3D%' THEN 9.50 ELSE 8.75 END)), 0.0)::numeric as returns_revenue,
           COALESCE(SUM(st.newly_unavailable - st.newly_available), 0)::int as net_tickets,
-          COALESCE(SUM((st.newly_unavailable - st.newly_available) * COALESCE(sp.resolved_unit_price, CASE WHEN s.format ILIKE '%IMAX%' THEN 13.50 WHEN s.format ILIKE '%3D%' THEN 9.50 ELSE 8.75 END)), 0.0)::numeric as net_revenue
+          COALESCE(SUM((st.newly_unavailable - st.newly_available) * COALESCE(sp.avg_price, CASE WHEN s.format ILIKE '%IMAX%' THEN 13.50 WHEN s.format ILIKE '%3D%' THEN 9.50 ELSE 8.75 END)), 0.0)::numeric as net_revenue
         FROM seat_transitions st
         JOIN sessions s ON st.session_id = s.id
         LEFT JOIN session_prices sp ON s.id = sp.session_id

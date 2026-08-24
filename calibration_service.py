@@ -15,7 +15,13 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Union
 
-from ica_ingestion import ICAMovieRecord, match_scraped_title_to_ica, normalize_title
+from ica_ingestion import (
+    ICAMovieRecord,
+    match_scraped_title_to_ica,
+    normalize_title,
+    are_titles_lenient_match,
+    calculate_title_similarity
+)
 
 log = logging.getLogger("calibration_service")
 
@@ -157,7 +163,7 @@ class CalibrationService:
     def update_from_ica(
         self,
         ica_records: List[ICAMovieRecord],
-        movie_baseline_prices: Optional[Dict[str, float]] = None,
+        movie_baseline_prices: Optional[Union[Dict[str, float], Dict[str, Any]]] = None,
         default_adult_price: float = DEFAULT_ADULT_PRICE_BASELINE,
         min_category_samples: int = 3,
         min_admissions_floor: int = 500,
@@ -166,16 +172,11 @@ class CalibrationService:
         """
         Updates dynamic calibration multipliers (gamma) using official ICA records.
         
-        Calculates:
-            gamma_movie = rec.atp / ref_price (where ref_price is the movie's actual admissions-weighted resolved unit price)
-            gamma_movie (accumulated) = EMA(gamma_movie, prev_gamma, alpha=0.70)
-            gamma_category = weighted_average(gamma_movie across qualifying movies in category)
-            
-        Guards:
-            - Clips gamma to [0.50, 1.30]
-            - Requires at least `min_category_samples` (default 3) qualifying movies with weekly_admissions >= `min_admissions_floor`
-              before updating a category factor from its default baseline.
-            - Accumulates movie-specific factors across weeks via Exponential Moving Average (EMA) rather than overwriting.
+        Supports dual-period observations per movie (weekly and weekend):
+        - Matches weekly ICA records against weekly resolved reference prices.
+        - Matches weekend ICA records against weekend resolved reference prices (Thu-Sun sessions).
+        - Applies sequential EMA updates per movie (weekly first, then weekend on top of the updated value).
+        - Counts each qualifying observation toward category sample count guards.
         """
         if not ica_records:
             return self.state.category_factors
@@ -184,41 +185,98 @@ class CalibrationService:
         category_weights: Dict[str, float] = {cat: 0.0 for cat in DEFAULT_CALIBRATION_FACTORS}
         category_counts: Dict[str, int] = {cat: 0 for cat in DEFAULT_CALIBRATION_FACTORS}
 
-        # Normalize movie_baseline_prices keys if provided
-        norm_baseline_prices: Dict[str, float] = {}
-        if movie_baseline_prices:
-            for k, v in movie_baseline_prices.items():
-                if v and float(v) > 0:
-                    norm_baseline_prices[normalize_title(str(k))] = float(v)
+        # Extract normalized weekly and weekend reference price maps
+        weekly_prices: Dict[str, float] = {}
+        weekend_prices: Dict[str, float] = {}
 
+        if movie_baseline_prices:
+            if isinstance(movie_baseline_prices, dict) and ("weekly" in movie_baseline_prices or "weekend" in movie_baseline_prices):
+                raw_weekly = movie_baseline_prices.get("weekly", {})
+                raw_weekend = movie_baseline_prices.get("weekend", {})
+                if isinstance(raw_weekly, dict):
+                    for k, v in raw_weekly.items():
+                        if v is not None and float(v) > 0:
+                            weekly_prices[normalize_title(str(k))] = float(v)
+                if isinstance(raw_weekend, dict):
+                    for k, v in raw_weekend.items():
+                        if v is not None and float(v) > 0:
+                            weekend_prices[normalize_title(str(k))] = float(v)
+            elif isinstance(movie_baseline_prices, dict):
+                # Flat map passed - use for both
+                for k, v in movie_baseline_prices.items():
+                    if v is not None and isinstance(v, (int, float, str)):
+                        try:
+                            fv = float(v)
+                            if fv > 0:
+                                norm_k = normalize_title(str(k))
+                                weekly_prices[norm_k] = fv
+                                weekend_prices[norm_k] = fv
+                        except (ValueError, TypeError):
+                            continue
+
+        def lookup_ref_price(norm_t: str, p_type: str) -> float:
+            target_map = weekend_prices if p_type == "weekend" else weekly_prices
+            fallback_map = weekly_prices if p_type == "weekend" else weekend_prices
+
+            # 1. Exact match in target map
+            if target_map and norm_t in target_map:
+                return target_map[norm_t]
+
+            # 2. Substring match in target map
+            if target_map:
+                for k, v in target_map.items():
+                    if k and (k in norm_t or norm_t in k):
+                        return v
+
+            # 3. Lenient fuzzy / stopword-relaxed match in target map
+            if target_map:
+                best_k: Optional[str] = None
+                best_sim: float = 0.0
+                for k in target_map:
+                    sim = calculate_title_similarity(norm_t, k)
+                    if sim > best_sim:
+                        best_sim = sim
+                        best_k = k
+                if best_k and best_sim >= 0.70:
+                    return target_map[best_k]
+
+            # 4. Fallback map (exact, substring, then lenient)
+            if fallback_map and norm_t in fallback_map:
+                return fallback_map[norm_t]
+            if fallback_map:
+                for k, v in fallback_map.items():
+                    if k and (k in norm_t or norm_t in k):
+                        return v
+                best_k = None
+                best_sim = 0.0
+                for k in fallback_map:
+                    sim = calculate_title_similarity(norm_t, k)
+                    if sim > best_sim:
+                        best_sim = sim
+                        best_k = k
+                if best_k and best_sim >= 0.70:
+                    return fallback_map[best_k]
+
+            return default_adult_price
+
+        # Active movie factors initialized from stored state
         movie_factors: Dict[str, float] = dict(self.state.movie_specific_factors)
 
-        for rec in ica_records:
+        def process_record(rec: ICAMovieRecord, p_type: str):
             if rec.atp <= 0 or rec.weekly_admissions <= 0:
-                continue
+                return
 
             norm_t = normalize_title(rec.title)
+            ref_price = lookup_ref_price(norm_t, p_type)
 
-            # Determine movie's actual reference price from DB, or fallback
-            ref_price = default_adult_price
-            if norm_baseline_prices:
-                if norm_t in norm_baseline_prices:
-                    ref_price = norm_baseline_prices[norm_t]
-                else:
-                    # Check substring match in provided prices
-                    for bp_key, bp_val in norm_baseline_prices.items():
-                        if bp_key and (bp_key in norm_t or norm_t in bp_key):
-                            ref_price = bp_val
-                            break
-
-            # Observed movie gamma for this report
-            gamma_obs = round(rec.atp / ref_price, 3)
+            # Observed movie gamma for this period report
+            gamma_obs = round(rec.atp / ref_price, 3) if ref_price > 0 else 1.0
             # Clip reasonable bounds [0.50, 1.30] to prevent extreme anomalies
             gamma_obs = max(0.50, min(1.30, gamma_obs))
 
             # Exponential Moving Average with existing stored factor if present
-            if norm_t in self.state.movie_specific_factors:
-                prev_gamma = self.state.movie_specific_factors[norm_t]
+            if norm_t in movie_factors:
+                prev_gamma = movie_factors[norm_t]
                 gamma_m = round(ema_alpha * gamma_obs + (1.0 - ema_alpha) * prev_gamma, 3)
             else:
                 gamma_m = gamma_obs
@@ -226,14 +284,25 @@ class CalibrationService:
             gamma_m = max(0.50, min(1.30, gamma_m))
             movie_factors[norm_t] = gamma_m
 
-            # Classify movie
+            # Category aggregation guard: each qualifying observation (weekly and weekend) counts separately
             cat = classify_movie_category(rec.title)
-            # Category aggregation guard: require admissions floor to count toward category factor
             if rec.weekly_admissions >= min_admissions_floor:
                 weight = float(rec.weekly_admissions)
                 category_totals[cat] += gamma_m * weight
                 category_weights[cat] += weight
                 category_counts[cat] += 1
+
+        # Separate records into weekly and weekend groups for sequential processing
+        weekly_records = [r for r in ica_records if getattr(r, "period_type", "weekly") != "weekend"]
+        weekend_records = [r for r in ica_records if getattr(r, "period_type", "weekly") == "weekend"]
+
+        # Step 1: Process weekly records first
+        for rec in weekly_records:
+            process_record(rec, "weekly")
+
+        # Step 2: Process weekend records sequentially on top
+        for rec in weekend_records:
+            process_record(rec, "weekend")
 
         # Compute category averages with minimum sample count guard
         new_category_factors: Dict[str, float] = {}
@@ -276,16 +345,28 @@ class CalibrationService:
 
         if movie_title:
             norm_t = normalize_title(movie_title)
-            # Check direct movie-specific match
+            # 1. Check direct movie-specific match
             if norm_t in self.state.movie_specific_factors:
                 return self.state.movie_specific_factors[norm_t]
 
-            # Fuzzy match against known movie factors
+            # 2. Substring match against known movie factors
             for known_norm, factor in self.state.movie_specific_factors.items():
                 if norm_t == known_norm or norm_t in known_norm or known_norm in norm_t:
                     return factor
 
-            # Classify by title and genres
+            # 3. Lenient / stopword-relaxed similarity match against known movie factors
+            best_known: Optional[str] = None
+            best_sim: float = 0.0
+            for known_norm in self.state.movie_specific_factors:
+                sim = calculate_title_similarity(norm_t, known_norm)
+                if sim > best_sim:
+                    best_sim = sim
+                    best_known = known_norm
+
+            if best_known and best_sim >= 0.70:
+                return self.state.movie_specific_factors[best_known]
+
+            # 4. Classify by title and genres
             classified_cat = classify_movie_category(movie_title, genres)
             return self.state.category_factors.get(classified_cat, DEFAULT_CALIBRATION_FACTORS[classified_cat])
 
