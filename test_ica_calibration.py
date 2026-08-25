@@ -177,8 +177,22 @@ class TestICAIngestionAndCalibration(unittest.TestCase):
             self.assertEqual(cal.state.category_factors[CATEGORY_ACTION_GENERAL], 0.90)
             self.assertEqual(cal.state.category_factors[CATEGORY_DRAMA_ADULT], 0.93)
 
-            # Update from official ICA records
-            updated = cal.update_from_ica(self.sample_records, default_adult_price=7.60)
+            # Update from official ICA records with reference price map
+            movie_prices = {
+                "weekly": {
+                    "Patrulha Pata: O Filme dos Dinossauros": 7.60,
+                    "Homem-Aranha: Um Novo Dia": 7.60,
+                    "A Odisseia": 7.60,
+                    "Mínimos e Monstros": 7.60,
+                    "O Fim de Oak Street": 7.60,
+                    "Apenas Uma Noite": 7.60,
+                    "Playback": 7.60,
+                    "Ooh Lá Lá 2": 7.60,
+                    "Toy Story 5": 7.60,
+                    "Vaiana": 7.60,
+                }
+            }
+            updated = cal.update_from_ica(self.sample_records, movie_baseline_prices=movie_prices)
             
             # Family animation gamma: average ATP ~6.35 / 7.60 = 0.835, blended ~0.82-0.84
             family_gamma = updated[CATEGORY_FAMILY_ANIMATION]
@@ -307,8 +321,9 @@ class TestICAIngestionAndCalibration(unittest.TestCase):
             # Filter records to only 1 Drama movie (e.g. O Fim de Oak Street)
             one_drama_record = [r for r in self.sample_records if "Oak Street" in r.title]
             
+            movie_prices = {"weekly": {"O Fim de Oak Street": 7.60}}
             # Update with min_category_samples = 3
-            cal.update_from_ica(one_drama_record, min_category_samples=3)
+            cal.update_from_ica(one_drama_record, movie_baseline_prices=movie_prices, min_category_samples=3)
 
             # Drama / Adult should NOT be updated because sample count is 1 < 3
             self.assertEqual(cal.state.category_factors[CATEGORY_DRAMA_ADULT], 0.93)
@@ -327,7 +342,8 @@ class TestICAIngestionAndCalibration(unittest.TestCase):
                 ICAMovieRecord(rank=1, title="Filme Quase Grátis", normalized_title="filme quase gratis", weekly_gross_revenue=100.0, weekly_admissions=1000, atp=0.10),
                 ICAMovieRecord(rank=2, title="Filme Hiper Caro", normalized_title="filme hiper caro", weekly_gross_revenue=100000.0, weekly_admissions=1000, atp=100.0)
             ]
-            cal.update_from_ica(anomalous_records, default_adult_price=7.60)
+            movie_prices = {"weekly": {"Filme Quase Grátis": 7.60, "Filme Hiper Caro": 7.60}}
+            cal.update_from_ica(anomalous_records, movie_baseline_prices=movie_prices)
             self.assertEqual(cal.state.movie_specific_factors["filme quase gratis"], 0.50)
             self.assertEqual(cal.state.movie_specific_factors["filme hiper caro"], 1.30)
         finally:
@@ -468,7 +484,7 @@ class TestICAIngestionAndCalibration(unittest.TestCase):
         self.assertEqual(weekend_recs[1].period_type, "weekend")
 
     def test_dual_period_calibration_sequential_ema_and_sample_counts(self):
-        """Tests that update_from_ica matches period-specific reference prices and applies sequential EMA updates."""
+        """Tests that update_from_ica matches period-specific reference prices and applies a single combined admissions-weighted EMA update."""
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
             tmp_path = tmp.name
 
@@ -507,10 +523,10 @@ class TestICAIngestionAndCalibration(unittest.TestCase):
                 }
             }
 
-            # Step 1: weekly obs gamma = 9.15 / 10.29 = 0.889
-            # Step 2: weekend obs gamma = 9.57 / 10.50 = 0.911
-            # Sequential EMA (alpha=0.70):
-            # gamma_m = 0.70 * 0.911 + 0.30 * 0.889 = 0.6377 + 0.2667 = 0.904
+            # Step 1: weekly obs gamma = 9.15 / 10.29 = 0.889 (adm = 76220)
+            # Step 2: weekend obs gamma = 9.57 / 10.50 = 0.911 (adm = 47000)
+            # Admissions-weighted combined gamma_obs = (0.889 * 76220 + 0.911 * 47000) / (76220 + 47000) = 0.897
+            # Single EMA update against no stored prior -> final_gamma = 0.897
             cal.update_from_ica(
                 [weekly_odisseia, weekend_odisseia],
                 movie_baseline_prices=movie_prices,
@@ -518,10 +534,43 @@ class TestICAIngestionAndCalibration(unittest.TestCase):
             )
 
             final_gamma = cal.state.movie_specific_factors["a odisseia"]
-            self.assertAlmostEqual(final_gamma, 0.904, places=2)
+            self.assertAlmostEqual(final_gamma, 0.897, places=2)
 
             # Category sample counts should have counted 2 qualifying observations (weekly + weekend)
             self.assertEqual(cal.state.sample_counts[CATEGORY_ACTION_GENERAL], 2)
+        finally:
+            if os.path.exists(tmp_path):
+                os.remove(tmp_path)
+
+    def test_missing_reference_price_skips_observation(self):
+        """Tests that observations without a matching reference price are skipped (not mapped to default price)."""
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+            tmp_path = tmp.name
+
+        try:
+            cal = CalibrationService(config_path=tmp_path)
+            # Record for a movie with no reference price in movie_prices
+            unknown_movie = ICAMovieRecord(
+                rank=1,
+                title="Filme Desconhecido Sem Preco",
+                normalized_title="filme desconhecido sem preco",
+                weekly_gross_revenue=50000.0,
+                weekly_admissions=5000,
+                period_type="weekly",
+                atp=10.00
+            )
+
+            # movie_prices does NOT contain "Filme Desconhecido Sem Preco"
+            movie_prices = {
+                "weekly": {
+                    "A Odisseia": 10.29
+                }
+            }
+
+            cal.update_from_ica([unknown_movie], movie_baseline_prices=movie_prices)
+
+            # Verify that the movie was NOT added to movie_specific_factors
+            self.assertNotIn("filme desconhecido sem preco", cal.state.movie_specific_factors)
         finally:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)

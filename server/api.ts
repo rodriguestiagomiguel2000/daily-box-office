@@ -13,7 +13,8 @@ import {
   resolveSessionUnitPriceJs, 
   recalculateAllPerformanceSnapshots,
   getMovieResolvedPricesForCalibration,
-  syncCalibrationFactorsToDb
+  syncCalibrationFactorsToDb,
+  computeRoomStructuralBlocks
 } from "./revenue";
 import { computeMovieEODForecast, runHistoricalBacktests, getBacktestSummaryMetrics } from "./forecast";
 
@@ -323,10 +324,18 @@ apiRouter.get("/movies/:id/detail", async (req, res) => {
         c.region as cinema_region,
         r.id as room_id,
         r.name as room_name,
-        r.capacity as room_capacity
+        r.capacity as room_capacity,
+        COALESCE(sb.blocked_count, 0)::int as structural_blocked_seats
        FROM sessions s
        JOIN cinemas c ON s.cinema_id = c.id
        LEFT JOIN rooms r ON s.room_id = r.id
+       LEFT JOIN LATERAL (
+         SELECT COUNT(*)::int as blocked_count
+         FROM room_structural_blocks rsb
+         WHERE rsb.theater_room_uuid = r.external_id
+           AND rsb.first_observed_at::date <= NULLIF(s.operational_date, '')::date
+           AND (rsb.removed_at IS NULL OR rsb.removed_at::date > NULLIF(s.operational_date, '')::date)
+       ) sb ON true
        WHERE s.movie_id = $1
        ORDER BY c.name ASC, s.starts_at ASC;`,
       [movieId]
@@ -465,6 +474,7 @@ apiRouter.get("/movies/:id/detail", async (req, res) => {
         sellable_seats: sellable,
         available_seats: available,
         unavailable_seats: unavailable,
+        structural_blocked_seats: Number(sess.structural_blocked_seats || 0),
         occupancy_proxy: occProxy,
         invariant_valid: invValid,
         estimated_revenue: Math.round(sessionRev * 100) / 100,
@@ -571,11 +581,19 @@ apiRouter.get("/sessions/:id/history", async (req, res) => {
         r.name as room_name,
         r.capacity as room_capacity,
         m.id as movie_id,
-        m.title as movie_title
+        m.title as movie_title,
+        COALESCE(sb.blocked_count, 0)::int as structural_blocked_seats
        FROM sessions s
        JOIN cinemas c ON s.cinema_id = c.id
        JOIN movies m ON s.movie_id = m.id
        LEFT JOIN rooms r ON s.room_id = r.id
+       LEFT JOIN LATERAL (
+         SELECT COUNT(*)::int as blocked_count
+         FROM room_structural_blocks rsb
+         WHERE rsb.theater_room_uuid = r.external_id
+           AND rsb.first_observed_at::date <= NULLIF(s.operational_date, '')::date
+           AND (rsb.removed_at IS NULL OR rsb.removed_at::date > NULLIF(s.operational_date, '')::date)
+       ) sb ON true
        WHERE s.id = $1;`,
       [sessionId]
     );
@@ -592,7 +610,7 @@ apiRouter.get("/sessions/:id/history", async (req, res) => {
     );
     const latestSnap = latestSnapRes.rows[0] || null;
 
-    // 3. Fetch all snapshots chronologically (oldest -> newest) with transition deltas
+    // 3. Fetch all snapshots chronologically (oldest -> newest) with transition deltas and historical blocked count
     const snapshotsRes = await query(
       `SELECT 
         ss.id,
@@ -607,13 +625,28 @@ apiRouter.get("/sessions/:id/history", async (req, res) => {
         ss.invariant_valid,
         COALESCE(st.newly_unavailable, 0) as newly_unavailable,
         COALESCE(st.newly_available, 0) as newly_available,
-        COALESCE(st.sales_velocity_proxy, 0) as sales_velocity_proxy
+        COALESCE(st.sales_velocity_proxy, 0) as sales_velocity_proxy,
+        COALESCE(sb.blocked_count, 0)::int as structural_blocked_seats
        FROM seat_snapshots ss
+       JOIN sessions s ON ss.session_id = s.id
+       LEFT JOIN rooms r ON s.room_id = r.id
+       LEFT JOIN LATERAL (
+         SELECT COUNT(*)::int as blocked_count
+         FROM room_structural_blocks rsb
+         WHERE rsb.theater_room_uuid = r.external_id
+           AND rsb.first_observed_at <= ss.collected_at
+           AND (rsb.removed_at IS NULL OR rsb.removed_at > ss.collected_at)
+       ) sb ON true
        LEFT JOIN seat_transitions st ON st.curr_snapshot_id = ss.id
        WHERE ss.session_id = $1
        ORDER BY ss.collected_at ASC;`,
       [sessionId]
     );
+
+    const latestUnavailable = latestSnap ? Number(latestSnap.unavailable_seats) : 0;
+    const latestBlocked = Number(sess.structural_blocked_seats || 0);
+    // Structural block subtraction temporarily disabled across the app (157/362 seats in NOS Colombo IMAX flagged falsely)
+    const latestEffective = latestUnavailable;
 
     res.json({
       session: {
@@ -627,30 +660,232 @@ apiRouter.get("/sessions/:id/history", async (req, res) => {
         operational_date: sess.operational_date,
         sellable_capacity: latestSnap ? latestSnap.sellable_seats : (sess.room_capacity || 0),
         available_seats: latestSnap ? latestSnap.available_seats : 0,
-        unavailable_seats: latestSnap ? latestSnap.unavailable_seats : 0,
+        unavailable_seats: latestUnavailable,
+        structural_blocked_seats: latestBlocked,
+        effective_unavailable_seats: latestEffective,
         occupancy_proxy: latestSnap ? latestSnap.occupancy_proxy : 0,
         latest_collected_at: latestSnap ? latestSnap.collected_at : null,
         movie_title: sess.movie_title,
       },
-      snapshots: snapshotsRes.rows.map((s) => ({
-        id: s.id,
-        collected_at: new Date(s.collected_at).toISOString(),
-        total_seats: s.total_seats,
-        sellable_seats: s.sellable_seats,
-        available_seats: s.available_seats,
-        unavailable_seats: s.unavailable_seats,
-        safety_seats: s.safety_seats,
-        unknown_seats: s.unknown_seats,
-        occupancy_proxy: parseFloat(s.occupancy_proxy) || 0,
-        invariant_valid: Boolean(s.invariant_valid),
-        newly_unavailable: parseInt(s.newly_unavailable, 10) || 0,
-        newly_available: parseInt(s.newly_available, 10) || 0,
-        sales_velocity_proxy: parseFloat(s.sales_velocity_proxy) || 0,
-      })),
+      snapshots: snapshotsRes.rows.map((s) => {
+        const rawUnavail = Number(s.unavailable_seats);
+        const blocked = Number(s.structural_blocked_seats || 0);
+        // Structural block subtraction temporarily disabled across the app (157/362 seats in NOS Colombo IMAX flagged falsely)
+        const effective = rawUnavail;
+        return {
+          id: s.id,
+          collected_at: new Date(s.collected_at).toISOString(),
+          total_seats: s.total_seats,
+          sellable_seats: s.sellable_seats,
+          available_seats: s.available_seats,
+          unavailable_seats: rawUnavail,
+          structural_blocked_seats: blocked,
+          effective_unavailable_seats: effective,
+          safety_seats: s.safety_seats,
+          unknown_seats: s.unknown_seats,
+          occupancy_proxy: parseFloat(s.occupancy_proxy) || 0,
+          invariant_valid: Boolean(s.invariant_valid),
+          newly_unavailable: parseInt(s.newly_unavailable, 10) || 0,
+          newly_available: parseInt(s.newly_available, 10) || 0,
+          sales_velocity_proxy: parseFloat(s.sales_velocity_proxy) || 0,
+        };
+      }),
     });
   } catch (err: any) {
     console.error("Error fetching session history:", err);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/sessions/:id/seat-map - Per-session seat-map visualization layout & states
+apiRouter.get("/sessions/:id/seat-map", async (req, res) => {
+  try {
+    const sessionId = parseInt(req.params.id, 10);
+    if (isNaN(sessionId)) {
+      return res.status(400).json({ error: "Invalid session ID" });
+    }
+    const requestedDate = req.query.date ? String(req.query.date).trim() : null;
+
+    // 1. Fetch session details
+    const sessionRes = await query(
+      `SELECT 
+        s.id as session_id,
+        s.external_session_id,
+        s.starts_at,
+        s.operational_date,
+        s.format,
+        c.name as cinema_name,
+        r.name as room_name,
+        r.external_id as room_external_id,
+        m.title as movie_title
+       FROM sessions s
+       JOIN cinemas c ON s.cinema_id = c.id
+       JOIN movies m ON s.movie_id = m.id
+       LEFT JOIN rooms r ON s.room_id = r.id
+       WHERE s.id = $1;`,
+      [sessionId]
+    );
+
+    if (sessionRes.rows.length === 0) {
+      return res.status(404).json({ error: "Session not found" });
+    }
+    const sess = sessionRes.rows[0];
+
+    // 2. Find last seat_snapshot for this session on the given operational date (or latest overall if not found)
+    let snapshotRes;
+    if (requestedDate) {
+      snapshotRes = await query(
+        `SELECT * FROM seat_snapshots 
+         WHERE session_id = $1 
+           AND (DATE(collected_at AT TIME ZONE 'Europe/Lisbon')::text = $2 OR DATE(collected_at)::text = $2)
+         ORDER BY collected_at DESC LIMIT 1;`,
+        [sessionId, requestedDate]
+      );
+    }
+    
+    if (!snapshotRes || snapshotRes.rows.length === 0) {
+      snapshotRes = await query(
+        `SELECT * FROM seat_snapshots 
+         WHERE session_id = $1 
+         ORDER BY collected_at DESC LIMIT 1;`,
+        [sessionId]
+      );
+    }
+
+    if (snapshotRes.rows.length === 0) {
+      return res.json({
+        session: {
+          session_id: sess.session_id,
+          external_session_id: sess.external_session_id,
+          starts_at: sess.starts_at,
+          operational_date: sess.operational_date,
+          movie_title: sess.movie_title,
+          cinema_name: sess.cinema_name,
+          room_name: sess.room_name || "Sala",
+          format: sess.format || "2D",
+          snapshot_collected_at: null,
+          snapshot_id: null,
+          total_seats: 0,
+          sold_count: 0,
+          blocked_count: 0,
+          free_count: 0,
+          safety_count: 0,
+          accessible_count: 0,
+        },
+        seats: []
+      });
+    }
+
+    const snapshot = snapshotRes.rows[0];
+
+    // 3. Fetch seat states for this snapshot and join room_structural_blocks
+    const seatStatesRes = await query(
+      `SELECT 
+        st.id,
+        st.queue,
+        st.row,
+        st.col,
+        st.seat_number,
+        st.stable_seat_key,
+        st.is_seat,
+        st.is_available,
+        st.is_safety_seat,
+        st.is_premium,
+        st.is_vip,
+        st.is_love_seat,
+        st.is_handicapped,
+        st.state,
+        (rsb.stable_seat_key IS NOT NULL) as is_blocked
+       FROM seat_states st
+       LEFT JOIN room_structural_blocks rsb 
+         ON rsb.theater_room_uuid = COALESCE(st.theater_room_uuid, $1)
+        AND rsb.stable_seat_key = st.stable_seat_key
+        AND rsb.first_observed_at <= $3
+        AND (rsb.removed_at IS NULL OR rsb.removed_at > $3)
+       WHERE st.snapshot_id = $2
+       ORDER BY st.row ASC, st.col ASC, st.seat_number ASC;`,
+      [sess.room_external_id || "", snapshot.id, snapshot.collected_at]
+    );
+
+    let sold_count = 0;
+    let blocked_count = 0;
+    let free_count = 0;
+    let safety_count = 0;
+    let accessible_count = 0;
+    let total_seats = 0;
+
+    const classifiedSeats = seatStatesRes.rows.map((seat) => {
+      const isSeat = Boolean(seat.is_seat);
+      const isAvailable = Boolean(seat.is_available);
+      const isSafety = Boolean(seat.is_safety_seat);
+      const isBlocked = Boolean(seat.is_blocked);
+      const isHandicapped = Boolean(seat.is_handicapped);
+
+      let classification: "safety" | "blocked" | "sold" | "free";
+      if (isSafety) {
+        classification = "safety";
+      } else if (!isAvailable && isBlocked) {
+        classification = "blocked";
+      } else if (!isAvailable) {
+        classification = "sold";
+      } else {
+        classification = "free";
+      }
+
+      if (isSeat) {
+        total_seats++;
+        if (isHandicapped) accessible_count++;
+        if (classification === "safety") safety_count++;
+        else if (classification === "blocked") blocked_count++;
+        else if (classification === "sold") sold_count++;
+        else if (classification === "free") free_count++;
+      }
+
+      return {
+        id: seat.id,
+        queue: seat.queue || "",
+        row: Number(seat.row) || 0,
+        col: Number(seat.col) || 0,
+        seat_number: Number(seat.seat_number) || 0,
+        stable_seat_key: seat.stable_seat_key,
+        is_seat: isSeat,
+        is_available: isAvailable,
+        is_handicapped: isHandicapped,
+        is_safety_seat: isSafety,
+        is_premium: Boolean(seat.is_premium),
+        is_vip: Boolean(seat.is_vip),
+        is_love_seat: Boolean(seat.is_love_seat),
+        state: seat.state,
+        is_blocked: isBlocked,
+        classification,
+        is_accessible: isHandicapped,
+      };
+    });
+
+    return res.json({
+      session: {
+        session_id: sess.session_id,
+        external_session_id: sess.external_session_id,
+        starts_at: sess.starts_at,
+        operational_date: sess.operational_date,
+        movie_title: sess.movie_title,
+        cinema_name: sess.cinema_name,
+        room_name: sess.room_name || "Sala",
+        format: sess.format || "2D",
+        snapshot_collected_at: snapshot.collected_at ? new Date(snapshot.collected_at).toISOString() : null,
+        snapshot_id: snapshot.id,
+        total_seats,
+        sold_count,
+        blocked_count,
+        free_count,
+        safety_count,
+        accessible_count,
+      },
+      seats: classifiedSeats,
+    });
+  } catch (err: any) {
+    console.error("Error fetching seat map:", err);
+    return res.status(500).json({ error: err.message });
   }
 });
 
@@ -771,6 +1006,90 @@ apiRouter.post("/collector/cron", async (req, res) => {
       success: false,
       error: err?.message || "Internal server error during data collection",
     });
+  }
+});
+
+// POST /api/collector/room-baseline-blocks - Trigger structural seat block calculation
+apiRouter.post("/collector/room-baseline-blocks", async (req, res) => {
+  try {
+    console.log("[API] Triggering room structural baseline block calculation...");
+    const force = req.body?.force !== undefined ? Boolean(req.body.force) : true;
+    const intervalHours = req.body?.intervalHours ? Number(req.body.intervalHours) : 6;
+    const result = await computeRoomStructuralBlocks({ force, intervalHours });
+    // Recalculate performance snapshots using updated structural block list
+    const recalculatedCount = await recalculateAllPerformanceSnapshots();
+    return res.json({
+      success: true,
+      message: result.skipped ? "Room structural baseline calculation skipped (too recent)" : "Room structural baseline calculation completed successfully",
+      result,
+      recalculatedSnapshots: recalculatedCount
+    });
+  } catch (err: any) {
+    console.error("[API] Error calculating room baseline blocks:", err);
+    return res.status(500).json({ success: false, error: err.message });
+  }
+});
+
+// GET /api/collector/room-baseline-blocks - Get current structural block list summary
+apiRouter.get("/collector/room-baseline-blocks", async (req, res) => {
+  try {
+    const summaryRes = await query(`
+      SELECT 
+        rsb.theater_room_uuid,
+        r.name as room_name,
+        c.name as cinema_name,
+        COUNT(*)::int as total_blocked_seats,
+        array_agg(rsb.stable_seat_key) as blocked_seats,
+        MIN(rsb.first_observed_at) as earliest_observed,
+        MAX(rsb.last_observed_at) as latest_observed
+      FROM room_structural_blocks rsb
+      LEFT JOIN rooms r ON r.external_id = rsb.theater_room_uuid
+      LEFT JOIN cinemas c ON r.cinema_id = c.id
+      WHERE rsb.removed_at IS NULL
+      GROUP BY rsb.theater_room_uuid, r.name, c.name
+      ORDER BY total_blocked_seats DESC;
+    `);
+    
+    const overallRes = await query(`
+      SELECT COUNT(*)::int as total_blocked_seats, COUNT(DISTINCT theater_room_uuid)::int as total_rooms
+      FROM room_structural_blocks
+      WHERE removed_at IS NULL;
+    `);
+
+    const metaRes = await query(`
+      SELECT last_computed_at FROM room_structural_blocks_meta WHERE id = 1;
+    `).catch(() => ({ rows: [] }));
+
+    const auditRes = await query(`
+      SELECT 
+        a.id,
+        a.theater_room_uuid,
+        r.name as room_name,
+        c.name as cinema_name,
+        a.stable_seat_key,
+        a.action,
+        a.reason,
+        a.observed_count,
+        a.qualifying_sessions,
+        a.created_at
+      FROM room_structural_blocks_audit_log a
+      LEFT JOIN rooms r ON r.external_id = a.theater_room_uuid
+      LEFT JOIN cinemas c ON r.cinema_id = c.id
+      ORDER BY a.created_at DESC, a.id DESC
+      LIMIT 100;
+    `).catch(() => ({ rows: [] }));
+
+    return res.json({
+      success: true,
+      totalRoomsWithBlocks: overallRes.rows[0]?.total_rooms || 0,
+      totalBlockedSeats: overallRes.rows[0]?.total_blocked_seats || 0,
+      lastComputedAt: metaRes.rows[0]?.last_computed_at || null,
+      rooms: summaryRes.rows,
+      recentAuditLogs: auditRes.rows
+    });
+  } catch (err: any) {
+    console.error("[API] Error fetching room baseline blocks:", err);
+    return res.status(500).json({ success: false, error: err.message });
   }
 });
 
@@ -2356,6 +2675,61 @@ apiRouter.post("/ingestion/trigger-ica", async (req, res) => {
     });
   } catch (err: any) {
     console.error("Error triggering ICA raw ingestion & calibration:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/ingestion/repair-ica-calibration - One-off repair resetting factors to weekly-only ICA baseline
+apiRouter.post("/ingestion/repair-ica-calibration", async (req, res) => {
+  try {
+    await query("DELETE FROM calibration_factors WHERE movie_id IS NOT NULL;");
+    const moviePrices = await getMovieResolvedPricesForCalibration();
+    const pricesPayload = JSON.stringify({ weekly: moviePrices.weekly });
+
+    const calibrationOutput = await new Promise<any>((resolve, reject) => {
+      const py = spawn(
+        "python3",
+        ["run_ica_calibration_update.py", "--prices-json", pricesPayload, "--weekly-only", "--reset-first"],
+        { cwd: process.cwd() }
+      );
+
+      let stdout = "";
+      let stderr = "";
+
+      py.stdout.on("data", (d) => (stdout += d.toString()));
+      py.stderr.on("data", (d) => (stderr += d.toString()));
+
+      py.on("close", (code) => {
+        if (code !== 0) {
+          return reject(new Error(`ICA calibration repair failed (exit code ${code}): ${stderr || stdout}`));
+        }
+        try {
+          const parsed = JSON.parse(stdout.trim());
+          resolve(parsed);
+        } catch (jsonErr: any) {
+          reject(new Error(`Failed to parse ICA repair output: ${stdout || jsonErr.message}`));
+        }
+      });
+    });
+
+    const syncStats = await syncCalibrationFactorsToDb(calibrationOutput);
+
+    const targetMovies = await query(
+      `SELECT cf.id, cf.movie_id, m.title, cf.category, cf.gamma, cf.sample_count, cf.updated_at
+       FROM calibration_factors cf
+       JOIN movies m ON cf.movie_id = m.id
+       WHERE m.title ILIKE '%Homem-Aranha%' OR m.title ILIKE '%Odisseia%' OR m.title ILIKE '%Patrulha%'
+       ORDER BY m.title;`
+    );
+
+    res.json({
+      success: true,
+      message: "ICA calibration factors reset and recomputed using weekly-only records.",
+      repaired_movies: targetMovies.rows,
+      syncStats,
+    });
+  } catch (err: any) {
+    console.error("Error repairing ICA calibration factors:", err);
     res.status(500).json({ error: err.message });
   }
 });

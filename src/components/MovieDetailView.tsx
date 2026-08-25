@@ -1565,7 +1565,11 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
                     </tr>
                   ) : (
                     filteredSessions.map((sess) => {
-                      const occ = sess.occupancy_proxy * 100;
+                      const blocked = sess.structural_blocked_seats || 0;
+                      const rawOcc = sess.sellable_seats > 0 ? (sess.unavailable_seats / sess.sellable_seats) * 100 : (sess.occupancy_proxy * 100);
+                      const effectiveCapacity = Math.max(1, sess.sellable_seats - blocked);
+                      const effectiveUnavailable = Math.max(0, sess.unavailable_seats - blocked);
+                      const effectiveOcc = (effectiveUnavailable / effectiveCapacity) * 100;
                       return (
                         <tr
                           key={sess.session_id}
@@ -1614,17 +1618,39 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
                           <td className="py-3 px-3 text-right text-emerald-400 font-mono">
                             {sess.available_seats}
                           </td>
-                          <td className="py-3 px-3 text-right font-bold text-cyan-300 font-mono">
-                            {sess.unavailable_seats}
+                          <td className="py-3 px-3 text-right font-mono">
+                            <div className="font-bold text-cyan-300">
+                              {sess.unavailable_seats}
+                            </div>
+                            {sess.structural_blocked_seats !== undefined && sess.structural_blocked_seats > 0 && (
+                              <div className="text-[10px] text-amber-400/90 font-sans tracking-tight">
+                                of which {sess.structural_blocked_seats} blocked
+                              </div>
+                            )}
                           </td>
                           <td className="py-3 px-3 text-right font-mono">
-                            <span
-                              className={`font-semibold ${
-                                occ > 50 ? "text-amber-400" : occ > 20 ? "text-cyan-400" : "text-slate-300"
-                              }`}
-                            >
-                              {occ.toFixed(1)}%
-                            </span>
+                            {sess.structural_blocked_seats !== undefined && sess.structural_blocked_seats > 0 ? (
+                              <div>
+                                <div
+                                  className={`font-semibold ${
+                                    effectiveOcc > 50 ? "text-amber-400" : effectiveOcc > 20 ? "text-cyan-400" : "text-slate-300"
+                                  }`}
+                                >
+                                  {effectiveOcc.toFixed(1)}%
+                                </div>
+                                <div className="text-[10px] text-slate-500 font-sans tracking-tight">
+                                  {rawOcc.toFixed(1)}% raw
+                                </div>
+                              </div>
+                            ) : (
+                              <span
+                                className={`font-semibold ${
+                                  rawOcc > 50 ? "text-amber-400" : rawOcc > 20 ? "text-cyan-400" : "text-slate-300"
+                                }`}
+                              >
+                                {rawOcc.toFixed(1)}%
+                              </span>
+                            )}
                           </td>
                           <td className="py-3 px-3 text-right font-mono text-emerald-400">
                             {sess.estimated_revenue.toFixed(2)} €

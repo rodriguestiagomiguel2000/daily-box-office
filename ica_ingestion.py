@@ -147,16 +147,7 @@ def calculate_title_similarity(title1: str, title2: str) -> float:
     if nums1 and nums2 and nums1 != nums2:
         return 0.0
 
-    # 2. Direct Substring / Containment
-    if norm1 in norm2 or norm2 in norm1:
-        shorter = min(norm1, norm2, key=len)
-        longer = max(norm1, norm2, key=len)
-        containment_ratio = len(shorter) / len(longer)
-        # High confidence for containment if shorter is meaningful
-        if len(shorter) >= 5:
-            return max(0.88, containment_ratio)
-
-    # 3. Core content token comparison (stripping Portuguese/English stopwords like 'os', 'e', 'de', 'the')
+    # 2. Core content token comparison (stripping Portuguese/English stopwords like 'os', 'e', 'de', 'the')
     core_tokens1 = extract_title_tokens(norm1, strip_stopwords=True)
     core_tokens2 = extract_title_tokens(norm2, strip_stopwords=True)
 
@@ -166,6 +157,15 @@ def calculate_title_similarity(title1: str, title2: str) -> float:
         #       "Mínimos e Monstros"    -> ['minimos', 'monstros']
         if core_tokens1 == core_tokens2:
             return 0.98
+
+    # 3. Direct Substring / Containment
+    if norm1 in norm2 or norm2 in norm1:
+        shorter = min(norm1, norm2, key=len)
+        longer = max(norm1, norm2, key=len)
+        containment_ratio = len(shorter) / len(longer)
+        # High confidence for containment if shorter is meaningful
+        if len(shorter) >= 5:
+            return max(0.88, containment_ratio)
 
         set1 = set(core_tokens1)
         set2 = set(core_tokens2)

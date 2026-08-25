@@ -73,12 +73,14 @@ class BoxOfficeAggregator:
         for s in latest_sessions.values():
             total_sellable += s.sellable_seats
             total_available += s.available_seats
-            total_unavailable += s.unavailable_seats
+            # Structural block subtraction temporarily disabled across the app (157/362 seats in NOS Colombo IMAX flagged falsely)
+            effective_unavail = s.unavailable_seats
+            total_unavailable += effective_unavail
             total_safety += s.safety_seats
             total_unknown += s.unknown_seats
             
             # Revenue calculation (derived estimate with category gamma calibration)
-            effective_sold = s.estimated_sold_seats if s.estimated_sold_seats > 0 else s.unavailable_seats
+            effective_sold = s.estimated_sold_seats if s.estimated_sold_seats > 0 else effective_unavail
             total_revenue += RevenueEstimator.estimate_session_revenue(
                 sold_seats=effective_sold,
                 ticket_types=s.ticket_types,

@@ -1,4 +1,5 @@
 import { executeCollectionRun, getActiveProgress, CollectorJobResult } from "./collector";
+import { computeRoomStructuralBlocks } from "./revenue";
 
 class CollectorScheduler {
   private intervalMinutes: number = 15;
@@ -69,6 +70,12 @@ class CollectorScheduler {
       console.log(`Executing ${triggerSource} collection run...`);
       const result = await executeCollectionRun({ triggerSource });
       this.lastRunResult = result;
+
+      // Trigger background recomputation of structural seat blocks (throttled internally to 6 hours)
+      computeRoomStructuralBlocks().catch((err) => {
+        console.error("[Scheduler] Error updating structural seat blocks:", err);
+      });
+
       return result;
     } catch (err: any) {
       console.error(`Collection run (${triggerSource}) encountered error:`, err);

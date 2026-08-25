@@ -277,6 +277,37 @@ export async function runMigrations(): Promise<void> {
       ('Action / General', 0.90, 0, NOW()),
       ('Drama / Adult', 0.93, 0, NOW())
     ON CONFLICT (category) WHERE movie_id IS NULL DO NOTHING;
+
+    -- 14. Room Structural Blocks (Permanently blocked seats: broken or staff-reserved)
+    CREATE TABLE IF NOT EXISTS room_structural_blocks (
+      theater_room_uuid VARCHAR(100) NOT NULL,
+      stable_seat_key VARCHAR(150) NOT NULL,
+      low_occupancy_observations INT NOT NULL,
+      first_observed_at TIMESTAMPTZ NOT NULL,
+      last_observed_at TIMESTAMPTZ NOT NULL,
+      removed_at TIMESTAMPTZ NULL,
+      PRIMARY KEY (theater_room_uuid, stable_seat_key)
+    );
+    ALTER TABLE room_structural_blocks ADD COLUMN IF NOT EXISTS removed_at TIMESTAMPTZ NULL;
+    CREATE INDEX IF NOT EXISTS idx_room_structural_blocks_room ON room_structural_blocks(theater_room_uuid);
+
+    CREATE TABLE IF NOT EXISTS room_structural_blocks_meta (
+      id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+      last_computed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS room_structural_blocks_audit_log (
+      id SERIAL PRIMARY KEY,
+      theater_room_uuid VARCHAR(100) NOT NULL,
+      stable_seat_key VARCHAR(150) NOT NULL,
+      action VARCHAR(20) NOT NULL, -- 'ADDED' | 'REMOVED'
+      reason TEXT,
+      observed_count INT,
+      qualifying_sessions INT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_rsb_audit_room ON room_structural_blocks_audit_log(theater_room_uuid);
+    CREATE INDEX IF NOT EXISTS idx_rsb_audit_created ON room_structural_blocks_audit_log(created_at DESC);
   `;
 
   await query(migrationSQL);

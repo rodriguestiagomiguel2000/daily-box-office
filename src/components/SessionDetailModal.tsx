@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from "react";
-import { X, Calendar, Clock, Film, ShieldCheck, ShieldAlert, BarChart2, TrendingUp, Users, Ticket, RefreshCw } from "lucide-react";
+import { X, Calendar, Clock, Film, ShieldCheck, ShieldAlert, BarChart2, TrendingUp, Users, Ticket, RefreshCw, Armchair } from "lucide-react";
 import { ResponsiveContainer, LineChart, Line, BarChart, Bar, XAxis, YAxis, Tooltip, CartesianGrid } from "recharts";
 import { SessionHistoryResponse, SessionSnapshotHistory } from "../types";
 import { fetchJson } from "../utils/api";
+import { SeatMapView } from "./SeatMapView";
 
 interface SessionDetailModalProps {
   sessionId: number | null;
@@ -13,6 +14,7 @@ export const SessionDetailModal: React.FC<SessionDetailModalProps> = ({ sessionI
   const [data, setData] = useState<SessionHistoryResponse | null>(null);
   const [loading, setLoading] = useState<boolean>(true);
   const [error, setError] = useState<string | null>(null);
+  const [showSeatMap, setShowSeatMap] = useState<boolean>(false);
 
   useEffect(() => {
     if (!sessionId) return;
@@ -37,6 +39,7 @@ export const SessionDetailModal: React.FC<SessionDetailModalProps> = ({ sessionI
 
   const session = data?.session;
   const snapshots = data?.snapshots || [];
+  const hasBlockedSeats = snapshots.some((s) => (s.structural_blocked_seats ?? 0) > 0) || (session?.structural_blocked_seats ?? 0) > 0;
 
   // Format chart data points
   const chartData = snapshots.map((s) => {
@@ -80,6 +83,14 @@ export const SessionDetailModal: React.FC<SessionDetailModalProps> = ({ sessionI
 
           <div className="flex items-center gap-3">
             <button
+              onClick={() => setShowSeatMap(true)}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-xl bg-cyan-500/10 hover:bg-cyan-500/20 text-cyan-400 border border-cyan-500/30 text-xs font-semibold transition-colors"
+              title="View session seat map with structural blocks"
+            >
+              <Armchair className="w-4 h-4" />
+              <span>View seat map</span>
+            </button>
+            <button
               onClick={fetchSessionHistory}
               disabled={loading}
               className="p-2 rounded-xl text-slate-400 hover:text-slate-200 hover:bg-slate-800 transition-colors"
@@ -110,7 +121,7 @@ export const SessionDetailModal: React.FC<SessionDetailModalProps> = ({ sessionI
           ) : session ? (
             <>
               {/* Session Overview KPI Bar */}
-              <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7 gap-3">
                 <div className="bg-slate-800/40 border border-slate-800 rounded-xl p-3.5">
                   <div className="text-xs text-slate-400 font-medium flex items-center gap-1.5 mb-1">
                     <Clock className="w-3.5 h-3.5 text-cyan-400" />
@@ -145,8 +156,25 @@ export const SessionDetailModal: React.FC<SessionDetailModalProps> = ({ sessionI
                     <Ticket className="w-3.5 h-3.5 text-amber-400" />
                     Unavailable
                   </div>
-                  <div className="text-base font-bold text-amber-400">{session.unavailable_seats}</div>
-                  <div className="text-[10px] text-slate-500 mt-0.5">Occupied Proxy</div>
+                  <div className="text-base font-bold text-amber-400">
+                    {session.effective_unavailable_seats ?? Math.max(0, session.unavailable_seats - (session.structural_blocked_seats || 0))}
+                  </div>
+                  <div className="text-[10px] text-slate-500 mt-0.5">
+                    {session.structural_blocked_seats && session.structural_blocked_seats > 0
+                      ? `${session.unavailable_seats} raw`
+                      : "Occupied Proxy"}
+                  </div>
+                </div>
+
+                <div className="bg-slate-800/40 border border-slate-800 rounded-xl p-3.5">
+                  <div className="text-xs text-slate-400 font-medium flex items-center gap-1.5 mb-1">
+                    <ShieldAlert className="w-3.5 h-3.5 text-amber-500" />
+                    Blocked
+                  </div>
+                  <div className="text-base font-bold text-amber-500">
+                    {session.structural_blocked_seats || 0}
+                  </div>
+                  <div className="text-[10px] text-slate-500 mt-0.5">excluded from revenue</div>
                 </div>
 
                 <div className="bg-slate-800/40 border border-slate-800 rounded-xl p-3.5">
@@ -276,6 +304,8 @@ export const SessionDetailModal: React.FC<SessionDetailModalProps> = ({ sessionI
                         <th className="py-2.5 px-3">Time</th>
                         <th className="py-2.5 px-3 text-right">Available</th>
                         <th className="py-2.5 px-3 text-right">Unavailable</th>
+                        {hasBlockedSeats && <th className="py-2.5 px-3 text-right text-amber-500">Blocked</th>}
+                        {hasBlockedSeats && <th className="py-2.5 px-3 text-right text-amber-400">Effective</th>}
                         <th className="py-2.5 px-3 text-right">Occupancy %</th>
                         <th className="py-2.5 px-3 text-right">Newly Unavail</th>
                         <th className="py-2.5 px-3 text-right">Newly Avail</th>
@@ -289,6 +319,9 @@ export const SessionDetailModal: React.FC<SessionDetailModalProps> = ({ sessionI
                         const timeStr = dateObj.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", second: "2-digit", timeZone: "Europe/Lisbon" });
                         const dateStr = dateObj.toLocaleDateString([], { month: "short", day: "numeric", timeZone: "Europe/Lisbon" });
                         const occPct = (s.occupancy_proxy * 100).toFixed(1);
+                        const rawUnavail = s.unavailable_seats;
+                        const blockedCount = s.structural_blocked_seats || 0;
+                        const effectiveUnavail = s.effective_unavailable_seats ?? Math.max(0, rawUnavail - blockedCount);
 
                         return (
                           <tr key={s.id} className="hover:bg-slate-800/40 transition-colors text-slate-300">
@@ -297,7 +330,13 @@ export const SessionDetailModal: React.FC<SessionDetailModalProps> = ({ sessionI
                               <span className="text-[10px] text-slate-500 ml-1.5">{dateStr}</span>
                             </td>
                             <td className="py-2 px-3 text-right text-emerald-400 font-medium">{s.available_seats}</td>
-                            <td className="py-2 px-3 text-right text-amber-400 font-medium">{s.unavailable_seats}</td>
+                            <td className="py-2 px-3 text-right text-amber-400 font-medium">{rawUnavail}</td>
+                            {hasBlockedSeats && (
+                              <td className="py-2 px-3 text-right text-amber-500 font-medium">{blockedCount}</td>
+                            )}
+                            {hasBlockedSeats && (
+                              <td className="py-2 px-3 text-right text-amber-300 font-bold">{effectiveUnavail}</td>
+                            )}
                             <td className="py-2 px-3 text-right font-bold text-cyan-400">{occPct}%</td>
                             <td className="py-2 px-3 text-right font-medium text-cyan-300">
                               {s.newly_unavailable > 0 ? `+${s.newly_unavailable}` : "0"}
@@ -331,6 +370,14 @@ export const SessionDetailModal: React.FC<SessionDetailModalProps> = ({ sessionI
         </div>
 
       </div>
+
+      {showSeatMap && sessionId && session && (
+        <SeatMapView
+          sessionId={sessionId}
+          date={session.operational_date}
+          onClose={() => setShowSeatMap(false)}
+        />
+      )}
     </div>
   );
 };

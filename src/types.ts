@@ -57,6 +57,8 @@ export interface SessionDetail {
   sellable_seats: number;
   available_seats: number;
   unavailable_seats: number;
+  structural_blocked_seats?: number;
+  effective_unavailable_seats?: number;
   occupancy_proxy: number;
   invariant_valid: boolean;
   estimated_revenue: number;
@@ -72,6 +74,8 @@ export interface SessionSnapshotHistory {
   sellable_seats: number;
   available_seats: number;
   unavailable_seats: number;
+  structural_blocked_seats?: number;
+  effective_unavailable_seats?: number;
   safety_seats: number;
   unknown_seats: number;
   occupancy_proxy: number;
@@ -94,11 +98,55 @@ export interface SessionHistoryResponse {
     sellable_capacity: number;
     available_seats: number;
     unavailable_seats: number;
+    structural_blocked_seats?: number;
+    effective_unavailable_seats?: number;
     occupancy_proxy: number;
     latest_collected_at: string | null;
     movie_title?: string;
   };
   snapshots: SessionSnapshotHistory[];
+}
+
+export interface SeatMapSeat {
+  id: number;
+  queue: string;
+  row: number;
+  col: number;
+  seat_number: number;
+  stable_seat_key: string;
+  is_seat: boolean;
+  is_available: boolean;
+  is_handicapped: boolean;
+  is_safety_seat: boolean;
+  is_premium: boolean;
+  is_vip: boolean;
+  is_love_seat: boolean;
+  state: string;
+  is_blocked: boolean;
+  classification: "sold" | "blocked" | "safety" | "free";
+  is_accessible: boolean;
+}
+
+export interface SeatMapResponse {
+  session: {
+    session_id: number;
+    external_session_id?: string;
+    starts_at: string;
+    operational_date: string;
+    movie_title: string;
+    cinema_name: string;
+    room_name: string;
+    format?: string;
+    snapshot_collected_at: string | null;
+    snapshot_id: number | null;
+    total_seats: number;
+    sold_count: number;
+    blocked_count: number;
+    free_count: number;
+    safety_count: number;
+    accessible_count: number;
+  };
+  seats: SeatMapSeat[];
 }
 
 export interface CinemaBreakdown {

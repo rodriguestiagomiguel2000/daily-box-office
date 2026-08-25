@@ -23,7 +23,8 @@ from ica_ingestion import (
     ingest_ica_with_raw_log,
     normalize_title,
     calculate_title_similarity,
-    are_titles_lenient_match
+    are_titles_lenient_match,
+    extract_title_tokens
 )
 from calibration_service import (
     CalibrationService,
@@ -64,6 +65,16 @@ def parse_args():
         type=float,
         default=0.70,
         help="Exponential moving average weight for current week vs history (default: 0.70)"
+    )
+    parser.add_argument(
+        "--weekly-only",
+        action="store_true",
+        help="Filter ICA records to weekly (non-weekend) reports only"
+    )
+    parser.add_argument(
+        "--reset-first",
+        action="store_true",
+        help="Reset stored calibration factors state to baseline defaults before processing"
     )
     return parser.parse_args()
 
@@ -169,8 +180,19 @@ def main():
     if not records:
         records = ingest_ica_data()
 
+    if args.weekly_only:
+        records = [r for r in records if getattr(r, "period_type", "weekly") != "weekend"]
+        print(f"[run_ica_calibration] Filtered to {len(records)} weekly records.", file=sys.stderr)
+
     # 2. Update Calibration Service
     cal_service = CalibrationService.get_instance()
+    if args.reset_first:
+        cal_service.state.movie_specific_factors = {}
+        cal_service.state.category_factors = dict(DEFAULT_CALIBRATION_FACTORS)
+        cal_service.state.sample_counts = {}
+        cal_service.save_factors()
+        print("[run_ica_calibration] Reset calibration state to baseline defaults.", file=sys.stderr)
+
     updated_categories = cal_service.update_from_ica(
         ica_records=records,
         movie_baseline_prices=movie_prices,
@@ -202,46 +224,69 @@ def main():
         active_norm = weekend_norm if p_type == "weekend" else weekly_norm
         fallback_norm = weekly_norm if p_type == "weekend" else weekend_norm
 
-        ref_price = args.default_price
+        ref_price = None
         if norm_t in active_norm:
             ref_price = active_norm[norm_t]
         else:
-            for bp_k, bp_v in active_norm.items():
-                if bp_k and (bp_k in norm_t or norm_t in bp_k):
-                    ref_price = bp_v
-                    break
+            core_t = " ".join(extract_title_tokens(norm_t, strip_stopwords=True))
+            matched_price = None
+            if core_t:
+                for bp_k, bp_v in active_norm.items():
+                    if " ".join(extract_title_tokens(bp_k, strip_stopwords=True)) == core_t:
+                        matched_price = bp_v
+                        break
+            if matched_price is not None:
+                ref_price = matched_price
             else:
-                # Lenient fuzzy / stopword-relaxed matching in active map
-                best_k: Optional[str] = None
-                best_sim: float = 0.0
-                for bp_k in active_norm:
-                    sim = calculate_title_similarity(norm_t, bp_k)
-                    if sim > best_sim:
-                        best_sim = sim
-                        best_k = bp_k
-                if best_k and best_sim >= 0.70:
-                    ref_price = active_norm[best_k]
-                elif norm_t in fallback_norm:
-                    ref_price = fallback_norm[norm_t]
+                for bp_k, bp_v in active_norm.items():
+                    if bp_k and (bp_k in norm_t or norm_t in bp_k):
+                        ref_price = bp_v
+                        break
                 else:
-                    for bp_k, bp_v in fallback_norm.items():
-                        if bp_k and (bp_k in norm_t or norm_t in bp_k):
-                            ref_price = bp_v
-                            break
+                    # Lenient fuzzy / stopword-relaxed matching in active map
+                    best_k: Optional[str] = None
+                    best_sim: float = 0.0
+                    for bp_k in active_norm:
+                        sim = calculate_title_similarity(norm_t, bp_k)
+                        if sim > best_sim:
+                            best_sim = sim
+                            best_k = bp_k
+                    if best_k and best_sim >= 0.70:
+                        ref_price = active_norm[best_k]
+                    elif norm_t in fallback_norm:
+                        ref_price = fallback_norm[norm_t]
                     else:
-                        best_k = None
-                        best_sim = 0.0
-                        for bp_k in fallback_norm:
-                            sim = calculate_title_similarity(norm_t, bp_k)
-                            if sim > best_sim:
-                                best_sim = sim
-                                best_k = bp_k
-                        if best_k and best_sim >= 0.70:
-                            ref_price = fallback_norm[best_k]
+                        if core_t:
+                            for bp_k, bp_v in fallback_norm.items():
+                                if " ".join(extract_title_tokens(bp_k, strip_stopwords=True)) == core_t:
+                                    matched_price = bp_v
+                                    break
+                        if matched_price is not None:
+                            ref_price = matched_price
+                        else:
+                            for bp_k, bp_v in fallback_norm.items():
+                                if bp_k and (bp_k in norm_t or norm_t in bp_k):
+                                    ref_price = bp_v
+                                    break
+                            else:
+                                best_k = None
+                                best_sim = 0.0
+                                for bp_k in fallback_norm:
+                                    sim = calculate_title_similarity(norm_t, bp_k)
+                                    if sim > best_sim:
+                                        best_sim = sim
+                                        best_k = bp_k
+                                if best_k and best_sim >= 0.70:
+                                    ref_price = fallback_norm[best_k]
 
         cat = classify_movie_category(rec.title)
-        gamma_obs = round(rec.atp / ref_price, 3) if ref_price > 0 else 1.0
-        gamma_obs = max(0.50, min(1.30, gamma_obs))
+        if ref_price is not None and ref_price > 0:
+            gamma_obs = round(rec.atp / ref_price, 3)
+            gamma_obs = max(0.50, min(1.30, gamma_obs))
+            qualifies = rec.weekly_admissions >= args.min_admissions
+        else:
+            gamma_obs = None
+            qualifies = False
 
         # Lookup gamma final with lenient fallback
         gamma_final = cal_service.state.movie_specific_factors.get(norm_t)
@@ -265,7 +310,7 @@ def main():
             "gamma_final": gamma_final,
             "weekly_admissions": rec.weekly_admissions,
             "weekly_gross_revenue": rec.weekly_gross_revenue,
-            "qualifies_for_category_sample": rec.weekly_admissions >= args.min_admissions
+            "qualifies_for_category_sample": qualifies
         })
 
     result_payload = {

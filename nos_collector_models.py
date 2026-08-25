@@ -127,11 +127,18 @@ class SeatSnapshot:
     source: str = SOURCE_NAME
     collector_version: str = COLLECTOR_VERSION
 
+    structural_blocked_seats: int = 0
+
     # Backward compatibility properties for code expecting sold_seats / blocked_seats
     @property
+    def effective_unavailable_seats(self) -> int:
+        # Structural block subtraction temporarily disabled across the app (e.g. 157/362 seats in NOS Colombo IMAX flagged falsely)
+        return self.unavailable_seats
+
+    @property
     def sold_seats(self) -> int:
-        """Alias for estimated_sold_seats or raw unavailable_seats."""
-        return self.estimated_sold_seats if self.estimated_sold_seats > 0 else self.unavailable_seats
+        """Alias for estimated_sold_seats or effective unavailable_seats."""
+        return self.estimated_sold_seats if self.estimated_sold_seats > 0 else self.effective_unavailable_seats
 
     @property
     def blocked_seats(self) -> int:

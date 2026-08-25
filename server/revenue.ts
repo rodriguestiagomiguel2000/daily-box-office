@@ -129,9 +129,23 @@ export function getSessionPricesSqlCte(): string {
         s.format,
         base_price.raw_unit_price as resolved_unit_price_raw,
         COALESCE(cf_movie.gamma, cf_cat.gamma, 1.0) as gamma,
-        ROUND((base_price.raw_unit_price * COALESCE(cf_movie.gamma, cf_cat.gamma, 1.0))::numeric, 2) as resolved_unit_price
+        ROUND((base_price.raw_unit_price * COALESCE(cf_movie.gamma, cf_cat.gamma, 1.0))::numeric, 2) as resolved_unit_price,
+        /*
+         * Structural block subtraction re-enabled on 2026-08-25 after threshold validation:
+         * Confirmed realistic percentages (Braga Parque Sala 6 @ 4%, Mar Algarve Sala 4 @ 11.6%).
+         * Colombo & Matosinhos IMAX correctly return 0 via the insufficient low-demand data skip.
+         */
+        COALESCE(sb.blocked_count, 0)::int as structural_blocked_seats
       FROM sessions s
+      LEFT JOIN rooms r ON s.room_id = r.id
       LEFT JOIN movies m ON s.movie_id = m.id
+      LEFT JOIN LATERAL (
+        SELECT COUNT(*)::int as blocked_count
+        FROM room_structural_blocks rsb
+        WHERE rsb.theater_room_uuid = r.external_id
+          AND rsb.first_observed_at::date <= NULLIF(s.operational_date, '')::date
+          AND (rsb.removed_at IS NULL OR rsb.removed_at::date > NULLIF(s.operational_date, '')::date)
+      ) sb ON true
       LEFT JOIN LATERAL (
         SELECT 
           COALESCE(
@@ -157,14 +171,14 @@ export function getSessionPricesSqlCte(): string {
           ELSE 'Action / General'
         END
       )
-      GROUP BY s.id, s.movie_id, s.operational_date, s.format, base_price.raw_unit_price, cf_movie.gamma, cf_cat.gamma
+      GROUP BY s.id, s.movie_id, s.operational_date, s.format, base_price.raw_unit_price, cf_movie.gamma, cf_cat.gamma, sb.blocked_count
     )
   `;
 }
 
 /**
  * Recalculate stored performance snapshots in movie_performance_snapshots
- * using calibrated canonical unit prices for consistency across historical tables.
+ * using calibrated canonical unit prices and excluding structural seat blocks.
  */
 export async function recalculateAllPerformanceSnapshots(movieId?: number, operationalDate?: string): Promise<number> {
   const whereClauses: string[] = [];
@@ -182,44 +196,7 @@ export async function recalculateAllPerformanceSnapshots(movieId?: number, opera
   const whereStr = whereClauses.length > 0 ? `WHERE ${whereClauses.join(" AND ")}` : "";
 
   const querySql = `
-    WITH session_prices AS (
-      SELECT 
-        s.id as session_id,
-        s.movie_id,
-        s.operational_date,
-        s.format,
-        base_price.raw_unit_price as resolved_unit_price_raw,
-        COALESCE(cf_movie.gamma, cf_cat.gamma, 1.0) as gamma,
-        ROUND((base_price.raw_unit_price * COALESCE(cf_movie.gamma, cf_cat.gamma, 1.0))::numeric, 2) as resolved_unit_price
-      FROM sessions s
-      LEFT JOIN movies m ON s.movie_id = m.id
-      LEFT JOIN LATERAL (
-        SELECT 
-          COALESCE(
-            MIN(stp.price) FILTER (WHERE stp.is_default = true AND stp.price > 0),
-            MIN(stp.price) FILTER (WHERE stp.price > 0 AND (stp.ticket_type ILIKE '%normal%' OR stp.ticket_type ILIKE '%adulto%' OR stp.ticket_type ILIKE '%inteiro%' OR stp.ticket_type ILIKE '%standard%') AND stp.ticket_type NOT ILIKE '%fam%' AND stp.ticket_type NOT ILIKE '%pax%' AND (stp.seats_count IS NULL OR stp.seats_count = 1)),
-            MIN(stp.price) FILTER (WHERE stp.price > 0 AND stp.ticket_type NOT ILIKE '%fam%' AND stp.ticket_type NOT ILIKE '%pax%' AND stp.ticket_type NOT ILIKE '%crian%' AND stp.ticket_type NOT ILIKE '%estud%' AND stp.ticket_type NOT ILIKE '%sénior%' AND stp.ticket_type NOT ILIKE '%senior%' AND (stp.seats_count IS NULL OR stp.seats_count = 1)),
-            AVG(stp.price) FILTER (WHERE stp.price > 0),
-            CASE 
-              WHEN s.format ILIKE '%IMAX%' THEN 13.50 
-              WHEN s.format ILIKE '%3D%' THEN 9.50 
-              ELSE 8.75 
-            END
-          ) as raw_unit_price
-        FROM session_ticket_prices stp
-        WHERE stp.session_id = s.id
-      ) base_price ON true
-      LEFT JOIN calibration_factors cf_movie ON cf_movie.movie_id = s.movie_id
-      LEFT JOIN calibration_factors cf_cat ON cf_cat.movie_id IS NULL AND cf_cat.category = COALESCE(
-        m.category,
-        CASE 
-          WHEN m.title ILIKE '%animac%' OR m.title ILIKE '%patrulha pata%' OR m.title ILIKE '%minion%' OR m.title ILIKE '%minimo%' OR m.title ILIKE '%famil%' OR m.title ILIKE '%disney%' OR m.title ILIKE '%pixar%' OR m.title ILIKE '%divertida%' OR m.title ILIKE '%toy story%' OR m.title ILIKE '%vaiana%' OR m.title ILIKE '%sonic%' OR m.title ILIKE '%mario%' OR m.title ILIKE '%stitch%' OR m.title ILIKE '%paddington%' OR m.title ILIKE '%shrek%' OR m.title ILIKE '%frozen%' OR m.title ILIKE '%wonka%' OR m.title ILIKE '%barbie%' THEN 'Family / Animation'
-          WHEN m.title ILIKE '%drama%' OR m.title ILIKE '%terror%' OR m.title ILIKE '%horror%' OR m.title ILIKE '%thriller%' OR m.title ILIKE '%crime%' OR m.title ILIKE '%misterio%' OR m.title ILIKE '%romance%' OR m.title ILIKE '%biograf%' THEN 'Drama / Adult'
-          ELSE 'Action / General'
-        END
-      )
-      GROUP BY s.id, s.movie_id, s.operational_date, s.format, base_price.raw_unit_price, cf_movie.gamma, cf_cat.gamma
-    ),
+    WITH ${getSessionPricesSqlCte()},
     recalculated_snapshots AS (
       SELECT 
         mps.id as snapshot_id,
@@ -227,11 +204,11 @@ export async function recalculateAllPerformanceSnapshots(movieId?: number, opera
         mps.operational_date,
         mps.snapshot_timestamp,
         mps.showcount_total,
-        mps.estimated_admissions,
         ROUND(AVG(sp.resolved_unit_price_raw)::numeric, 2) as avg_raw_price,
         ROUND(AVG(sp.gamma)::numeric, 3) as avg_gamma,
         ROUND(AVG(sp.resolved_unit_price)::numeric, 2) as avg_resolved_price,
-        COALESCE(SUM(ss.unavailable_seats * sp.resolved_unit_price), 0.0) as new_estimated_revenue
+        COALESCE(SUM(GREATEST(0, ss.unavailable_seats - sp.structural_blocked_seats)), 0)::int as new_estimated_admissions,
+        COALESCE(SUM(GREATEST(0, ss.unavailable_seats - sp.structural_blocked_seats) * sp.resolved_unit_price), 0.0) as new_estimated_revenue
       FROM movie_performance_snapshots mps
       JOIN sessions s ON s.movie_id = mps.movie_id 
         AND (s.operational_date = mps.operational_date OR TO_CHAR((s.starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD') = mps.operational_date)
@@ -243,12 +220,14 @@ export async function recalculateAllPerformanceSnapshots(movieId?: number, opera
       ) ss ON true
       JOIN session_prices sp ON sp.session_id = s.id
       ${whereStr}
-      GROUP BY mps.id, mps.movie_id, mps.operational_date, mps.snapshot_timestamp, mps.showcount_total, mps.estimated_admissions
+      GROUP BY mps.id, mps.movie_id, mps.operational_date, mps.snapshot_timestamp, mps.showcount_total
     )
     UPDATE movie_performance_snapshots mps
     SET 
+      estimated_admissions = rs.new_estimated_admissions,
       estimated_revenue = ROUND(rs.new_estimated_revenue::numeric, 2),
       revenue_per_show = CASE WHEN mps.showcount_total > 0 THEN ROUND((rs.new_estimated_revenue / mps.showcount_total)::numeric, 2) ELSE 0.0 END,
+      admissions_per_show = CASE WHEN mps.showcount_total > 0 THEN ROUND((rs.new_estimated_admissions::numeric / mps.showcount_total)::numeric, 2) ELSE 0.0 END,
       resolved_unit_price_raw = rs.avg_raw_price,
       resolved_unit_price = rs.avg_resolved_price,
       gamma = rs.avg_gamma
@@ -258,6 +237,495 @@ export async function recalculateAllPerformanceSnapshots(movieId?: number, opera
 
   const res = await query(querySql, params);
   return res.rowCount || 0;
+}
+
+export interface ComputeRoomStructuralBlocksOptions {
+  force?: boolean;
+  intervalHours?: number;
+  maxOccupancyProxy?: number;
+  minQualifyingSessions?: number;
+  minObservationRatio?: number;
+  windowDays?: number;
+}
+
+export interface RoomBlockResult {
+  skipped?: boolean;
+  reason?: string;
+  lastComputedAt?: string | null;
+  totalRoomsEvaluated: number;
+  qualifyingRoomsCount: number;
+  skippedRoomsCount: number;
+  totalSeatsBlocked: number;
+  newlyAdded: number;
+  updatedCount: number;
+  removedCount: number;
+  auditEntriesLogged?: number;
+  details: Array<{
+    theater_room_uuid: string;
+    blocked_seat_count: number;
+    seats: string[];
+  }>;
+}
+
+/**
+ * Computes per-room structural block list over a rolling 60-day window.
+ *
+ * Rules:
+ * 1. Absolute occupancy ceiling only (<= 15% occupancy, no relative percentile fallback).
+ * 2. Earliest snapshot gating: only uses a session's earliest snapshot if its occupancy proxy <= 15%.
+ *    High-demand sessions (opening with large presales) are completely excluded from the reference set.
+ * 3. Requires at least N (default: 8) qualifying low-occupancy sessions in the rolling window for that room.
+ * 4. If a room has < 8 qualifying sessions, detection is SKIPPED for that room (structural_blocked_seats = 0)
+ *    and logged as "insufficient low-demand data, detection skipped" rather than risking false-positives
+ *    from a contaminated reference set.
+ * 5. Full per-room replace-on-recompute: every recompute cycle evaluates the full 60-day rolling window.
+ *    Any seat previously flagged as structurally blocked that is no longer detected (e.g. physically repaired
+ *    and observation ratio dropped below 80%, or aged out) is automatically REMOVED from room_structural_blocks.
+ * 6. Lightweight audit log: each addition and removal is recorded in room_structural_blocks_audit_log with
+ *    room, seat key, action (ADDED/REMOVED), reason, observed counts, and timestamp.
+ *
+ * Throttles execution unless force = true or default interval (6 hours) has elapsed.
+ */
+export async function computeRoomStructuralBlocks(
+  optsOrForce: ComputeRoomStructuralBlocksOptions | boolean = {}
+): Promise<RoomBlockResult> {
+  const opts = typeof optsOrForce === "boolean" ? { force: optsOrForce } : optsOrForce;
+  const force = Boolean(opts.force);
+  const intervalHours = opts.intervalHours !== undefined ? opts.intervalHours : 6;
+  const maxOccupancy = opts.maxOccupancyProxy !== undefined ? opts.maxOccupancyProxy : 0.15;
+  const minQualifyingSessions = opts.minQualifyingSessions !== undefined ? opts.minQualifyingSessions : 8;
+  const minObservationRatio = opts.minObservationRatio !== undefined ? opts.minObservationRatio : 0.80;
+  const windowDays = opts.windowDays !== undefined ? opts.windowDays : 60;
+
+  // Ensure tracking and audit tables exist
+  await query(`
+    ALTER TABLE room_structural_blocks ADD COLUMN IF NOT EXISTS removed_at TIMESTAMPTZ NULL;
+
+    CREATE TABLE IF NOT EXISTS room_structural_blocks_meta (
+      id INT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+      last_computed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE TABLE IF NOT EXISTS room_structural_blocks_audit_log (
+      id SERIAL PRIMARY KEY,
+      theater_room_uuid VARCHAR(100) NOT NULL,
+      stable_seat_key VARCHAR(150) NOT NULL,
+      action VARCHAR(20) NOT NULL,
+      reason TEXT,
+      observed_count INT,
+      qualifying_sessions INT,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    CREATE INDEX IF NOT EXISTS idx_rsb_audit_room ON room_structural_blocks_audit_log(theater_room_uuid);
+    CREATE INDEX IF NOT EXISTS idx_rsb_audit_created ON room_structural_blocks_audit_log(created_at DESC);
+  `);
+
+  if (!force) {
+    const metaRes = await query(`SELECT last_computed_at FROM room_structural_blocks_meta WHERE id = 1;`).catch(() => ({ rows: [] }));
+    const lastComputed = metaRes.rows[0]?.last_computed_at;
+    if (lastComputed) {
+      const elapsedMs = Date.now() - new Date(lastComputed).getTime();
+      const thresholdMs = intervalHours * 3600 * 1000;
+      if (elapsedMs < thresholdMs) {
+        console.debug(`[STRUCTURAL_BLOCKS] Skipped computation: last run was ${Math.round(elapsedMs / 60000)}m ago (throttle interval: ${intervalHours}h).`);
+        return {
+          skipped: true,
+          reason: "skipped, too recent",
+          lastComputedAt: new Date(lastComputed).toISOString(),
+          totalRoomsEvaluated: 0,
+          qualifyingRoomsCount: 0,
+          skippedRoomsCount: 0,
+          totalSeatsBlocked: 0,
+          newlyAdded: 0,
+          updatedCount: 0,
+          removedCount: 0,
+          auditEntriesLogged: 0,
+          details: [],
+        };
+      }
+    }
+  }
+
+  // 1. Fetch all existing active blocks in DB grouped by room
+  const prevRes = await query(`
+    SELECT theater_room_uuid, stable_seat_key, low_occupancy_observations, first_observed_at, last_observed_at 
+    FROM room_structural_blocks
+    WHERE removed_at IS NULL;
+  `);
+  
+  const existingByRoom = new Map<string, Map<string, {
+    theater_room_uuid: string;
+    stable_seat_key: string;
+    low_occupancy_observations: number;
+    first_observed_at: Date;
+    last_observed_at: Date;
+  }>>();
+
+  for (const row of prevRes.rows) {
+    if (!existingByRoom.has(row.theater_room_uuid)) {
+      existingByRoom.set(row.theater_room_uuid, new Map());
+    }
+    existingByRoom.get(row.theater_room_uuid)!.set(row.stable_seat_key, {
+      theater_room_uuid: row.theater_room_uuid,
+      stable_seat_key: row.stable_seat_key,
+      low_occupancy_observations: Number(row.low_occupancy_observations || 0),
+      first_observed_at: new Date(row.first_observed_at),
+      last_observed_at: new Date(row.last_observed_at),
+    });
+  }
+
+  // 2. Detect structural blocks across the rolling 60-day window using earliest snapshots and <= 15% occupancy gating
+  const detectSql = `
+    WITH earliest_session_snaps AS (
+      SELECT DISTINCT ON (ss.session_id)
+        ss.session_id,
+        s.starts_at,
+        r.external_id as theater_room_uuid,
+        r.name as room_name,
+        c.name as cinema_name,
+        ss.id as snapshot_id,
+        ss.sellable_seats,
+        ss.unavailable_seats,
+        ss.occupancy_proxy
+      FROM sessions s
+      JOIN rooms r ON s.room_id = r.id
+      LEFT JOIN cinemas c ON s.cinema_id = c.id
+      JOIN seat_snapshots ss ON ss.session_id = s.id
+      WHERE s.starts_at IS NOT NULL
+        AND s.starts_at >= NOW() - ($1 || ' days')::INTERVAL
+      ORDER BY ss.session_id, ss.collected_at ASC
+    ),
+    low_occ_sessions AS (
+      SELECT *
+      FROM earliest_session_snaps
+      WHERE sellable_seats > 0 
+        AND theater_room_uuid IS NOT NULL 
+        AND theater_room_uuid != ''
+        AND occupancy_proxy <= $2
+    ),
+    room_qualifying_counts AS (
+      SELECT 
+        theater_room_uuid,
+        cinema_name,
+        room_name,
+        COUNT(DISTINCT session_id)::int as qualifying_sessions
+      FROM low_occ_sessions
+      GROUP BY theater_room_uuid, cinema_name, room_name
+    ),
+    qualified_rooms AS (
+      SELECT *
+      FROM room_qualifying_counts
+      WHERE qualifying_sessions >= $3
+    ),
+    detected_blocks AS (
+      SELECT 
+        st.theater_room_uuid,
+        qr.cinema_name,
+        qr.room_name,
+        qr.qualifying_sessions,
+        st.stable_seat_key,
+        COUNT(DISTINCT f.session_id)::int as obs_count,
+        MIN(f.starts_at) as min_ts,
+        MAX(f.starts_at) as max_ts
+      FROM qualified_rooms qr
+      JOIN low_occ_sessions f ON f.theater_room_uuid = qr.theater_room_uuid
+      JOIN seat_states st ON st.snapshot_id = f.snapshot_id
+      WHERE st.is_seat = true 
+        AND (st.is_available = false OR st.state = 'UNAVAILABLE')
+        AND (st.is_safety_seat = false OR st.is_safety_seat IS NULL)
+      GROUP BY st.theater_room_uuid, qr.cinema_name, qr.room_name, qr.qualifying_sessions, st.stable_seat_key
+      HAVING COUNT(DISTINCT f.session_id) >= $3 
+         AND COUNT(DISTINCT f.session_id)::float / qr.qualifying_sessions >= $4
+    )
+    SELECT * FROM detected_blocks;
+  `;
+
+  const detectedRes = await query(detectSql, [
+    String(windowDays),
+    maxOccupancy,
+    minQualifyingSessions,
+    minObservationRatio,
+  ]);
+  const detectedRows = detectedRes.rows;
+
+  const detectedByRoom = new Map<string, Map<string, {
+    theater_room_uuid: string;
+    cinema_name: string;
+    room_name: string;
+    qualifying_sessions: number;
+    stable_seat_key: string;
+    obs_count: number;
+    min_ts: Date;
+    max_ts: Date;
+  }>>();
+
+  for (const row of detectedRows) {
+    if (!detectedByRoom.has(row.theater_room_uuid)) {
+      detectedByRoom.set(row.theater_room_uuid, new Map());
+    }
+    detectedByRoom.get(row.theater_room_uuid)!.set(row.stable_seat_key, {
+      theater_room_uuid: row.theater_room_uuid,
+      cinema_name: row.cinema_name,
+      room_name: row.room_name,
+      qualifying_sessions: Number(row.qualifying_sessions || 0),
+      stable_seat_key: row.stable_seat_key,
+      obs_count: Number(row.obs_count || 0),
+      min_ts: new Date(row.min_ts),
+      max_ts: new Date(row.max_ts),
+    });
+  }
+
+  // 3. Fetch all evaluated rooms in the 60-day window to distinguish qualified vs skipped rooms
+  const allEvaluatedRoomsRes = await query(`
+    WITH earliest_session_snaps AS (
+      SELECT DISTINCT ON (ss.session_id)
+        ss.session_id,
+        r.external_id as theater_room_uuid,
+        r.name as room_name,
+        c.name as cinema_name,
+        ss.occupancy_proxy,
+        ss.sellable_seats
+      FROM sessions s
+      JOIN rooms r ON s.room_id = r.id
+      LEFT JOIN cinemas c ON s.cinema_id = c.id
+      JOIN seat_snapshots ss ON ss.session_id = s.id
+      WHERE s.starts_at IS NOT NULL
+        AND s.starts_at >= NOW() - ($1 || ' days')::INTERVAL
+      ORDER BY ss.session_id, ss.collected_at ASC
+    ),
+    low_occ_sessions AS (
+      SELECT *
+      FROM earliest_session_snaps
+      WHERE sellable_seats > 0 
+        AND theater_room_uuid IS NOT NULL 
+        AND theater_room_uuid != ''
+        AND occupancy_proxy <= $2
+    ),
+    all_evaluated_rooms AS (
+      SELECT DISTINCT 
+        r.external_id as theater_room_uuid,
+        r.name as room_name,
+        c.name as cinema_name
+      FROM sessions s
+      JOIN rooms r ON s.room_id = r.id
+      LEFT JOIN cinemas c ON s.cinema_id = c.id
+      WHERE s.starts_at IS NOT NULL
+        AND s.starts_at >= NOW() - ($1 || ' days')::INTERVAL
+        AND r.external_id IS NOT NULL 
+        AND r.external_id != ''
+    )
+    SELECT 
+      ar.theater_room_uuid,
+      ar.cinema_name,
+      ar.room_name,
+      COALESCE(COUNT(DISTINCT l.session_id), 0)::int as qualifying_sessions
+    FROM all_evaluated_rooms ar
+    LEFT JOIN low_occ_sessions l ON l.theater_room_uuid = ar.theater_room_uuid
+    GROUP BY ar.theater_room_uuid, ar.cinema_name, ar.room_name;
+  `, [String(windowDays), maxOccupancy]);
+
+  const allRooms = allEvaluatedRoomsRes.rows;
+  const roomMetaMap = new Map<string, { cinema_name: string; room_name: string; qualifying_sessions: number }>();
+  for (const r of allRooms) {
+    roomMetaMap.set(r.theater_room_uuid, {
+      cinema_name: r.cinema_name,
+      room_name: r.room_name,
+      qualifying_sessions: Number(r.qualifying_sessions || 0),
+    });
+  }
+
+  const qualifiedRooms = allRooms.filter(r => r.qualifying_sessions >= minQualifyingSessions);
+  const skippedRooms = allRooms.filter(r => r.qualifying_sessions < minQualifyingSessions);
+
+  // Log skipped rooms due to insufficient low-occupancy sessions
+  for (const r of skippedRooms) {
+    const roomLabel = `${r.cinema_name ? r.cinema_name + ' - ' : ''}${r.room_name || 'unnamed'}`;
+    console.log(
+      `[STRUCTURAL_BLOCKS] Room ${r.theater_room_uuid} (${roomLabel}): insufficient low-demand data (${r.qualifying_sessions} < ${minQualifyingSessions} low-occupancy sessions), detection skipped.`
+    );
+  }
+
+  // 4. Compile union of all rooms to evaluate (rooms active in 60-day window + any rooms with existing blocks in DB)
+  const allTargetRoomUuids = new Set<string>([
+    ...allRooms.map(r => r.theater_room_uuid),
+    ...existingByRoom.keys(),
+  ]);
+
+  // 5. Per-Room Replace-on-Recompute:
+  // For each room, compare existing DB set vs fresh detected set in current rolling 60-day window.
+  const seatsToUpsert: Array<{ roomUuid: string; seatKey: string; obsCount: number; minTs: Date; maxTs: Date }> = [];
+  const addedAuditEntries: Array<{ roomUuid: string; seatKey: string; reason: string; obsCount: number; qualifyingSessions: number }> = [];
+  const removedSeats: Array<{ roomUuid: string; seatKey: string }> = [];
+  const removedAuditEntries: Array<{ roomUuid: string; seatKey: string; reason: string; qualifyingSessions: number }> = [];
+
+  let newlyAdded = 0;
+  let updatedCount = 0;
+  let removedCount = 0;
+
+  for (const roomUuid of allTargetRoomUuids) {
+    const existingSeats = existingByRoom.get(roomUuid) || new Map();
+    const detectedSeats = detectedByRoom.get(roomUuid) || new Map();
+    const meta = roomMetaMap.get(roomUuid);
+    const qualifyingCount = meta?.qualifying_sessions ?? 0;
+    const isQualified = qualifyingCount >= minQualifyingSessions;
+
+    // If room is qualified, the target set is detectedSeats. If not qualified / skipped, target set is empty.
+    const targetSeats = isQualified ? detectedSeats : new Map();
+
+    // Added and Updated seats
+    for (const [seatKey, targetSeat] of targetSeats.entries()) {
+      seatsToUpsert.push({
+        roomUuid,
+        seatKey,
+        obsCount: targetSeat.obs_count,
+        minTs: targetSeat.min_ts,
+        maxTs: targetSeat.max_ts,
+      });
+
+      if (!existingSeats.has(seatKey)) {
+        newlyAdded++;
+        const ratioPercent = qualifyingCount > 0 ? Math.round((targetSeat.obs_count / qualifyingCount) * 100) : 100;
+        const reason = `Qualified baseline block: observed unavailable in ${targetSeat.obs_count}/${qualifyingCount} (${ratioPercent}%) low-occupancy sessions (<=15% occ) in 60-day window`;
+        addedAuditEntries.push({
+          roomUuid,
+          seatKey,
+          reason,
+          obsCount: targetSeat.obs_count,
+          qualifyingSessions: qualifyingCount,
+        });
+      } else {
+        updatedCount++;
+      }
+    }
+
+    // Removed seats
+    for (const [seatKey, existingSeat] of existingSeats.entries()) {
+      if (!targetSeats.has(seatKey)) {
+        removedCount++;
+        removedSeats.push({ roomUuid, seatKey });
+
+        let reason: string;
+        if (!meta) {
+          reason = `Aged out: venue/room has had no showtimes in 60-day window`;
+        } else if (!isQualified) {
+          reason = `Room skipped: insufficient low-occupancy sessions (${qualifyingCount} < ${minQualifyingSessions}) in 60-day window`;
+        } else {
+          reason = `Repaired or unblocked: seat dropped below ${Math.round(minObservationRatio * 100)}% unavailable threshold in 60-day window`;
+        }
+
+        removedAuditEntries.push({
+          roomUuid,
+          seatKey,
+          reason,
+          qualifyingSessions: qualifyingCount,
+        });
+      }
+    }
+  }
+
+  // Execute bulk operations
+  if (removedSeats.length > 0) {
+    // Soft-delete removed seats by setting removed_at = NOW()
+    await query(`
+      UPDATE room_structural_blocks
+      SET removed_at = NOW()
+      WHERE (theater_room_uuid, stable_seat_key) IN (
+        SELECT r, s FROM jsonb_to_recordset($1::jsonb) AS (r text, s text)
+      );
+    `, [JSON.stringify(removedSeats.map(item => ({ r: item.roomUuid, s: item.seatKey })))]);
+
+    // Insert removal audit records
+    await query(`
+      INSERT INTO room_structural_blocks_audit_log (
+        theater_room_uuid, stable_seat_key, action, reason, observed_count, qualifying_sessions, created_at
+      )
+      SELECT r, s, 'REMOVED', reason, NULL, qual_sess, NOW()
+      FROM jsonb_to_recordset($1::jsonb) AS (r text, s text, reason text, qual_sess int);
+    `, [JSON.stringify(removedAuditEntries.map(item => ({
+      r: item.roomUuid,
+      s: item.seatKey,
+      reason: item.reason,
+      qual_sess: item.qualifyingSessions,
+    })))]);
+  }
+
+  if (seatsToUpsert.length > 0) {
+    // Upsert active target seats (clearing removed_at back to NULL if seat was previously removed)
+    await query(`
+      INSERT INTO room_structural_blocks (
+        theater_room_uuid, stable_seat_key, low_occupancy_observations, first_observed_at, last_observed_at, removed_at
+      )
+      SELECT r, s, obs, min_ts::timestamptz, max_ts::timestamptz, NULL
+      FROM jsonb_to_recordset($1::jsonb) AS (r text, s text, obs int, min_ts text, max_ts text)
+      ON CONFLICT (theater_room_uuid, stable_seat_key) DO UPDATE SET
+        low_occupancy_observations = EXCLUDED.low_occupancy_observations,
+        first_observed_at = LEAST(room_structural_blocks.first_observed_at, EXCLUDED.first_observed_at),
+        last_observed_at = GREATEST(room_structural_blocks.last_observed_at, EXCLUDED.last_observed_at),
+        removed_at = NULL;
+    `, [JSON.stringify(seatsToUpsert.map(item => ({
+      r: item.roomUuid,
+      s: item.seatKey,
+      obs: item.obsCount,
+      min_ts: item.minTs.toISOString(),
+      max_ts: item.maxTs.toISOString(),
+    })))]);
+  }
+
+  if (addedAuditEntries.length > 0) {
+    // Insert added audit records
+    await query(`
+      INSERT INTO room_structural_blocks_audit_log (
+        theater_room_uuid, stable_seat_key, action, reason, observed_count, qualifying_sessions, created_at
+      )
+      SELECT r, s, 'ADDED', reason, obs, qual_sess, NOW()
+      FROM jsonb_to_recordset($1::jsonb) AS (r text, s text, reason text, obs int, qual_sess int);
+    `, [JSON.stringify(addedAuditEntries.map(item => ({
+      r: item.roomUuid,
+      s: item.seatKey,
+      reason: item.reason,
+      obs: item.obsCount,
+      qual_sess: item.qualifyingSessions,
+    })))]);
+  }
+
+  const auditEntriesLogged = addedAuditEntries.length + removedAuditEntries.length;
+
+  // 6. Fetch final summary of active blocks
+  const summaryRes = await query(`
+    SELECT theater_room_uuid, COUNT(*)::int as block_count, array_agg(stable_seat_key) as seats
+    FROM room_structural_blocks
+    WHERE removed_at IS NULL
+    GROUP BY theater_room_uuid;
+  `);
+
+  // Record successful run timestamp in meta table
+  await query(`
+    INSERT INTO room_structural_blocks_meta (id, last_computed_at)
+    VALUES (1, NOW())
+    ON CONFLICT (id) DO UPDATE SET last_computed_at = NOW();
+  `);
+
+  console.log(
+    `[STRUCTURAL_BLOCKS] Calculation complete. Evaluated ${allRooms.length} rooms (${qualifiedRooms.length} qualified, ${skippedRooms.length} skipped). Total active blocked seats: ${detectedRows.length}. Newly added: ${newlyAdded}, Updated: ${updatedCount}, Removed: ${removedCount}, Audit entries: ${auditEntriesLogged}.`
+  );
+
+  return {
+    skipped: false,
+    lastComputedAt: new Date().toISOString(),
+    totalRoomsEvaluated: allRooms.length,
+    qualifyingRoomsCount: qualifiedRooms.length,
+    skippedRoomsCount: skippedRooms.length,
+    totalSeatsBlocked: detectedRows.length,
+    newlyAdded,
+    updatedCount,
+    removedCount,
+    auditEntriesLogged,
+    details: summaryRes.rows.map(r => ({
+      theater_room_uuid: r.theater_room_uuid,
+      blocked_seat_count: r.block_count,
+      seats: r.seats || [],
+    })),
+  };
 }
 
 const STOPWORDS_SET = new Set([
@@ -310,6 +778,14 @@ export function calculateTitleSimilarity(t1: string, t2: string): number {
     return 0.0;
   }
 
+  // Core content token comparison FIRST (stripping 'os', 'e', 'de', 'the', etc.)
+  const core1 = extractCoreTokens(n1);
+  const core2 = extractCoreTokens(n2);
+
+  if (core1.length > 0 && core2.length > 0 && core1.join(" ") === core2.join(" ")) {
+    return 0.98;
+  }
+
   // Direct substring / containment
   if (n1.includes(n2) || n2.includes(n1)) {
     const shorter = n1.length <= n2.length ? n1 : n2;
@@ -319,15 +795,7 @@ export function calculateTitleSimilarity(t1: string, t2: string): number {
     }
   }
 
-  // Core content token comparison (stripping 'os', 'e', 'de', 'the', etc.)
-  const core1 = extractCoreTokens(n1);
-  const core2 = extractCoreTokens(n2);
-
   if (core1.length > 0 && core2.length > 0) {
-    if (core1.join(" ") === core2.join(" ")) {
-      return 0.98;
-    }
-
     const set1 = new Set(core1);
     const set2 = new Set(core2);
 

@@ -20,7 +20,8 @@ from ica_ingestion import (
     match_scraped_title_to_ica,
     normalize_title,
     are_titles_lenient_match,
-    calculate_title_similarity
+    calculate_title_similarity,
+    extract_title_tokens
 )
 
 log = logging.getLogger("calibration_service")
@@ -214,13 +215,21 @@ class CalibrationService:
                         except (ValueError, TypeError):
                             continue
 
-        def lookup_ref_price(norm_t: str, p_type: str) -> float:
+        def lookup_ref_price(norm_t: str, p_type: str) -> Optional[float]:
             target_map = weekend_prices if p_type == "weekend" else weekly_prices
             fallback_map = weekly_prices if p_type == "weekend" else weekend_prices
 
             # 1. Exact match in target map
             if target_map and norm_t in target_map:
                 return target_map[norm_t]
+
+            # 1.5 Core token match (stopword-relaxed, e.g. "Mínimos e os Monstros" vs "Mínimos e Monstros")
+            if target_map:
+                core_t = " ".join(extract_title_tokens(norm_t, strip_stopwords=True))
+                if core_t:
+                    for k, v in target_map.items():
+                        if " ".join(extract_title_tokens(k, strip_stopwords=True)) == core_t:
+                            return v
 
             # 2. Substring match in target map
             if target_map:
@@ -240,10 +249,15 @@ class CalibrationService:
                 if best_k and best_sim >= 0.70:
                     return target_map[best_k]
 
-            # 4. Fallback map (exact, substring, then lenient)
+            # 4. Fallback map (exact, core tokens, substring, then lenient)
             if fallback_map and norm_t in fallback_map:
                 return fallback_map[norm_t]
             if fallback_map:
+                core_t = " ".join(extract_title_tokens(norm_t, strip_stopwords=True))
+                if core_t:
+                    for k, v in fallback_map.items():
+                        if " ".join(extract_title_tokens(k, strip_stopwords=True)) == core_t:
+                            return v
                 for k, v in fallback_map.items():
                     if k and (k in norm_t or norm_t in k):
                         return v
@@ -257,52 +271,81 @@ class CalibrationService:
                 if best_k and best_sim >= 0.70:
                     return fallback_map[best_k]
 
-            return default_adult_price
+            return None
 
-        # Active movie factors initialized from stored state
+        # Prior movie factors snapshot before this update run
+        prior_movie_factors: Dict[str, float] = dict(self.state.movie_specific_factors)
         movie_factors: Dict[str, float] = dict(self.state.movie_specific_factors)
 
-        def process_record(rec: ICAMovieRecord, p_type: str):
+        # Collect observations per movie (norm_t)
+        movie_observations: Dict[str, List[Dict[str, Any]]] = {}
+
+        for rec in ica_records:
             if rec.atp <= 0 or rec.weekly_admissions <= 0:
-                return
+                continue
 
             norm_t = normalize_title(rec.title)
+            p_type = getattr(rec, "period_type", "weekly")
             ref_price = lookup_ref_price(norm_t, p_type)
 
+            if ref_price is None or ref_price <= 0:
+                log.warning(
+                    f"Skipping observation for '{rec.title}' ({p_type}): "
+                    f"no reference price found in baseline prices map"
+                )
+                continue
+
             # Observed movie gamma for this period report
-            gamma_obs = round(rec.atp / ref_price, 3) if ref_price > 0 else 1.0
+            gamma_obs = round(rec.atp / ref_price, 3)
             # Clip reasonable bounds [0.50, 1.30] to prevent extreme anomalies
             gamma_obs = max(0.50, min(1.30, gamma_obs))
 
-            # Exponential Moving Average with existing stored factor if present
-            if norm_t in movie_factors:
-                prev_gamma = movie_factors[norm_t]
-                gamma_m = round(ema_alpha * gamma_obs + (1.0 - ema_alpha) * prev_gamma, 3)
+            if norm_t not in movie_observations:
+                movie_observations[norm_t] = []
+
+            movie_observations[norm_t].append({
+                "rec": rec,
+                "ref_price": ref_price,
+                "gamma_obs": gamma_obs,
+                "period_type": p_type,
+            })
+
+        # Process each movie's observations for a SINGLE combined EMA update per run
+        for norm_t, obs_list in movie_observations.items():
+            if not obs_list:
+                continue
+
+            # ISSUE 2: Average observations (admissions-weighted using weekly_admissions)
+            # into one combined gamma_obs BEFORE applying the EMA step once against the stored prior.
+            if len(obs_list) > 1:
+                total_admissions = sum(o["rec"].weekly_admissions for o in obs_list)
+                if total_admissions > 0:
+                    combined_gamma_obs = sum(o["gamma_obs"] * o["rec"].weekly_admissions for o in obs_list) / total_admissions
+                else:
+                    combined_gamma_obs = obs_list[0]["gamma_obs"]
+                combined_gamma_obs = round(combined_gamma_obs, 3)
             else:
-                gamma_m = gamma_obs
+                combined_gamma_obs = obs_list[0]["gamma_obs"]
+
+            # Apply EMA step ONCE against stored prior
+            if norm_t in prior_movie_factors:
+                prev_gamma = prior_movie_factors[norm_t]
+                gamma_m = round(ema_alpha * combined_gamma_obs + (1.0 - ema_alpha) * prev_gamma, 3)
+            else:
+                gamma_m = combined_gamma_obs
 
             gamma_m = max(0.50, min(1.30, gamma_m))
             movie_factors[norm_t] = gamma_m
 
-            # Category aggregation guard: each qualifying observation (weekly and weekend) counts separately
-            cat = classify_movie_category(rec.title)
-            if rec.weekly_admissions >= min_admissions_floor:
-                weight = float(rec.weekly_admissions)
-                category_totals[cat] += gamma_m * weight
-                category_weights[cat] += weight
-                category_counts[cat] += 1
-
-        # Separate records into weekly and weekend groups for sequential processing
-        weekly_records = [r for r in ica_records if getattr(r, "period_type", "weekly") != "weekend"]
-        weekend_records = [r for r in ica_records if getattr(r, "period_type", "weekly") == "weekend"]
-
-        # Step 1: Process weekly records first
-        for rec in weekly_records:
-            process_record(rec, "weekly")
-
-        # Step 2: Process weekend records sequentially on top
-        for rec in weekend_records:
-            process_record(rec, "weekend")
+            # Category aggregation guard: each qualifying observation counts toward category sample count guards
+            for o in obs_list:
+                rec = o["rec"]
+                cat = classify_movie_category(rec.title)
+                if rec.weekly_admissions >= min_admissions_floor:
+                    weight = float(rec.weekly_admissions)
+                    category_totals[cat] += gamma_m * weight
+                    category_weights[cat] += weight
+                    category_counts[cat] += 1
 
         # Compute category averages with minimum sample count guard
         new_category_factors: Dict[str, float] = {}
