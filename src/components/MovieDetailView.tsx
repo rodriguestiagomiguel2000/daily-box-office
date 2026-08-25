@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useCallback, useRef } from "react";
+import { cleanMovieTitle } from "../utils/title";
 import {
   ArrowLeft,
   Film,
@@ -447,7 +448,7 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
 
           <div className="flex-1 space-y-2">
             <div className="flex items-center gap-3 flex-wrap">
-              <h1 className="text-2xl font-bold text-slate-100">{movie.title}</h1>
+              <h1 className="text-2xl font-bold text-slate-100">{cleanMovieTitle(movie.title)}</h1>
               <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
                 Tracking Active
               </span>

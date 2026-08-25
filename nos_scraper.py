@@ -176,21 +176,23 @@ class NOSScraper:
         def parse_title_format(title: str, raw_fmt: Optional[str]) -> Tuple[str, str]:
             title = (title or "").strip()
             match = re.search(r"\s*\(([^)]+)\)\s*$", title)
+            fmt_tag = (raw_fmt or "2D").strip()
             if match:
-                base_title = title[:match.start()].strip()
-                fmt_tag = match.group(1).strip()
-            else:
-                base_title = title
-                fmt_tag = (raw_fmt or "2D").strip()
-                if not fmt_tag or fmt_tag.upper() in ["2D", "NORMAL"]:
-                    fmt_tag = "2D"
+                fmt_candidate = match.group(1).strip()
+                if fmt_candidate:
+                    fmt_tag = fmt_candidate
 
-            if fmt_tag.upper() in ["2D", "NORMAL"]:
+            base_title = re.sub(r"\s*[\(\[]\s*(?:VO|VP|V\.O\.|V\.P\.|Dob\.|Sub\.|Dobrado|Legendado|Vers[ãa]o\s+(?:Original|Portuguesa))(?:\s*[\/\\]\s*[\w\d]+)?\s*[\)\]]", "", title, flags=re.IGNORECASE)
+            base_title = re.sub(r"\s*[-–—]\s*(?:VO|VP|V\.O\.|V\.P\.|Dob\.|Sub\.|Dobrado|Legendado|Vers[ãa]o\s+(?:Original|Portuguesa))\b", "", base_title, flags=re.IGNORECASE)
+            base_title = re.sub(r"\s+\b(?:VO|VP|V\.O\.|V\.P\.|Dob\.|Sub\.|Dobrado|Legendado|Vers[ãa]o\s+(?:Original|Portuguesa))\b$", "", base_title, flags=re.IGNORECASE)
+            base_title = re.sub(r"\s+", " ", base_title).strip()
+
+            if not fmt_tag or fmt_tag.upper() in ["2D", "NORMAL"]:
                 fmt_tag = "2D"
             elif fmt_tag.upper() == "3D":
                 fmt_tag = "3D"
 
-            return base_title, fmt_tag
+            return base_title or title, fmt_tag
 
         combined_raw = all_items + in_theaters_items + soon_items
 

@@ -2,6 +2,7 @@ import React, { useState, useEffect } from "react";
 import { Film, Users, Building, Calendar, Clock, TrendingUp, Euro, ChevronRight, EyeOff, AlertCircle, Info, RefreshCw } from "lucide-react";
 import { TrackedMovieSummary } from "../types";
 import { getNextScheduledTime, formatToPortugal } from "../utils/scheduling";
+import { cleanMovieTitle } from "../utils/title";
 
 interface TrackedMoviesViewProps {
   movies: TrackedMovieSummary[];
@@ -225,7 +226,7 @@ export const TrackedMoviesView: React.FC<TrackedMoviesViewProps> = ({
                           onClick={() => onSelectMovie(movie.id)}
                           className="font-bold text-slate-100 text-base sm:text-lg hover:text-amber-400 cursor-pointer transition line-clamp-2 leading-snug"
                         >
-                          {movie.title}
+                          {cleanMovieTitle(movie.title)}
                         </h3>
                       </div>
 

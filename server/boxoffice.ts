@@ -279,37 +279,33 @@ export async function getUnifiedDailyBoxOfficeData(movieId?: number) {
     if (sess.session_id) entry.sessionIds.add(sess.session_id);
   }
 
-  // Check today live data if snapshot is missing for today
+  // Always fetch live snapshot for today so Daily Box Office reflects up-to-the-minute data matching Movie Detail
   for (const movie of moviesRes.rows) {
     const todayKey = `${movie.id}_${todayStr}`;
-    const entry = dailyMap.get(todayKey);
-    if (!entry || (entry.revenue === 0 && entry.admissions === 0)) {
-      // Check live snapshot
-      try {
-        const liveSnap = await getOrComputeMovieSnapshotAtTime(movie.id, todayStr, new Date());
-        if (liveSnap && (liveSnap.estimated_revenue > 0 || liveSnap.showcount_total > 0)) {
-          if (!dailyMap.has(todayKey)) {
-            dailyMap.set(todayKey, {
-              movie_id: movie.id,
-              op_date: todayStr,
-              revenue: liveSnap.estimated_revenue || 0,
-              admissions: liveSnap.estimated_admissions || 0,
-              snapshot_timestamp: liveSnap.timestamp || new Date().toISOString(),
-              cinemaIds: new Set(),
-              sessionIds: new Set(),
-              is_live: true,
-            });
-          } else {
-            const e = dailyMap.get(todayKey)!;
-            e.revenue = liveSnap.estimated_revenue || 0;
-            e.admissions = liveSnap.estimated_admissions || 0;
-            e.snapshot_timestamp = liveSnap.timestamp || new Date().toISOString();
-            e.is_live = true;
-          }
+    try {
+      const liveSnap = await getOrComputeMovieSnapshotAtTime(movie.id, todayStr, new Date());
+      if (liveSnap && (liveSnap.estimated_revenue > 0 || liveSnap.showcount_total > 0)) {
+        if (!dailyMap.has(todayKey)) {
+          dailyMap.set(todayKey, {
+            movie_id: movie.id,
+            op_date: todayStr,
+            revenue: liveSnap.estimated_revenue || 0,
+            admissions: liveSnap.estimated_admissions || 0,
+            snapshot_timestamp: liveSnap.timestamp || new Date().toISOString(),
+            cinemaIds: new Set(),
+            sessionIds: new Set(),
+            is_live: true,
+          });
+        } else {
+          const e = dailyMap.get(todayKey)!;
+          e.revenue = liveSnap.estimated_revenue || 0;
+          e.admissions = liveSnap.estimated_admissions || 0;
+          e.snapshot_timestamp = liveSnap.timestamp || new Date().toISOString();
+          e.is_live = true;
         }
-      } catch (err) {
-        console.warn(`Failed to compute live snapshot for movie ${movie.id} on ${todayStr}:`, err);
       }
+    } catch (err) {
+      console.warn(`Failed to compute live snapshot for movie ${movie.id} on ${todayStr}:`, err);
     }
   }
 

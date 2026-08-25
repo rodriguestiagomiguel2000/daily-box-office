@@ -14,7 +14,10 @@ import {
   recalculateAllPerformanceSnapshots,
   getMovieResolvedPricesForCalibration,
   syncCalibrationFactorsToDb,
-  computeRoomStructuralBlocks
+  computeRoomStructuralBlocks,
+  getSessionPricesSqlCte,
+  cleanMovieTitle,
+  mergeDuplicateMoviesInDb
 } from "./revenue";
 import { computeMovieEODForecast, runHistoricalBacktests, getBacktestSummaryMetrics } from "./forecast";
 
@@ -57,23 +60,41 @@ apiRouter.get("/movies/catalog", async (req, res) => {
     const parsed = JSON.parse(rawCatalogJson);
     const rawLiveMovies: any[] = parsed.movies || [];
 
-    // Deduplicate raw live movies by external_id
+    // Group and deduplicate raw live movies by cleaned title (merging VO and VP catalog entries)
     const liveMap = new Map<string, any>();
     for (const m of rawLiveMovies) {
-      if (!m.external_id) continue;
-      const key = String(m.external_id).trim();
+      if (!m.title && !m.external_id) continue;
+      const cleanTitle = cleanMovieTitle(m.title) || m.title;
+      const key = cleanTitle.toLowerCase();
+      const extId = String(m.external_id || key).trim();
+
       if (!liveMap.has(key)) {
-        liveMap.set(key, { ...m, external_id: key });
+        liveMap.set(key, {
+          ...m,
+          title: cleanTitle,
+          external_id: extId,
+          formats: Array.from(new Set(m.formats || [])),
+        });
       } else {
         const existing = liveMap.get(key);
         const mergedFormats = Array.from(new Set([...(existing.formats || []), ...(m.formats || [])]));
-        liveMap.set(key, { ...existing, formats: mergedFormats });
+        liveMap.set(key, {
+          ...existing,
+          poster_url: existing.poster_url || m.poster_url || "",
+          duration: existing.duration || m.duration,
+          age_rating: existing.age_rating || m.age_rating,
+          release_date: existing.release_date || m.release_date,
+          status: existing.status === "CURRENTLY_PLAYING" || m.status === "CURRENTLY_PLAYING" ? "CURRENTLY_PLAYING" : existing.status,
+          is_currently_playing: Boolean(existing.is_currently_playing || m.is_currently_playing),
+          formats: mergedFormats,
+        });
       }
     }
     const liveMovies = Array.from(liveMap.values());
 
     // 2. Safely sync catalog metadata into DB while preserving tracking_enabled state
     for (const m of liveMovies) {
+      const cleanTitle = cleanMovieTitle(m.title) || m.title;
       await query(
         `INSERT INTO movies (external_id, title, poster_url, duration, age_rating, release_date, tracking_enabled, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6, FALSE, NOW())
@@ -84,9 +105,12 @@ apiRouter.get("/movies/catalog", async (req, res) => {
            age_rating = COALESCE(NULLIF(EXCLUDED.age_rating, ''), movies.age_rating),
            release_date = COALESCE(NULLIF(EXCLUDED.release_date, ''), movies.release_date),
            updated_at = NOW();`,
-        [m.external_id, m.title, m.poster_url || "", m.duration || null, m.age_rating || "", m.release_date || ""]
+        [m.external_id, cleanTitle, m.poster_url || "", m.duration || null, m.age_rating || "", m.release_date || ""]
       );
     }
+
+    // Deduplicate any VO/VP duplicate records in DB
+    await mergeDuplicateMoviesInDb();
 
     // 3. Fetch local tracking states
     const dbMovies = await query(
@@ -95,10 +119,11 @@ apiRouter.get("/movies/catalog", async (req, res) => {
     const trackingMap = new Map<string, any>();
     for (const m of dbMovies.rows) {
       trackingMap.set(m.external_id, m);
+      if (m.title) trackingMap.set(m.title.toLowerCase(), m);
     }
 
     const merged = liveMovies.map((m) => {
-      const dbEntry = trackingMap.get(m.external_id);
+      const dbEntry = trackingMap.get(m.external_id) || trackingMap.get(m.title.toLowerCase());
       return {
         ...m,
         id: dbEntry ? dbEntry.id : null,
@@ -117,30 +142,56 @@ apiRouter.get("/movies/catalog", async (req, res) => {
 // Toggle tracking for a movie
 apiRouter.post("/movies/track", async (req, res) => {
   try {
-    const { external_id, title, poster_url, duration, age_rating, release_date, tracking_enabled } = req.body;
-    if (!external_id) {
-      return res.status(400).json({ error: "external_id is required" });
+    const { id, external_id, title, poster_url, duration, age_rating, release_date, tracking_enabled } = req.body;
+    if (!external_id && !id && !title) {
+      return res.status(400).json({ error: "external_id, id, or title is required" });
     }
 
     const isTracking = Boolean(tracking_enabled);
+    const cleanTitle = cleanMovieTitle(title) || title;
 
-    const upsertRes = await query(
-      `INSERT INTO movies (external_id, title, poster_url, duration, age_rating, release_date, tracking_enabled, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
-       ON CONFLICT (external_id) DO UPDATE SET
-         tracking_enabled = EXCLUDED.tracking_enabled,
-         title = COALESCE(EXCLUDED.title, movies.title),
-         poster_url = COALESCE(NULLIF(EXCLUDED.poster_url, ''), movies.poster_url),
-         updated_at = NOW()
-       RETURNING *;`,
-      [external_id, title || "Unknown Movie", poster_url || "", duration || null, age_rating || "", release_date || "", isTracking]
-    );
+    if (id) {
+      await query(
+        `UPDATE movies SET tracking_enabled = $1, title = COALESCE(NULLIF($2, ''), title), updated_at = NOW() WHERE id = $3;`,
+        [isTracking, cleanTitle, id]
+      );
+    } else if (external_id) {
+      await query(
+        `INSERT INTO movies (external_id, title, poster_url, duration, age_rating, release_date, tracking_enabled, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+         ON CONFLICT (external_id) DO UPDATE SET
+           tracking_enabled = EXCLUDED.tracking_enabled,
+           title = COALESCE(NULLIF(EXCLUDED.title, ''), movies.title),
+           poster_url = COALESCE(NULLIF(EXCLUDED.poster_url, ''), movies.poster_url),
+           updated_at = NOW();`,
+        [external_id, cleanTitle || "Unknown Movie", poster_url || "", duration || null, age_rating || "", release_date || "", isTracking]
+      );
+    }
 
-    const movie = upsertRes.rows[0];
+    if (cleanTitle) {
+      await query(
+        `UPDATE movies SET tracking_enabled = $1, title = $2 WHERE LOWER(title) = LOWER($2);`,
+        [isTracking, cleanTitle]
+      );
+    }
+
+    // Merge duplicate movie rows across database
+    await mergeDuplicateMoviesInDb();
+
+    let movieRes;
+    if (id) {
+      movieRes = await query(`SELECT * FROM movies WHERE id = $1;`, [id]);
+    } else if (cleanTitle) {
+      movieRes = await query(`SELECT * FROM movies WHERE LOWER(title) = LOWER($1) LIMIT 1;`, [cleanTitle]);
+    } else {
+      movieRes = await query(`SELECT * FROM movies WHERE external_id = $1 LIMIT 1;`, [external_id]);
+    }
+
+    const movie = movieRes.rows[0];
 
     // If enabled, trigger a background collection sweep for this specific movie
-    if (isTracking) {
-      executeCollectionRun({ movieExternalIds: [external_id] }).catch((e) =>
+    if (isTracking && movie) {
+      executeCollectionRun({ movieExternalIds: [movie.external_id] }).catch((e) =>
         console.error("Background initial collection failed:", e)
       );
     }
@@ -179,9 +230,18 @@ apiRouter.get("/dashboard/summary", async (req, res) => {
           ss.safety_seats,
           ss.unknown_seats,
           ss.occupancy_proxy,
-          ss.invariant_valid
+          ss.invariant_valid,
+          COALESCE(sb.blocked_count, 0)::int as structural_blocked_seats
          FROM sessions s
          JOIN seat_snapshots ss ON ss.session_id = s.id
+         LEFT JOIN rooms r ON s.room_id = r.id
+         LEFT JOIN LATERAL (
+           SELECT COUNT(*)::int as blocked_count
+           FROM room_structural_blocks rsb
+           WHERE rsb.theater_room_uuid = r.external_id
+             AND rsb.first_observed_at::date <= NULLIF(s.operational_date, '')::date
+             AND (rsb.removed_at IS NULL OR rsb.removed_at::date > NULLIF(s.operational_date, '')::date)
+         ) sb ON true
          WHERE s.movie_id = $1 
            AND s.active = true 
            AND (s.starts_at IS NULL OR s.starts_at >= NOW() - INTERVAL '30 minutes')
@@ -200,9 +260,11 @@ apiRouter.get("/dashboard/summary", async (req, res) => {
       let latestCollectedAt: Date | null = null;
 
       for (const snap of latestSnapshots) {
+        const blocked = Number(snap.structural_blocked_seats || 0);
+        const effectiveUnavail = Math.max(0, snap.unavailable_seats - blocked);
         totalSellable += snap.sellable_seats;
         totalAvailable += snap.available_seats;
-        totalUnavailable += snap.unavailable_seats;
+        totalUnavailable += effectiveUnavail;
         totalSafety += snap.safety_seats;
         if (!latestCollectedAt || new Date(snap.collected_at) > latestCollectedAt) {
           latestCollectedAt = new Date(snap.collected_at);
@@ -255,7 +317,9 @@ apiRouter.get("/dashboard/summary", async (req, res) => {
         for (const snap of latestSnapshots) {
           const sPrices = pricesBySession.get(snap.session_id) || [];
           const avgTicket = resolveSessionUnitPriceJs(snap.format, sPrices);
-          estimatedRevenue += snap.unavailable_seats * avgTicket;
+          const blocked = Number(snap.structural_blocked_seats || 0);
+          const effectiveUnavail = Math.max(0, snap.unavailable_seats - blocked);
+          estimatedRevenue += effectiveUnavail * avgTicket;
         }
       }
 
@@ -418,8 +482,10 @@ apiRouter.get("/movies/:id/detail", async (req, res) => {
       
       const sellable = snap ? snap.sellable_seats : 0;
       const available = snap ? snap.available_seats : 0;
-      const unavailable = snap ? snap.unavailable_seats : 0;
-      const occProxy = snap ? snap.occupancy_proxy : 0;
+      const rawUnavailable = snap ? snap.unavailable_seats : 0;
+      const blocked = Number(sess.structural_blocked_seats || 0);
+      const unavailable = Math.max(0, rawUnavailable - blocked);
+      const occProxy = sellable > 0 ? unavailable / sellable : 0;
       const invValid = snap ? snap.invariant_valid : true;
       const snapTime = snap ? snap.collected_at : null;
 
@@ -474,6 +540,7 @@ apiRouter.get("/movies/:id/detail", async (req, res) => {
         sellable_seats: sellable,
         available_seats: available,
         unavailable_seats: unavailable,
+        effective_unavailable_seats: unavailable,
         structural_blocked_seats: Number(sess.structural_blocked_seats || 0),
         occupancy_proxy: occProxy,
         invariant_valid: invValid,
@@ -494,7 +561,7 @@ apiRouter.get("/movies/:id/detail", async (req, res) => {
     const timelineRes = await query(
       `SELECT 
         date_trunc('minute', ss.collected_at) as timeline_time,
-        SUM(ss.unavailable_seats) as total_unavailable,
+        SUM(GREATEST(0, ss.unavailable_seats - COALESCE(sb.blocked_count, 0))) as total_unavailable,
         SUM(ss.available_seats) as total_available,
         SUM(ss.sellable_seats) as total_sellable,
         COUNT(DISTINCT ss.session_id) as active_sessions,
@@ -502,6 +569,15 @@ apiRouter.get("/movies/:id/detail", async (req, res) => {
         COALESCE(SUM(st.newly_available), 0) as newly_available,
         COALESCE(AVG(st.sales_velocity_proxy), 0) as avg_velocity
        FROM seat_snapshots ss
+       JOIN sessions s ON ss.session_id = s.id
+       LEFT JOIN rooms r ON s.room_id = r.id
+       LEFT JOIN LATERAL (
+         SELECT COUNT(*)::int as blocked_count
+         FROM room_structural_blocks rsb
+         WHERE rsb.theater_room_uuid = r.external_id
+           AND rsb.first_observed_at::date <= NULLIF(s.operational_date, '')::date
+           AND (rsb.removed_at IS NULL OR rsb.removed_at::date > NULLIF(s.operational_date, '')::date)
+       ) sb ON true
        LEFT JOIN seat_transitions st ON st.curr_snapshot_id = ss.id
        WHERE ss.session_id = ANY($1::int[])
        GROUP BY date_trunc('minute', ss.collected_at)
@@ -645,8 +721,7 @@ apiRouter.get("/sessions/:id/history", async (req, res) => {
 
     const latestUnavailable = latestSnap ? Number(latestSnap.unavailable_seats) : 0;
     const latestBlocked = Number(sess.structural_blocked_seats || 0);
-    // Structural block subtraction temporarily disabled across the app (157/362 seats in NOS Colombo IMAX flagged falsely)
-    const latestEffective = latestUnavailable;
+    const latestEffective = Math.max(0, latestUnavailable - latestBlocked);
 
     res.json({
       session: {
@@ -670,8 +745,7 @@ apiRouter.get("/sessions/:id/history", async (req, res) => {
       snapshots: snapshotsRes.rows.map((s) => {
         const rawUnavail = Number(s.unavailable_seats);
         const blocked = Number(s.structural_blocked_seats || 0);
-        // Structural block subtraction temporarily disabled across the app (157/362 seats in NOS Colombo IMAX flagged falsely)
-        const effective = rawUnavail;
+        const effective = Math.max(0, rawUnavail - blocked);
         return {
           id: s.id,
           collected_at: new Date(s.collected_at).toISOString(),
@@ -1284,9 +1358,18 @@ export async function getOrComputeMovieSnapshotsBatch(
             ss.available_seats,
             ss.unavailable_seats,
             ss.occupancy_proxy,
-            ss.collected_at
+            ss.collected_at,
+            COALESCE(sb.blocked_count, 0)::int as structural_blocked_seats
           FROM sessions s
           JOIN seat_snapshots ss ON ss.session_id = s.id
+          LEFT JOIN rooms r ON s.room_id = r.id
+          LEFT JOIN LATERAL (
+            SELECT COUNT(*)::int as blocked_count
+            FROM room_structural_blocks rsb
+            WHERE rsb.theater_room_uuid = r.external_id
+              AND rsb.first_observed_at::date <= NULLIF(s.operational_date, '')::date
+              AND (rsb.removed_at IS NULL OR rsb.removed_at::date > NULLIF(s.operational_date, '')::date)
+          ) sb ON true
           WHERE s.movie_id = $1 
             AND (s.operational_date = mt.op_date OR TO_CHAR((s.starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD') = mt.op_date)
             AND ss.collected_at <= mt.target_ts
@@ -1303,19 +1386,7 @@ export async function getOrComputeMovieSnapshotsBatch(
             AND st.transition_timestamp <= mt.target_ts
           ORDER BY st.session_id, st.transition_timestamp DESC
         ),
-        session_prices AS (
-          SELECT 
-            session_id,
-            COALESCE(
-              MIN(price) FILTER (WHERE is_default = true AND price > 0),
-              MIN(price) FILTER (WHERE price > 0 AND (ticket_type ILIKE '%normal%' OR ticket_type ILIKE '%adulto%' OR ticket_type ILIKE '%inteiro%' OR ticket_type ILIKE '%standard%') AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND (seats_count IS NULL OR seats_count = 1)),
-              MIN(price) FILTER (WHERE price > 0 AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND ticket_type NOT ILIKE '%crian%' AND ticket_type NOT ILIKE '%estud%' AND ticket_type NOT ILIKE '%sénior%' AND ticket_type NOT ILIKE '%senior%' AND (seats_count IS NULL OR seats_count = 1)),
-              AVG(price) FILTER (WHERE price > 0)
-            ) as avg_price
-          FROM session_ticket_prices
-          WHERE session_id IN (SELECT session_id FROM session_latest_snaps)
-          GROUP BY session_id
-        )
+        ${getSessionPricesSqlCte()}
         SELECT 
           COUNT(sls.session_id) as showcount_total,
           COUNT(CASE WHEN sls.starts_at <= mt.target_ts THEN 1 END) as shows_started,
@@ -1323,11 +1394,11 @@ export async function getOrComputeMovieSnapshotsBatch(
           COUNT(CASE WHEN sls.starts_at + INTERVAL '2 hours' > mt.target_ts THEN 1 END) as shows_remaining,
           COALESCE(SUM(sls.sellable_seats), 0) as sellable_capacity,
           COALESCE(SUM(sls.available_seats), 0) as available_seats,
-          COALESCE(SUM(sls.unavailable_seats), 0) as unavailable_seats,
+          COALESCE(SUM(GREATEST(0, sls.unavailable_seats - sls.structural_blocked_seats)), 0) as unavailable_seats,
           COALESCE(SUM(st.newly_unavailable), 0) as newly_unavailable,
           COALESCE(SUM(st.newly_available), 0) as newly_available,
           COALESCE(SUM(st.sales_velocity_proxy), 0.0) as sales_velocity,
-          COALESCE(SUM(sls.unavailable_seats * COALESCE(sp.avg_price, CASE WHEN sls.format ILIKE '%IMAX%' THEN 13.50 WHEN sls.format ILIKE '%3D%' THEN 9.50 ELSE 8.75 END)), 0.0) as estimated_revenue
+          COALESCE(SUM(GREATEST(0, sls.unavailable_seats - sls.structural_blocked_seats) * sp.resolved_unit_price), 0.0) as estimated_revenue
         FROM session_latest_snaps sls
         LEFT JOIN session_transitions st ON sls.session_id = st.session_id
         LEFT JOIN session_prices sp ON sls.session_id = sp.session_id
@@ -1801,29 +1872,27 @@ apiRouter.get("/movies/:id/hourly-breakdown", async (req, res) => {
             s.format,
             ss.unavailable_seats,
             ss.sellable_seats,
-            ss.collected_at
+            ss.collected_at,
+            COALESCE(sb.blocked_count, 0)::int as structural_blocked_seats
           FROM sessions s
           JOIN seat_snapshots ss ON ss.session_id = s.id
+          LEFT JOIN rooms r ON s.room_id = r.id
+          LEFT JOIN LATERAL (
+            SELECT COUNT(*)::int as blocked_count
+            FROM room_structural_blocks rsb
+            WHERE rsb.theater_room_uuid = r.external_id
+              AND rsb.first_observed_at::date <= NULLIF(s.operational_date, '')::date
+              AND (rsb.removed_at IS NULL OR rsb.removed_at::date > NULLIF(s.operational_date, '')::date)
+          ) sb ON true
           WHERE s.movie_id = $1
             AND (s.operational_date = $2 OR TO_CHAR((s.starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD') = $2)
           ORDER BY s.id, ss.collected_at DESC
         ),
-        session_prices AS (
-          SELECT 
-            session_id,
-            COALESCE(
-              MIN(price) FILTER (WHERE is_default = true AND price > 0),
-              MIN(price) FILTER (WHERE price > 0 AND (ticket_type ILIKE '%normal%' OR ticket_type ILIKE '%adulto%' OR ticket_type ILIKE '%inteiro%' OR ticket_type ILIKE '%standard%') AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND (seats_count IS NULL OR seats_count = 1)),
-              MIN(price) FILTER (WHERE price > 0 AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND ticket_type NOT ILIKE '%crian%' AND ticket_type NOT ILIKE '%estud%' AND ticket_type NOT ILIKE '%sénior%' AND ticket_type NOT ILIKE '%senior%' AND (seats_count IS NULL OR seats_count = 1)),
-              AVG(price) FILTER (WHERE price > 0)
-            ) as avg_price
-          FROM session_ticket_prices
-          GROUP BY session_id
-        )
+        ${getSessionPricesSqlCte()}
         SELECT 
           COUNT(*) as total_sessions,
-          COALESCE(SUM(sl.unavailable_seats), 0)::int as total_admissions,
-          COALESCE(SUM(sl.unavailable_seats * COALESCE(sp.avg_price, CASE WHEN s.format ILIKE '%IMAX%' THEN 13.50 WHEN s.format ILIKE '%3D%' THEN 9.50 ELSE 8.75 END)), 0.0)::numeric as total_revenue
+          COALESCE(SUM(GREATEST(0, sl.unavailable_seats - sl.structural_blocked_seats)), 0)::int as total_admissions,
+          COALESCE(SUM(GREATEST(0, sl.unavailable_seats - sl.structural_blocked_seats) * sp.resolved_unit_price), 0.0)::numeric as total_revenue
         FROM session_latest sl
         JOIN sessions s ON sl.session_id = s.id
         LEFT JOIN session_prices sp ON sl.session_id = sp.session_id;`,
@@ -1843,29 +1912,27 @@ apiRouter.get("/movies/:id/hourly-breakdown", async (req, res) => {
             s.format,
             ss.unavailable_seats,
             ss.sellable_seats,
-            ss.collected_at
+            ss.collected_at,
+            COALESCE(sb.blocked_count, 0)::int as structural_blocked_seats
           FROM sessions s
           JOIN seat_snapshots ss ON ss.session_id = s.id
+          LEFT JOIN rooms r ON s.room_id = r.id
+          LEFT JOIN LATERAL (
+            SELECT COUNT(*)::int as blocked_count
+            FROM room_structural_blocks rsb
+            WHERE rsb.theater_room_uuid = r.external_id
+              AND rsb.first_observed_at::date <= NULLIF(s.operational_date, '')::date
+              AND (rsb.removed_at IS NULL OR rsb.removed_at::date > NULLIF(s.operational_date, '')::date)
+          ) sb ON true
           WHERE s.movie_id = $1
             AND (s.operational_date = $2 OR TO_CHAR((s.starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD') = $2)
           ORDER BY s.id, ss.collected_at ASC
         ),
-        session_prices AS (
-          SELECT 
-            session_id,
-            COALESCE(
-              MIN(price) FILTER (WHERE is_default = true AND price > 0),
-              MIN(price) FILTER (WHERE price > 0 AND (ticket_type ILIKE '%normal%' OR ticket_type ILIKE '%adulto%' OR ticket_type ILIKE '%inteiro%' OR ticket_type ILIKE '%standard%') AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND (seats_count IS NULL OR seats_count = 1)),
-              MIN(price) FILTER (WHERE price > 0 AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND ticket_type NOT ILIKE '%crian%' AND ticket_type NOT ILIKE '%estud%' AND ticket_type NOT ILIKE '%sénior%' AND ticket_type NOT ILIKE '%senior%' AND (seats_count IS NULL OR seats_count = 1)),
-              AVG(price) FILTER (WHERE price > 0)
-            ) as avg_price
-          FROM session_ticket_prices
-          GROUP BY session_id
-        )
+        ${getSessionPricesSqlCte()}
         SELECT 
           COUNT(*) as total_sessions,
-          COALESCE(SUM(sf.unavailable_seats), 0)::int as baseline_seats,
-          COALESCE(SUM(sf.unavailable_seats * COALESCE(sp.avg_price, CASE WHEN s.format ILIKE '%IMAX%' THEN 13.50 WHEN s.format ILIKE '%3D%' THEN 9.50 ELSE 8.75 END)), 0.0)::numeric as baseline_revenue
+          COALESCE(SUM(GREATEST(0, sf.unavailable_seats - sf.structural_blocked_seats)), 0)::int as baseline_seats,
+          COALESCE(SUM(GREATEST(0, sf.unavailable_seats - sf.structural_blocked_seats) * sp.resolved_unit_price), 0.0)::numeric as baseline_revenue
         FROM session_first sf
         JOIN sessions s ON sf.session_id = s.id
         LEFT JOIN session_prices sp ON sf.session_id = sp.session_id;`,
@@ -1877,26 +1944,15 @@ apiRouter.get("/movies/:id/hourly-breakdown", async (req, res) => {
 
       // 3. Fetch hourly seat transitions with both NET and GROSS metrics
       const transRes = await query(
-        `WITH session_prices AS (
-          SELECT 
-            session_id,
-            COALESCE(
-              MIN(price) FILTER (WHERE is_default = true AND price > 0),
-              MIN(price) FILTER (WHERE price > 0 AND (ticket_type ILIKE '%normal%' OR ticket_type ILIKE '%adulto%' OR ticket_type ILIKE '%inteiro%' OR ticket_type ILIKE '%standard%') AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND (seats_count IS NULL OR seats_count = 1)),
-              MIN(price) FILTER (WHERE price > 0 AND ticket_type NOT ILIKE '%fam%' AND ticket_type NOT ILIKE '%pax%' AND ticket_type NOT ILIKE '%crian%' AND ticket_type NOT ILIKE '%estud%' AND ticket_type NOT ILIKE '%sénior%' AND ticket_type NOT ILIKE '%senior%' AND (seats_count IS NULL OR seats_count = 1)),
-              AVG(price) FILTER (WHERE price > 0)
-            ) as avg_price
-          FROM session_ticket_prices
-          GROUP BY session_id
-        )
+        `WITH ${getSessionPricesSqlCte()}
         SELECT 
           EXTRACT(HOUR FROM st.transition_timestamp AT TIME ZONE 'Europe/Lisbon')::int as lisbon_hour,
           COALESCE(SUM(st.newly_unavailable), 0)::int as gross_tickets,
-          COALESCE(SUM(st.newly_unavailable * COALESCE(sp.avg_price, CASE WHEN s.format ILIKE '%IMAX%' THEN 13.50 WHEN s.format ILIKE '%3D%' THEN 9.50 ELSE 8.75 END)), 0.0)::numeric as gross_revenue,
+          COALESCE(SUM(st.newly_unavailable * sp.resolved_unit_price), 0.0)::numeric as gross_revenue,
           COALESCE(SUM(st.newly_available), 0)::int as returns_tickets,
-          COALESCE(SUM(st.newly_available * COALESCE(sp.avg_price, CASE WHEN s.format ILIKE '%IMAX%' THEN 13.50 WHEN s.format ILIKE '%3D%' THEN 9.50 ELSE 8.75 END)), 0.0)::numeric as returns_revenue,
+          COALESCE(SUM(st.newly_available * sp.resolved_unit_price), 0.0)::numeric as returns_revenue,
           COALESCE(SUM(st.newly_unavailable - st.newly_available), 0)::int as net_tickets,
-          COALESCE(SUM((st.newly_unavailable - st.newly_available) * COALESCE(sp.avg_price, CASE WHEN s.format ILIKE '%IMAX%' THEN 13.50 WHEN s.format ILIKE '%3D%' THEN 9.50 ELSE 8.75 END)), 0.0)::numeric as net_revenue
+          COALESCE(SUM((st.newly_unavailable - st.newly_available) * sp.resolved_unit_price), 0.0)::numeric as net_revenue
         FROM seat_transitions st
         JOIN sessions s ON st.session_id = s.id
         LEFT JOIN session_prices sp ON s.id = sp.session_id

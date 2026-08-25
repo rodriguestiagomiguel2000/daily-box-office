@@ -4,7 +4,7 @@ import os from "os";
 import path from "path";
 import readline from "readline";
 import { pool, query } from "./db";
-import { logCollectionPricingAuditReport, getSessionPricesSqlCte, computeRoomStructuralBlocks } from "./revenue";
+import { logCollectionPricingAuditReport, getSessionPricesSqlCte, computeRoomStructuralBlocks, cleanMovieTitle } from "./revenue";
 
 export interface CollectorJobOptions {
   runId?: string;
@@ -419,20 +419,40 @@ export async function persistSingleSession(
     const s = item.session;
     const snap = item.snapshot;
 
-    // 1. Upsert movie
-    const movieRes = await client.query<{ id: number }>(
-      `INSERT INTO movies (external_id, title, poster_url, duration, age_rating, release_date, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, NOW())
-       ON CONFLICT (external_id) DO UPDATE SET
-         title = EXCLUDED.title,
-         poster_url = COALESCE(NULLIF(EXCLUDED.poster_url, ''), movies.poster_url),
-         duration = COALESCE(EXCLUDED.duration, movies.duration),
-         age_rating = COALESCE(EXCLUDED.age_rating, movies.age_rating),
-         updated_at = NOW()
-       RETURNING id;`,
-      [m.external_id, m.title, m.poster_url, m.duration, m.age_rating, m.release_date]
+    // 1. Upsert movie with clean title and deduplication across VO/VP
+    const cleanedTitle = cleanMovieTitle(m.title) || m.title;
+
+    // Check if movie already exists by external_id OR clean title (case-insensitive)
+    const existingMovie = await client.query<{ id: number }>(
+      `SELECT id FROM movies 
+       WHERE external_id = $1 OR LOWER(title) = LOWER($2) 
+       ORDER BY (CASE WHEN external_id = $1 THEN 0 ELSE 1 END), id ASC 
+       LIMIT 1;`,
+      [m.external_id, cleanedTitle]
     );
-    const movieId = movieRes.rows[0].id;
+
+    let movieId: number;
+    if (existingMovie.rows.length > 0) {
+      movieId = existingMovie.rows[0].id;
+      await client.query(
+        `UPDATE movies SET 
+           title = $1,
+           poster_url = COALESCE(NULLIF($2, ''), poster_url),
+           duration = COALESCE($3, duration),
+           age_rating = COALESCE($4, age_rating),
+           updated_at = NOW()
+         WHERE id = $5;`,
+        [cleanedTitle, m.poster_url, m.duration, m.age_rating, movieId]
+      );
+    } else {
+      const movieRes = await client.query<{ id: number }>(
+        `INSERT INTO movies (external_id, title, poster_url, duration, age_rating, release_date, updated_at)
+         VALUES ($1, $2, $3, $4, $5, $6, NOW())
+         RETURNING id;`,
+        [m.external_id, cleanedTitle, m.poster_url, m.duration, m.age_rating, m.release_date]
+      );
+      movieId = movieRes.rows[0].id;
+    }
 
     // 2. Upsert cinema
     const cinemaRes = await client.query<{ id: number }>(

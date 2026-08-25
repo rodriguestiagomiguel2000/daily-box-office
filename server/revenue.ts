@@ -226,6 +226,8 @@ export async function recalculateAllPerformanceSnapshots(movieId?: number, opera
     SET 
       estimated_admissions = rs.new_estimated_admissions,
       estimated_revenue = ROUND(rs.new_estimated_revenue::numeric, 2),
+      unavailable_seats = rs.new_estimated_admissions,
+      occupancy_proxy = CASE WHEN mps.sellable_capacity > 0 THEN ROUND((rs.new_estimated_admissions::numeric / mps.sellable_capacity::numeric), 4) ELSE 0.0 END,
       revenue_per_show = CASE WHEN mps.showcount_total > 0 THEN ROUND((rs.new_estimated_revenue / mps.showcount_total)::numeric, 2) ELSE 0.0 END,
       admissions_per_show = CASE WHEN mps.showcount_total > 0 THEN ROUND((rs.new_estimated_admissions::numeric / mps.showcount_total)::numeric, 2) ELSE 0.0 END,
       resolved_unit_price_raw = rs.avg_raw_price,
@@ -736,9 +738,24 @@ const STOPWORDS_SET = new Set([
   "the", "a", "an", "and", "or", "of", "in", "to", "for", "with", "without", "on", "at", "by", "from", "movie", "film"
 ]);
 
+export function cleanMovieTitle(title: string): string {
+  if (!title) return "";
+  let cleaned = title
+    // Remove parenthetical/bracketed version & format tags like (VO), (VP), (V.O.), (VP/3D), (Versão Portuguesa), etc.
+    .replace(/\s*[\(\[]\s*(?:VO|VP|V\.O\.|V\.P\.|Dob\.|Sub\.|Dobrado|Legendado|Vers[ãa]o\s+(?:Original|Portuguesa))(?:\s*[\/\\]\s*[\w\d]+)?\s*[\)\]]/gi, "")
+    // Remove trailing dash-separated version tags like - VO, - VP, - V.O., - Dobrado, - Versão Portuguesa
+    .replace(/\s*[-–—]\s*(?:VO|VP|V\.O\.|V\.P\.|Dob\.|Sub\.|Dobrado|Legendado|Vers[ãa]o\s+(?:Original|Portuguesa))\b/gi, "")
+    // Remove standalone trailing version tags like Movie VO, Movie VP, Movie V.O., Movie V.P., Movie Dobrado, Movie Legendado
+    .replace(/\s+\b(?:VO|VP|V\.O\.|V\.P\.|Dob\.|Sub\.|Dobrado|Legendado|Vers[ãa]o\s+(?:Original|Portuguesa))\b$/gi, "");
+
+  // Normalize multiple spaces and trim
+  return cleaned.replace(/\s+/g, " ").trim();
+}
+
 export function normalizeMovieTitle(s: string): string {
   if (!s) return "";
-  let text = s
+  const cleanedTitle = cleanMovieTitle(s);
+  let text = (cleanedTitle || s)
     .toLowerCase()
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "");
@@ -1296,5 +1313,87 @@ export async function logCollectionPricingAuditReport(collectionRunDbId: number)
   } catch (err) {
     console.error("Failed to generate collection pricing audit report:", err);
     return [];
+  }
+}
+
+/**
+ * Normalizes all movie titles in DB and merges duplicate movie entries
+ * (e.g., VO vs VP versions of the same movie) under a single canonical movie record.
+ */
+export async function mergeDuplicateMoviesInDb(): Promise<number> {
+  try {
+    // 1. Clean titles of all existing movies
+    const allMovies = await query<{ id: number; title: string }>("SELECT id, title FROM movies ORDER BY id ASC;");
+    for (const m of allMovies.rows) {
+      const cleaned = cleanMovieTitle(m.title);
+      if (cleaned && cleaned !== m.title) {
+        await query("UPDATE movies SET title = $1 WHERE id = $2;", [cleaned, m.id]);
+      }
+    }
+
+    // 2. Find groups of movies sharing the exact same LOWER(title)
+    const duplicates = await query<{ clean_title: string; movie_ids: number[] }>(
+      `SELECT LOWER(title) as clean_title, array_agg(id ORDER BY id ASC) as movie_ids
+       FROM movies
+       GROUP BY LOWER(title)
+       HAVING COUNT(*) > 1;`
+    );
+
+    let mergedCount = 0;
+    for (const group of duplicates.rows) {
+      const ids = group.movie_ids;
+      if (ids.length <= 1) continue;
+
+      // Pick canonical ID: the one that already has the most sessions, or smallest ID
+      const counts = await query<{ movie_id: number; cnt: number }>(
+        `SELECT movie_id, COUNT(*)::int as cnt 
+         FROM sessions 
+         WHERE movie_id = ANY($1::int[]) 
+         GROUP BY movie_id 
+         ORDER BY cnt DESC, movie_id ASC;`,
+        [ids]
+      );
+
+      let canonicalId = ids[0];
+      if (counts.rows.length > 0) {
+        canonicalId = counts.rows[0].movie_id;
+      }
+
+      const secondaryIds = ids.filter((id) => id !== canonicalId);
+      console.log(`[Movie Merge] Merging duplicate movie records for "${group.clean_title}". Canonical ID: ${canonicalId}, Secondary IDs: ${secondaryIds.join(", ")}`);
+
+      for (const secId of secondaryIds) {
+        // Re-link sessions
+        await query("UPDATE sessions SET movie_id = $1 WHERE movie_id = $2;", [canonicalId, secId]);
+
+        // Re-link or clean movie_performance_snapshots
+        await query("UPDATE movie_performance_snapshots SET movie_id = $1 WHERE movie_id = $2;", [canonicalId, secId]);
+
+        // Re-link or clean forecast_backtests
+        await query("UPDATE forecast_backtests SET movie_id = $1 WHERE movie_id = $2;", [canonicalId, secId]);
+
+        // Re-link or clean calibration_factors
+        await query(
+          `UPDATE calibration_factors SET movie_id = $1 WHERE movie_id = $2 
+           AND NOT EXISTS (SELECT 1 FROM calibration_factors WHERE movie_id = $1);`,
+          [canonicalId, secId]
+        );
+        await query("DELETE FROM calibration_factors WHERE movie_id = $1;", [secId]);
+
+        // Delete secondary movie entry
+        await query("DELETE FROM movies WHERE id = $1;", [secId]);
+        mergedCount++;
+      }
+    }
+
+    if (mergedCount > 0) {
+      console.log(`[Movie Merge] Successfully merged ${mergedCount} duplicate movie entries. Recalculating performance snapshots...`);
+      await recalculateAllPerformanceSnapshots();
+    }
+
+    return mergedCount;
+  } catch (err) {
+    console.error("[Movie Merge] Error during movie deduplication:", err);
+    return 0;
   }
 }

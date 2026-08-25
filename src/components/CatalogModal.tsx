@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { X, Search, Film, Check, Plus, Clock, Calendar, Sparkles, Tag } from "lucide-react";
 import { Movie } from "../types";
+import { cleanMovieTitle } from "../utils/title";
 
 interface CatalogModalProps {
   isOpen: boolean;
@@ -203,7 +204,7 @@ export const CatalogModal: React.FC<CatalogModalProps> = ({
                       )}
                     </div>
 
-                    <h4 className="font-bold text-slate-100 text-sm truncate">{movie.title}</h4>
+                    <h4 className="font-bold text-slate-100 text-sm truncate">{cleanMovieTitle(movie.title)}</h4>
                     <div className="text-[11px] text-slate-500 font-mono">
                       ID: {movie.external_id}
                     </div>

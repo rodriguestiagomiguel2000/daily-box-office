@@ -1,5 +1,5 @@
 import { query } from "./db";
-import { recalculateAllPerformanceSnapshots } from "./revenue";
+import { recalculateAllPerformanceSnapshots, mergeDuplicateMoviesInDb } from "./revenue";
 
 export async function runMigrations(): Promise<void> {
   console.log("Applying official Phase 2 PostgreSQL schema migrations...");
@@ -314,9 +314,14 @@ export async function runMigrations(): Promise<void> {
   console.log("PostgreSQL schema migrations applied successfully.");
 
   try {
-    const updated = await recalculateAllPerformanceSnapshots();
-    console.log(`Recalculated ${updated} performance snapshots using canonical pricing.`);
+    const merged = await mergeDuplicateMoviesInDb();
+    if (merged > 0) {
+      console.log(`Merged ${merged} duplicate movie records (e.g. VO/VP versions).`);
+    } else {
+      const updated = await recalculateAllPerformanceSnapshots();
+      console.log(`Recalculated ${updated} performance snapshots using canonical pricing.`);
+    }
   } catch (err) {
-    console.warn("Snapshot recalculation warning:", err);
+    console.warn("Movie deduplication warning:", err);
   }
 }
