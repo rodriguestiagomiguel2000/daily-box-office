@@ -114,7 +114,7 @@ apiRouter.get("/movies/catalog", async (req, res) => {
 
     // 3. Fetch local tracking states
     const dbMovies = await query(
-      "SELECT id, external_id, title, poster_url, duration, age_rating, release_date, tracking_enabled, updated_at FROM movies;"
+      "SELECT id, external_id, title, poster_url, duration, age_rating, release_date, tracking_enabled, tracking_end_date, updated_at FROM movies;"
     );
     const trackingMap = new Map<string, any>();
     for (const m of dbMovies.rows) {
@@ -129,6 +129,7 @@ apiRouter.get("/movies/catalog", async (req, res) => {
         id: dbEntry ? dbEntry.id : null,
         title: dbEntry ? dbEntry.title : m.title,
         tracking_enabled: dbEntry ? dbEntry.tracking_enabled : false,
+        tracking_end_date: dbEntry ? (dbEntry.tracking_end_date ? String(dbEntry.tracking_end_date).slice(0, 10) : null) : null,
       };
     });
 
@@ -139,10 +140,10 @@ apiRouter.get("/movies/catalog", async (req, res) => {
   }
 });
 
-// Toggle tracking for a movie
+// Toggle tracking or update tracking end date for a movie
 apiRouter.post("/movies/track", async (req, res) => {
   try {
-    const { id, external_id, title, poster_url, duration, age_rating, release_date, tracking_enabled } = req.body;
+    const { id, external_id, title, poster_url, duration, age_rating, release_date, tracking_enabled, tracking_end_date } = req.body;
     if (!external_id && !id && !title) {
       return res.status(400).json({ error: "external_id, id, or title is required" });
     }
@@ -150,29 +151,78 @@ apiRouter.post("/movies/track", async (req, res) => {
     const isTracking = Boolean(tracking_enabled);
     const cleanTitle = cleanMovieTitle(title) || title;
 
+    let targetEndDate: string | null | undefined = undefined;
+    if (tracking_end_date !== undefined) {
+      const rawVal = tracking_end_date;
+      if (rawVal === null || rawVal === "" || rawVal === "null" || rawVal === "undefined") {
+        targetEndDate = null;
+      } else if (typeof rawVal === "string" && /^\d{4}-\d{2}-\d{2}$/.test(rawVal.trim())) {
+        targetEndDate = rawVal.trim();
+      } else {
+        targetEndDate = null;
+      }
+    }
+
     if (id) {
-      await query(
-        `UPDATE movies SET tracking_enabled = $1, title = COALESCE(NULLIF($2, ''), title), updated_at = NOW() WHERE id = $3;`,
-        [isTracking, cleanTitle, id]
-      );
+      if (targetEndDate !== undefined) {
+        await query(
+          `UPDATE movies 
+           SET tracking_enabled = $1, 
+               tracking_end_date = $2, 
+               title = COALESCE(NULLIF($3, ''), title), 
+               updated_at = NOW() 
+           WHERE id = $4;`,
+          [isTracking, targetEndDate, cleanTitle, id]
+        );
+      } else {
+        await query(
+          `UPDATE movies 
+           SET tracking_enabled = $1, 
+               title = COALESCE(NULLIF($2, ''), title), 
+               updated_at = NOW() 
+           WHERE id = $3;`,
+          [isTracking, cleanTitle, id]
+        );
+      }
     } else if (external_id) {
-      await query(
-        `INSERT INTO movies (external_id, title, poster_url, duration, age_rating, release_date, tracking_enabled, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
-         ON CONFLICT (external_id) DO UPDATE SET
-           tracking_enabled = EXCLUDED.tracking_enabled,
-           title = COALESCE(NULLIF(EXCLUDED.title, ''), movies.title),
-           poster_url = COALESCE(NULLIF(EXCLUDED.poster_url, ''), movies.poster_url),
-           updated_at = NOW();`,
-        [external_id, cleanTitle || "Unknown Movie", poster_url || "", duration || null, age_rating || "", release_date || "", isTracking]
-      );
+      if (targetEndDate !== undefined) {
+        await query(
+          `INSERT INTO movies (external_id, title, poster_url, duration, age_rating, release_date, tracking_enabled, tracking_end_date, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, NOW())
+           ON CONFLICT (external_id) DO UPDATE SET
+             tracking_enabled = EXCLUDED.tracking_enabled,
+             tracking_end_date = EXCLUDED.tracking_end_date,
+             title = COALESCE(NULLIF(EXCLUDED.title, ''), movies.title),
+             poster_url = COALESCE(NULLIF(EXCLUDED.poster_url, ''), movies.poster_url),
+             updated_at = NOW();`,
+          [external_id, cleanTitle || "Unknown Movie", poster_url || "", duration || null, age_rating || "", release_date || "", isTracking, targetEndDate]
+        );
+      } else {
+        await query(
+          `INSERT INTO movies (external_id, title, poster_url, duration, age_rating, release_date, tracking_enabled, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+           ON CONFLICT (external_id) DO UPDATE SET
+             tracking_enabled = EXCLUDED.tracking_enabled,
+             title = COALESCE(NULLIF(EXCLUDED.title, ''), movies.title),
+             poster_url = COALESCE(NULLIF(EXCLUDED.poster_url, ''), movies.poster_url),
+             updated_at = NOW();`,
+          [external_id, cleanTitle || "Unknown Movie", poster_url || "", duration || null, age_rating || "", release_date || "", isTracking]
+        );
+      }
     }
 
     if (cleanTitle) {
-      await query(
-        `UPDATE movies SET tracking_enabled = $1, title = $2 WHERE LOWER(title) = LOWER($2);`,
-        [isTracking, cleanTitle]
-      );
+      if (targetEndDate !== undefined) {
+        await query(
+          `UPDATE movies SET tracking_enabled = $1, tracking_end_date = $2, title = $3 WHERE LOWER(title) = LOWER($3);`,
+          [isTracking, targetEndDate, cleanTitle]
+        );
+      } else {
+        await query(
+          `UPDATE movies SET tracking_enabled = $1, title = $2 WHERE LOWER(title) = LOWER($2);`,
+          [isTracking, cleanTitle]
+        );
+      }
     }
 
     // Merge duplicate movie rows across database
@@ -189,11 +239,15 @@ apiRouter.post("/movies/track", async (req, res) => {
 
     const movie = movieRes.rows[0];
 
-    // If enabled, trigger a background collection sweep for this specific movie
+    // If enabled and still effectively active, trigger a background collection sweep for this specific movie
     if (isTracking && movie) {
-      executeCollectionRun({ movieExternalIds: [movie.external_id] }).catch((e) =>
-        console.error("Background initial collection failed:", e)
-      );
+      const currentOpDate = getOperationalDateStr();
+      const isStillActive = !movie.tracking_end_date || movie.tracking_end_date >= currentOpDate;
+      if (isStillActive) {
+        executeCollectionRun({ movieExternalIds: [movie.external_id] }).catch((e) =>
+          console.error("Background initial collection failed:", e)
+        );
+      }
     }
 
     res.json({ success: true, movie });
@@ -206,9 +260,12 @@ apiRouter.post("/movies/track", async (req, res) => {
 // Summary dashboard metrics for all tracked movies (Based on CURRENT/FUTURE sessions only)
 apiRouter.get("/dashboard/summary", async (req, res) => {
   try {
-    // 1. Get all tracked movies
+    // 1. Get all currently effectively active tracked movies
     const moviesRes = await query(
-      `SELECT * FROM movies WHERE tracking_enabled = true ORDER BY title ASC;`
+      `SELECT * FROM movies 
+       WHERE tracking_enabled = true 
+         AND (tracking_end_date IS NULL OR tracking_end_date >= TO_CHAR((NOW() AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD')::date)
+       ORDER BY title ASC;`
     );
     const trackedMovies = moviesRes.rows;
 
@@ -331,6 +388,8 @@ apiRouter.get("/dashboard/summary", async (req, res) => {
         duration: movie.duration,
         age_rating: movie.age_rating,
         release_date: movie.release_date,
+        tracking_enabled: movie.tracking_enabled,
+        tracking_end_date: movie.tracking_end_date ? String(movie.tracking_end_date).slice(0, 10) : null,
         sessions_count: sessionsCount,
         cinemas_count: uniqueCinemas.size,
         total_sellable_capacity: totalSellable,

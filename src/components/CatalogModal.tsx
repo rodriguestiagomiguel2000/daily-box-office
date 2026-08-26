@@ -2,6 +2,7 @@ import React, { useState } from "react";
 import { X, Search, Film, Check, Plus, Clock, Calendar, Sparkles, Tag } from "lucide-react";
 import { Movie } from "../types";
 import { cleanMovieTitle } from "../utils/title";
+import { getCurrentTheatricalOperationalDate } from "../utils/scheduling";
 
 interface CatalogModalProps {
   isOpen: boolean;
@@ -20,6 +21,7 @@ export const CatalogModal: React.FC<CatalogModalProps> = ({
 }) => {
   const [searchTerm, setSearchTerm] = useState("");
   const [activeTab, setActiveTab] = useState<"ALL" | "CURRENT" | "UPCOMING">("ALL");
+  const currentOperationalDate = getCurrentTheatricalOperationalDate();
 
   if (!isOpen) return null;
 
@@ -201,6 +203,31 @@ export const CatalogModal: React.FC<CatalogModalProps> = ({
                           <Calendar className="w-3 h-3 mr-1" />
                           {movie.release_date.split("T")[0]}
                         </span>
+                      )}
+                      {movie.tracking_enabled && (
+                        (() => {
+                          const endDate = movie.tracking_end_date ? movie.tracking_end_date.slice(0, 10) : null;
+                          if (!endDate) {
+                            return (
+                              <span className="text-[11px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-medium border border-emerald-500/20">
+                                Unlimited
+                              </span>
+                            );
+                          }
+                          const isEnded = currentOperationalDate > endDate;
+                          if (isEnded) {
+                            return (
+                              <span className="text-[11px] px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-400 font-medium border border-amber-500/20">
+                                Ended {endDate}
+                              </span>
+                            );
+                          }
+                          return (
+                            <span className="text-[11px] px-1.5 py-0.5 rounded bg-cyan-500/10 text-cyan-400 font-medium border border-cyan-500/20">
+                              Until {endDate}
+                            </span>
+                          );
+                        })()
                       )}
                     </div>
 

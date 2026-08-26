@@ -37,6 +37,7 @@ export interface MoviePresaleCurveResponse {
     release_date: string;
     opening_operational_date: string;
     tracking_enabled: boolean;
+    tracking_end_date: string | null;
   };
   opening_day: {
     operational_date: string;
@@ -80,8 +81,9 @@ export async function getMoviePresaleCurve(movieId: number): Promise<MoviePresal
     poster_url: string;
     release_date: string;
     tracking_enabled: boolean;
+    tracking_end_date: string | null;
   }>(
-    `SELECT id, external_id, title, poster_url, release_date, tracking_enabled 
+    `SELECT id, external_id, title, poster_url, release_date, tracking_enabled, tracking_end_date 
      FROM movies 
      WHERE id = $1;`,
     [movieId]
@@ -116,6 +118,7 @@ export async function getMoviePresaleCurve(movieId: number): Promise<MoviePresal
         release_date: movie.release_date || "",
         opening_operational_date: "",
         tracking_enabled: movie.tracking_enabled ?? true,
+        tracking_end_date: movie.tracking_end_date ? String(movie.tracking_end_date).slice(0, 10) : null,
       },
       opening_day: null,
       has_presale_data: false,
@@ -164,6 +167,7 @@ export async function getMoviePresaleCurve(movieId: number): Promise<MoviePresal
         release_date: movie.release_date || "",
         opening_operational_date: openingDateStr,
         tracking_enabled: movie.tracking_enabled ?? true,
+        tracking_end_date: movie.tracking_end_date ? String(movie.tracking_end_date).slice(0, 10) : null,
       },
       opening_day: {
         operational_date: openingDateStr,
@@ -379,6 +383,7 @@ export async function getMoviePresaleCurve(movieId: number): Promise<MoviePresal
       release_date: movie.release_date || "",
       opening_operational_date: openingDateStr,
       tracking_enabled: movie.tracking_enabled ?? true,
+      tracking_end_date: movie.tracking_end_date ? String(movie.tracking_end_date).slice(0, 10) : null,
     },
     opening_day: {
       operational_date: openingDateStr,

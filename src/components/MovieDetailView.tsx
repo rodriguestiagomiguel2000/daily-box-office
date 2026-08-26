@@ -25,6 +25,9 @@ import {
   Ticket,
   BarChart3,
   ChevronDown,
+  Eye,
+  EyeOff,
+  Save,
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -119,6 +122,47 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
   const [isLoadingCurves, setIsLoadingCurves] = useState<boolean>(false);
   const [isLoadingForecast, setIsLoadingForecast] = useState<boolean>(false);
   const [isManualRefreshing, setIsManualRefreshing] = useState<boolean>(false);
+
+  // Tracking Configuration State
+  const [endDateInput, setEndDateInput] = useState<string>(
+    movie.tracking_end_date ? movie.tracking_end_date.slice(0, 10) : ""
+  );
+  const [isSavingTracking, setIsSavingTracking] = useState<boolean>(false);
+  const [saveSuccessMessage, setSaveSuccessMessage] = useState<string | null>(null);
+
+  useEffect(() => {
+    setEndDateInput(movie.tracking_end_date ? movie.tracking_end_date.slice(0, 10) : "");
+  }, [movie.tracking_end_date]);
+
+  const handleSaveTracking = async (newEnabled?: boolean, newEndDate?: string | null) => {
+    setIsSavingTracking(true);
+    try {
+      const targetEnabled = newEnabled !== undefined ? newEnabled : Boolean(movie.tracking_enabled);
+      const targetDate = newEndDate !== undefined ? newEndDate : (endDateInput ? endDateInput.trim() : null);
+
+      const res = await fetch("/api/movies/track", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          id: movie.id,
+          external_id: movie.external_id,
+          title: movie.title,
+          tracking_enabled: targetEnabled,
+          tracking_end_date: targetDate,
+        }),
+      });
+
+      if (res.ok) {
+        setSaveSuccessMessage("Tracking settings updated.");
+        setTimeout(() => setSaveSuccessMessage(null), 3000);
+        onRefresh();
+      }
+    } catch (err) {
+      console.error("Failed to update tracking settings:", err);
+    } finally {
+      setIsSavingTracking(false);
+    }
+  };
 
   // Guard refs to prevent out-of-order async response race conditions
   const comparisonRequestIdRef = useRef<number>(0);
@@ -449,9 +493,43 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
           <div className="flex-1 space-y-2">
             <div className="flex items-center gap-3 flex-wrap">
               <h1 className="text-2xl font-bold text-slate-100">{cleanMovieTitle(movie.title)}</h1>
-              <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">
-                Tracking Active
-              </span>
+              {(() => {
+                const isEnabled = Boolean(movie.tracking_enabled);
+                const endDate = movie.tracking_end_date ? movie.tracking_end_date.slice(0, 10) : null;
+                const isEnded = isEnabled && Boolean(endDate && todayDefaultStr > endDate);
+                const isActiveWithDate = isEnabled && Boolean(endDate && todayDefaultStr <= endDate);
+
+                if (!isEnabled) {
+                  return (
+                    <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-800 text-slate-400 border border-slate-700 flex items-center gap-1.5">
+                      <EyeOff className="w-3 h-3 text-slate-500" />
+                      <span>Tracking Inactive</span>
+                    </span>
+                  );
+                }
+                if (isEnded) {
+                  return (
+                    <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20 flex items-center gap-1.5">
+                      <Clock className="w-3 h-3 text-amber-400" />
+                      <span>Tracking Ended ({endDate})</span>
+                    </span>
+                  );
+                }
+                if (isActiveWithDate) {
+                  return (
+                    <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-cyan-500/10 text-cyan-400 border border-cyan-500/20 flex items-center gap-1.5">
+                      <CheckCircle className="w-3 h-3 text-cyan-400" />
+                      <span>Tracking Active (Until {endDate})</span>
+                    </span>
+                  );
+                }
+                return (
+                  <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1.5">
+                    <CheckCircle className="w-3 h-3 text-emerald-400" />
+                    <span>Tracking Active (Unlimited)</span>
+                  </span>
+                );
+              })()}
             </div>
 
             <div className="flex items-center gap-4 text-xs text-slate-400 flex-wrap">
@@ -486,6 +564,88 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
             </div>
           </div>
         </div>
+
+        {/* Tracking Configuration Controls Bar */}
+        <div className="mt-5 pt-4 border-t border-slate-800/80 flex flex-col lg:flex-row items-start lg:items-center justify-between gap-4">
+          <div className="flex flex-col sm:flex-row items-start sm:items-center gap-3 w-full lg:w-auto">
+            <div className="flex items-center gap-2">
+              <span className="text-xs font-semibold text-slate-300">Tracking:</span>
+              <button
+                id="toggle-tracking-enable-btn"
+                onClick={() => handleSaveTracking(!movie.tracking_enabled)}
+                disabled={isSavingTracking}
+                className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition flex items-center gap-1.5 cursor-pointer border ${
+                  movie.tracking_enabled
+                    ? "bg-emerald-500/10 text-emerald-300 border-emerald-500/30 hover:bg-rose-500/10 hover:text-rose-300 hover:border-rose-500/30"
+                    : "bg-slate-800 text-slate-300 border-slate-700 hover:bg-emerald-500/20 hover:text-emerald-300 hover:border-emerald-500/30"
+                }`}
+              >
+                {movie.tracking_enabled ? (
+                  <>
+                    <Eye className="w-3.5 h-3.5" />
+                    <span>Enabled</span>
+                  </>
+                ) : (
+                  <>
+                    <EyeOff className="w-3.5 h-3.5" />
+                    <span>Disabled (Click to Enable)</span>
+                  </>
+                )}
+              </button>
+            </div>
+
+            <div className="h-4 w-px bg-slate-800 hidden sm:block"></div>
+
+            <div className="flex items-center gap-2 flex-wrap">
+              <label htmlFor="movie-tracking-end-date" className="text-xs font-semibold text-slate-300 flex items-center gap-1">
+                <Calendar className="w-3.5 h-3.5 text-amber-400" />
+                <span>Tracking Until:</span>
+              </label>
+              <input
+                id="movie-tracking-end-date"
+                type="date"
+                value={endDateInput}
+                onChange={(e) => setEndDateInput(e.target.value)}
+                className="bg-slate-950 border border-slate-700 rounded-lg px-2.5 py-1 text-xs text-slate-200 focus:outline-none focus:border-amber-500"
+              />
+              <button
+                id="save-tracking-end-date-btn"
+                onClick={() => handleSaveTracking(true, endDateInput || null)}
+                disabled={isSavingTracking || (endDateInput === (movie.tracking_end_date ? movie.tracking_end_date.slice(0, 10) : ""))}
+                className="px-3 py-1 rounded-lg bg-amber-500 hover:bg-amber-400 disabled:opacity-40 disabled:hover:bg-amber-500 text-slate-950 font-bold text-xs transition cursor-pointer flex items-center gap-1"
+              >
+                {isSavingTracking ? <RefreshCw className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+                <span>Save</span>
+              </button>
+              {endDateInput && (
+                <button
+                  id="clear-tracking-end-date-btn"
+                  onClick={() => {
+                    setEndDateInput("");
+                    handleSaveTracking(true, null);
+                  }}
+                  disabled={isSavingTracking}
+                  title="Remove end date to track indefinitely"
+                  className="px-2.5 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-400 hover:text-slate-200 text-xs transition cursor-pointer"
+                >
+                  No End Date
+                </button>
+              )}
+            </div>
+          </div>
+
+          <div className="text-[11px] text-slate-400 flex items-center gap-1.5">
+            <Info className="w-3 h-3 text-slate-500 shrink-0" />
+            <span>Last operational day (inclusive, 06:00 Lisbon cutoff). Historical data is always preserved.</span>
+          </div>
+        </div>
+
+        {saveSuccessMessage && (
+          <div className="mt-3 text-xs text-emerald-400 flex items-center gap-1 bg-emerald-500/10 px-3 py-1.5 rounded-lg border border-emerald-500/20">
+            <CheckCircle className="w-3.5 h-3.5" />
+            <span>{saveSuccessMessage}</span>
+          </div>
+        )}
       </div>
 
       {/* Navigation Tabs: Most used tabs visible + "More ▾" overflow menu */}

@@ -1,5 +1,8 @@
 import pg from "pg";
-const { Pool } = pg;
+const { Pool, types } = pg;
+
+// Parse PostgreSQL DATE (OID 1082) as plain 'YYYY-MM-DD' string to avoid timezone offset shifts
+types.setTypeParser(1082, (val: string) => val);
 
 // Use DATABASE_URL with standard SSL configuration for Neon / PostgreSQL
 const connectionString = process.env.DATABASE_URL;

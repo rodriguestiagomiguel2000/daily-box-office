@@ -1362,6 +1362,19 @@ export async function mergeDuplicateMoviesInDb(): Promise<number> {
       const secondaryIds = ids.filter((id) => id !== canonicalId);
       console.log(`[Movie Merge] Merging duplicate movie records for "${group.clean_title}". Canonical ID: ${canonicalId}, Secondary IDs: ${secondaryIds.join(", ")}`);
 
+      // Propagate tracking_enabled and tracking_end_date from any secondary to canonical if applicable
+      await query(
+        `UPDATE movies
+         SET tracking_enabled = (SELECT bool_or(tracking_enabled) FROM movies WHERE id = ANY($1::int[])),
+             tracking_end_date = COALESCE(
+               (SELECT tracking_end_date FROM movies WHERE id = $2),
+               (SELECT MAX(tracking_end_date) FROM movies WHERE id = ANY($1::int[]))
+             ),
+             updated_at = NOW()
+         WHERE id = $2;`,
+        [ids, canonicalId]
+      );
+
       for (const secId of secondaryIds) {
         // Re-link sessions
         await query("UPDATE sessions SET movie_id = $1 WHERE movie_id = $2;", [canonicalId, secId]);

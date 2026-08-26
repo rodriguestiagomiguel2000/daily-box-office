@@ -1,7 +1,7 @@
 import React, { useState, useEffect } from "react";
 import { Film, Users, Building, Calendar, Clock, TrendingUp, Euro, ChevronRight, EyeOff, AlertCircle, Info, RefreshCw } from "lucide-react";
 import { TrackedMovieSummary } from "../types";
-import { getNextScheduledTime, formatToPortugal } from "../utils/scheduling";
+import { getNextScheduledTime, formatToPortugal, getCurrentTheatricalOperationalDate } from "../utils/scheduling";
 import { cleanMovieTitle } from "../utils/title";
 
 interface TrackedMoviesViewProps {
@@ -21,6 +21,8 @@ export const TrackedMoviesView: React.FC<TrackedMoviesViewProps> = ({
   onRefreshMovies,
   isLoading,
 }) => {
+  const currentOperationalDate = getCurrentTheatricalOperationalDate();
+
   // Compute overall aggregated totals
   const totalSellable = movies.reduce((acc, m) => acc + m.total_sellable_capacity, 0);
   const totalUnavailable = movies.reduce((acc, m) => acc + m.unavailable_seats, 0);
@@ -220,6 +222,32 @@ export const TrackedMoviesView: React.FC<TrackedMoviesViewProps> = ({
                               {movie.duration} min
                             </span>
                           )}
+                          {(() => {
+                            const endDate = movie.tracking_end_date ? movie.tracking_end_date.slice(0, 10) : null;
+                            if (!endDate) {
+                              return (
+                                <span className="text-xs px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 font-medium border border-emerald-500/20 flex items-center gap-1">
+                                  <Calendar className="w-3 h-3 text-emerald-400" />
+                                  <span>Unlimited</span>
+                                </span>
+                              );
+                            }
+                            const isEnded = currentOperationalDate > endDate;
+                            if (isEnded) {
+                              return (
+                                <span className="text-xs px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 font-medium border border-amber-500/20 flex items-center gap-1">
+                                  <Clock className="w-3 h-3 text-amber-400" />
+                                  <span>Ended {endDate}</span>
+                                </span>
+                              );
+                            }
+                            return (
+                              <span className="text-xs px-2 py-0.5 rounded bg-cyan-500/10 text-cyan-400 font-medium border border-cyan-500/20 flex items-center gap-1">
+                                <Calendar className="w-3 h-3 text-cyan-400" />
+                                <span>Until {endDate}</span>
+                              </span>
+                            );
+                          })()}
                         </div>
                         <h3
                           id={`movie-title-${movie.id}`}

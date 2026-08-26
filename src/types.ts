@@ -7,6 +7,7 @@ export interface Movie {
   age_rating: string;
   release_date: string;
   tracking_enabled: boolean;
+  tracking_end_date?: string | null;
   updated_at?: string;
   formats?: string[];
   status?: "CURRENTLY_PLAYING" | "UPCOMING" | "NO_LONGER_PLAYING";
@@ -26,6 +27,8 @@ export interface TrackedMovieSummary {
   duration: number | null;
   age_rating: string;
   release_date: string;
+  tracking_enabled?: boolean;
+  tracking_end_date?: string | null;
   sessions_count: number;
   cinemas_count: number;
   total_sellable_capacity: number;
@@ -667,6 +670,7 @@ export interface MoviePresaleCurveResponse {
     release_date: string;
     opening_operational_date: string;
     tracking_enabled: boolean;
+    tracking_end_date?: string | null;
   };
   opening_day: {
     operational_date: string;

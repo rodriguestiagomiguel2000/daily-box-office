@@ -132,7 +132,9 @@ export async function prepareCollectionRun(options: CollectorJobOptions = {}): P
     let targetIds = options.movieExternalIds;
     if (!targetIds || targetIds.length === 0) {
       const trackedRes = await query<{ external_id: string }>(
-        "SELECT external_id FROM movies WHERE tracking_enabled = true"
+        `SELECT external_id FROM movies 
+         WHERE tracking_enabled = true 
+           AND (tracking_end_date IS NULL OR tracking_end_date >= TO_CHAR((NOW() AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD')::date);`
       );
       targetIds = trackedRes.rows.map((r) => r.external_id);
       if (targetIds.length === 0) {
@@ -235,7 +237,9 @@ export async function executeCollectionRunFromPrepared(
     // Query tracked movies from DB to pass to Python collector for targeted opening-day presale collection
     try {
       const trackedRes = await query<{ external_id: string }>(
-        "SELECT external_id FROM movies WHERE tracking_enabled = true;"
+        `SELECT external_id FROM movies 
+         WHERE tracking_enabled = true 
+           AND (tracking_end_date IS NULL OR tracking_end_date >= TO_CHAR((NOW() AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD')::date);`
       );
       const trackedUuids = trackedRes.rows.map((r) => r.external_id).filter(Boolean);
       if (trackedUuids.length > 0) {
