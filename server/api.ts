@@ -92,8 +92,9 @@ apiRouter.get("/movies/catalog", async (req, res) => {
     }
     const liveMovies = Array.from(liveMap.values());
 
-    // 2. Safely sync catalog metadata into DB while preserving tracking_enabled state
-    for (const m of liveMovies) {
+    // 2. Safely sync all raw catalog versions into DB while preserving tracking_enabled state
+    for (const m of rawLiveMovies) {
+      if (!m.external_id) continue;
       const cleanTitle = cleanMovieTitle(m.title) || m.title;
       await query(
         `INSERT INTO movies (external_id, title, poster_url, duration, age_rating, release_date, tracking_enabled, updated_at)
@@ -109,12 +110,12 @@ apiRouter.get("/movies/catalog", async (req, res) => {
       );
     }
 
-    // Deduplicate any VO/VP duplicate records in DB
+    // Deduplicate any VO/VP duplicate records in DB (links secondary versions to canonical via merged_into_movie_id)
     await mergeDuplicateMoviesInDb();
 
-    // 3. Fetch local tracking states
+    // 3. Fetch local tracking states for canonical records
     const dbMovies = await query(
-      "SELECT id, external_id, title, poster_url, duration, age_rating, release_date, tracking_enabled, tracking_end_date, updated_at FROM movies;"
+      "SELECT id, external_id, title, poster_url, duration, age_rating, release_date, tracking_enabled, tracking_end_date, updated_at FROM movies WHERE merged_into_movie_id IS NULL;"
     );
     const trackingMap = new Map<string, any>();
     for (const m of dbMovies.rows) {
@@ -239,12 +240,17 @@ apiRouter.post("/movies/track", async (req, res) => {
 
     const movie = movieRes.rows[0];
 
-    // If enabled and still effectively active, trigger a background collection sweep for this specific movie
+    // If enabled and still effectively active, trigger a background collection sweep for this movie and all its merged versions
     if (isTracking && movie) {
       const currentOpDate = getOperationalDateStr();
       const isStillActive = !movie.tracking_end_date || movie.tracking_end_date >= currentOpDate;
       if (isStillActive) {
-        executeCollectionRun({ movieExternalIds: [movie.external_id] }).catch((e) =>
+        const extIdsRes = await query<{ external_id: string }>(
+          `SELECT external_id FROM movies WHERE (id = $1 OR merged_into_movie_id = $1) AND external_id IS NOT NULL;`,
+          [movie.id]
+        );
+        const movieExtIds = extIdsRes.rows.map((r) => r.external_id).filter(Boolean);
+        executeCollectionRun({ movieExternalIds: movieExtIds.length > 0 ? movieExtIds : [movie.external_id] }).catch((e) =>
           console.error("Background initial collection failed:", e)
         );
       }
@@ -260,10 +266,11 @@ apiRouter.post("/movies/track", async (req, res) => {
 // Summary dashboard metrics for all tracked movies (Based on CURRENT/FUTURE sessions only)
 apiRouter.get("/dashboard/summary", async (req, res) => {
   try {
-    // 1. Get all currently effectively active tracked movies
+    // 1. Get all currently effectively active canonical tracked movies
     const moviesRes = await query(
       `SELECT * FROM movies 
        WHERE tracking_enabled = true 
+         AND merged_into_movie_id IS NULL
          AND (tracking_end_date IS NULL OR tracking_end_date >= TO_CHAR((NOW() AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD')::date)
        ORDER BY title ASC;`
     );
@@ -2269,9 +2276,12 @@ apiRouter.get("/boxoffice/daily-history", async (req, res) => {
     const moviesRes = await query(`
       SELECT DISTINCT m.id, m.title, m.poster_url, m.release_date, m.tracking_enabled
       FROM movies m
-      WHERE m.tracking_enabled = true 
-         OR m.id IN (SELECT DISTINCT movie_id FROM movie_performance_snapshots WHERE operational_date <= $1)
-         OR m.id IN (SELECT DISTINCT movie_id FROM sessions WHERE COALESCE(NULLIF(operational_date, ''), TO_CHAR((starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD')) <= $1)
+      WHERE m.merged_into_movie_id IS NULL
+        AND (
+          m.tracking_enabled = true 
+          OR m.id IN (SELECT DISTINCT movie_id FROM movie_performance_snapshots WHERE operational_date <= $1)
+          OR m.id IN (SELECT DISTINCT movie_id FROM sessions WHERE COALESCE(NULLIF(operational_date, ''), TO_CHAR((starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD')) <= $1)
+        )
       ORDER BY m.tracking_enabled DESC, m.id ASC;
     `, [todayStr]);
     const movies = moviesRes.rows;

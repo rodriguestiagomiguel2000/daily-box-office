@@ -35,13 +35,16 @@ export async function runMigrations(): Promise<void> {
       release_date VARCHAR(50),
       tracking_enabled BOOLEAN DEFAULT FALSE,
       tracking_end_date DATE,
+      merged_into_movie_id INT REFERENCES movies(id),
       created_at TIMESTAMPTZ DEFAULT NOW(),
       updated_at TIMESTAMPTZ DEFAULT NOW()
     );
     ALTER TABLE movies ADD COLUMN IF NOT EXISTS tracking_end_date DATE;
+    ALTER TABLE movies ADD COLUMN IF NOT EXISTS merged_into_movie_id INT REFERENCES movies(id);
     CREATE INDEX IF NOT EXISTS idx_movies_external_id ON movies(external_id);
     CREATE INDEX IF NOT EXISTS idx_movies_tracking ON movies(tracking_enabled);
     CREATE INDEX IF NOT EXISTS idx_movies_tracking_effective ON movies(tracking_enabled, tracking_end_date);
+    CREATE INDEX IF NOT EXISTS idx_movies_merged_into ON movies(merged_into_movie_id);
 
     -- 2. Cinemas
     CREATE TABLE IF NOT EXISTS cinemas (

@@ -738,15 +738,33 @@ const STOPWORDS_SET = new Set([
   "the", "a", "an", "and", "or", "of", "in", "to", "for", "with", "without", "on", "at", "by", "from", "movie", "film"
 ]);
 
+const FORMAT_TAGS = [
+  "XL[- ]?VISION", "X[- ]?VISION", "XL[- ]?VIS[ÃA]O", "X[- ]?VIS[ÃA]O",
+  "VO", "VP", "V\\.O\\.", "V\\.P\\.",
+  "DOB\\.?", "SUB\\.?", "LEG\\.?", "DOBRADO", "DOBRADA", "LEGENDADO", "LEGENDADA",
+  "VERS[ÃA]O\\s+(?:ORIGINAL|PORTUGUESA|DOBRADA|LEGENDADA)",
+  "ORIGINAL\\s+VERSION", "PORTUGUESE\\s+VERSION", "DUBBED", "SUBTITLED",
+  "AUDIODESCRI[ÇC][ÃA]O", "AUDIO[- ]?DESCRI[ÇC][ÃA]O", "AD",
+  "LSE", "LEGENDAGEM\\s+ESPECIAL", "LEGENDA\\s+ESPECIAL", "LEG\\.?\\s+ESPECIAL",
+  "SESS[ÃA]O\\s+(?:SENSORIAL|RELAXADA|ESPECIAL|EXCLUSIVA)", "SENSORIAL", "SENSORY(?:[- ]?FRIENDLY)?",
+  "RELAXADA", "RELAXED(?:\\s+SCREENING)?",
+  "ATMOS", "DOLBY\\s+ATMOS", "DOLBY",
+  "IMAX(?:\\s+(?:3D|2D|70MM|LASER))?", "4DX", "4D", "SCREEN[- ]?X",
+  "3D(?:\\s+HFR)?", "2D", "HFR", "D[- ]?BOX", "VIP", "ISENSE", "ONYX"
+];
+
+const TAG_REGEX_STR = `(?:${FORMAT_TAGS.join("|")})`;
+const MULTI_TAG_REGEX_STR = `(?:${TAG_REGEX_STR})(?:\\s*[/\\\\+&,-]\\s*${TAG_REGEX_STR}|\\s+${TAG_REGEX_STR})*`;
+
 export function cleanMovieTitle(title: string): string {
   if (!title) return "";
   let cleaned = title
-    // Remove parenthetical/bracketed version & format tags like (VO), (VP), (V.O.), (VP/3D), (Versão Portuguesa), etc.
-    .replace(/\s*[\(\[]\s*(?:VO|VP|V\.O\.|V\.P\.|Dob\.|Sub\.|Dobrado|Legendado|Vers[ãa]o\s+(?:Original|Portuguesa))(?:\s*[\/\\]\s*[\w\d]+)?\s*[\)\]]/gi, "")
-    // Remove trailing dash-separated version tags like - VO, - VP, - V.O., - Dobrado, - Versão Portuguesa
-    .replace(/\s*[-–—]\s*(?:VO|VP|V\.O\.|V\.P\.|Dob\.|Sub\.|Dobrado|Legendado|Vers[ãa]o\s+(?:Original|Portuguesa))\b/gi, "")
-    // Remove standalone trailing version tags like Movie VO, Movie VP, Movie V.O., Movie V.P., Movie Dobrado, Movie Legendado
-    .replace(/\s+\b(?:VO|VP|V\.O\.|V\.P\.|Dob\.|Sub\.|Dobrado|Legendado|Vers[ãa]o\s+(?:Original|Portuguesa))\b$/gi, "");
+    // 1. Remove parenthetical/bracketed version & format tags like (VO), (VP), (XL VISION VP), (VP XLVISION), (3D ATMOS), (XLVISION), [IMAX], etc.
+    .replace(new RegExp(`\\s*[\\(\\[]\\s*${MULTI_TAG_REGEX_STR}\\s*[\\)\\]]`, "gi"), "")
+    // 2. Remove trailing dash-separated version/format tags like - XLVISION VP, - VO, - VP, - Dobrado, - Versão Portuguesa, - XL VISION
+    .replace(new RegExp(`\\s*[-–—]\\s*${MULTI_TAG_REGEX_STR}\\s*$`, "gi"), "")
+    // 3. Remove standalone trailing version/format tags like Movie VO, Movie VP, Movie XLVISION VP
+    .replace(new RegExp(`\\s+\\b${MULTI_TAG_REGEX_STR}\\s*$`, "gi"), "");
 
   // Normalize multiple spaces and trim
   return cleaned.replace(/\s+/g, " ").trim();
@@ -760,10 +778,10 @@ export function normalizeMovieTitle(s: string): string {
     .normalize("NFD")
     .replace(/[\u0300-\u036f]/g, "");
 
-  // Strip format tags in parentheses or brackets
-  const formatPattern = /(?:\b(?:2d|3d|imax|vip|atmos|4dx|4d|d-box|screenx|vo|vp|dob|leg|versao\s+portuguesa|versao\s+original)\b|v\.o\.|v\.p\.)/gi;
-  text = text.replace(/\s*\([^)]*(?:2d|3d|imax|vip|atmos|4dx|4d|d-box|screenx|vo|vp|dob|leg|versao\s+portuguesa|versao\s+original|v\.o\.|v\.p\.)[^)]*\)/gi, "");
-  text = text.replace(/\s*\[[^\]]*(?:2d|3d|imax|vip|atmos|4dx|4d|d-box|screenx|vo|vp|dob|leg|versao\s+portuguesa|versao\s+original|v\.o\.|v\.p\.)[^\]]*\]/gi, "");
+  // Strip format/accessibility tags in parentheses, brackets, or as words
+  const formatPattern = /(?:\b(?:2d|3d|imax|vip|atmos|dolby|4dx|4d|d-box|dbox|screenx|vo|vp|dob|leg|sub|versao\s+portuguesa|versao\s+original|xlvision|xl\s+vision|xvision|x\s+vision|audiodescricao|lse|sensorial|relaxada|isense|onyx)\b|v\.o\.|v\.p\.)/gi;
+  text = text.replace(/\s*\([^)]*(?:2d|3d|imax|vip|atmos|dolby|4dx|4d|d-box|dbox|screenx|vo|vp|dob|leg|sub|versao\s+portuguesa|versao\s+original|xlvision|xl\s+vision|xvision|x\s+vision|audiodescricao|lse|sensorial|relaxada|isense|onyx|v\.o\.|v\.p\.)[^)]*\)/gi, "");
+  text = text.replace(/\s*\[[^\]]*(?:2d|3d|imax|vip|atmos|dolby|4dx|4d|d-box|dbox|screenx|vo|vp|dob|leg|sub|versao\s+portuguesa|versao\s+original|xlvision|xl\s+vision|xvision|x\s+vision|audiodescricao|lse|sensorial|relaxada|isense|onyx|v\.o\.|v\.p\.)[^\]]*\]/gi, "");
   text = text.replace(formatPattern, "");
 
   // Strip years (19xx, 20xx)
@@ -1319,6 +1337,8 @@ export async function logCollectionPricingAuditReport(collectionRunDbId: number)
 /**
  * Normalizes all movie titles in DB and merges duplicate movie entries
  * (e.g., VO vs VP versions of the same movie) under a single canonical movie record.
+ * Secondary movie records retain tracking_enabled so their external_ids continue to be scraped,
+ * while referencing canonicalId via merged_into_movie_id.
  */
 export async function mergeDuplicateMoviesInDb(): Promise<number> {
   try {
@@ -1344,21 +1364,20 @@ export async function mergeDuplicateMoviesInDb(): Promise<number> {
       const ids = group.movie_ids;
       if (ids.length <= 1) continue;
 
-      // Pick canonical ID: the one that already has the most sessions, or smallest ID
+      // Pick canonical ID: prefer existing canonical (merged_into_movie_id IS NULL), then most sessions, then smallest ID
       const counts = await query<{ movie_id: number; cnt: number }>(
-        `SELECT movie_id, COUNT(*)::int as cnt 
-         FROM sessions 
-         WHERE movie_id = ANY($1::int[]) 
-         GROUP BY movie_id 
-         ORDER BY cnt DESC, movie_id ASC;`,
+        `SELECT m.id as movie_id, 
+                COUNT(s.id)::int as cnt,
+                (CASE WHEN m.merged_into_movie_id IS NULL THEN 0 ELSE 1 END) as is_canonical_preferred
+         FROM movies m
+         LEFT JOIN sessions s ON s.movie_id = m.id
+         WHERE m.id = ANY($1::int[]) 
+         GROUP BY m.id, m.merged_into_movie_id
+         ORDER BY is_canonical_preferred ASC, cnt DESC, m.id ASC;`,
         [ids]
       );
 
-      let canonicalId = ids[0];
-      if (counts.rows.length > 0) {
-        canonicalId = counts.rows[0].movie_id;
-      }
-
+      let canonicalId = counts.rows[0]?.movie_id ?? ids[0];
       const secondaryIds = ids.filter((id) => id !== canonicalId);
       console.log(`[Movie Merge] Merging duplicate movie records for "${group.clean_title}". Canonical ID: ${canonicalId}, Secondary IDs: ${secondaryIds.join(", ")}`);
 
@@ -1370,9 +1389,21 @@ export async function mergeDuplicateMoviesInDb(): Promise<number> {
                (SELECT tracking_end_date FROM movies WHERE id = $2),
                (SELECT MAX(tracking_end_date) FROM movies WHERE id = ANY($1::int[]))
              ),
+             merged_into_movie_id = NULL,
              updated_at = NOW()
          WHERE id = $2;`,
         [ids, canonicalId]
+      );
+
+      // Update secondary rows: set merged_into_movie_id = canonicalId, keep tracking_enabled in sync with canonical
+      await query(
+        `UPDATE movies
+         SET merged_into_movie_id = $1,
+             tracking_enabled = (SELECT tracking_enabled FROM movies WHERE id = $1),
+             tracking_end_date = (SELECT tracking_end_date FROM movies WHERE id = $1),
+             updated_at = NOW()
+         WHERE id = ANY($2::int[]);`,
+        [canonicalId, secondaryIds]
       );
 
       for (const secId of secondaryIds) {
@@ -1393,8 +1424,6 @@ export async function mergeDuplicateMoviesInDb(): Promise<number> {
         );
         await query("DELETE FROM calibration_factors WHERE movie_id = $1;", [secId]);
 
-        // Delete secondary movie entry
-        await query("DELETE FROM movies WHERE id = $1;", [secId]);
         mergedCount++;
       }
     }

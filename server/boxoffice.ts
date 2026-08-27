@@ -215,7 +215,7 @@ export async function getUnifiedDailyBoxOfficeData(movieId?: number) {
   const moviesRes = await query(
     `SELECT id, external_id, title, poster_url, duration, age_rating, release_date, tracking_enabled
      FROM movies
-     ${movieId ? "WHERE id = $1" : "WHERE tracking_enabled = true OR id IN (SELECT DISTINCT movie_id FROM sessions WHERE COALESCE(NULLIF(operational_date, ''), TO_CHAR((starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD')) <= $1)"}
+     ${movieId ? "WHERE id = $1" : "WHERE merged_into_movie_id IS NULL AND (tracking_enabled = true OR id IN (SELECT DISTINCT movie_id FROM sessions WHERE COALESCE(NULLIF(operational_date, ''), TO_CHAR((starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD')) <= $1))"}
      ORDER BY tracking_enabled DESC, id ASC;`,
     movieId ? [movieId] : [todayStr]
   );

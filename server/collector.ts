@@ -423,21 +423,21 @@ export async function persistSingleSession(
     const s = item.session;
     const snap = item.snapshot;
 
-    // 1. Upsert movie with clean title and deduplication across VO/VP
+    // 1. Resolve and update movie row by external_id (or title), resolving canonical ID for session persistence
     const cleanedTitle = cleanMovieTitle(m.title) || m.title;
 
-    // Check if movie already exists by external_id OR clean title (case-insensitive)
-    const existingMovie = await client.query<{ id: number }>(
-      `SELECT id FROM movies 
-       WHERE external_id = $1 OR LOWER(title) = LOWER($2) 
-       ORDER BY (CASE WHEN external_id = $1 THEN 0 ELSE 1 END), id ASC 
+    // Check if this specific external_id or title already exists in DB
+    const movieRow = await client.query<{ id: number; merged_into_movie_id: number | null; tracking_enabled: boolean }>(
+      `SELECT id, merged_into_movie_id, tracking_enabled FROM movies 
+       WHERE external_id = $1 
        LIMIT 1;`,
-      [m.external_id, cleanedTitle]
+      [m.external_id]
     );
 
-    let movieId: number;
-    if (existingMovie.rows.length > 0) {
-      movieId = existingMovie.rows[0].id;
+    let canonicalMovieId: number;
+
+    if (movieRow.rows.length > 0) {
+      const row = movieRow.rows[0];
       await client.query(
         `UPDATE movies SET 
            title = $1,
@@ -446,16 +446,36 @@ export async function persistSingleSession(
            age_rating = COALESCE($4, age_rating),
            updated_at = NOW()
          WHERE id = $5;`,
-        [cleanedTitle, m.poster_url, m.duration, m.age_rating, movieId]
+        [cleanedTitle, m.poster_url, m.duration, m.age_rating, row.id]
       );
+      // Resolve canonical ID if merged_into_movie_id is set
+      canonicalMovieId = row.merged_into_movie_id || row.id;
     } else {
-      const movieRes = await client.query<{ id: number }>(
-        `INSERT INTO movies (external_id, title, poster_url, duration, age_rating, release_date, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, NOW())
-         RETURNING id;`,
-        [m.external_id, cleanedTitle, m.poster_url, m.duration, m.age_rating, m.release_date]
+      // Check if there is an existing canonical movie with the same cleaned title
+      const canonicalMatch = await client.query<{ id: number; tracking_enabled: boolean; tracking_end_date: string | null }>(
+        `SELECT id, tracking_enabled, tracking_end_date FROM movies 
+         WHERE LOWER(title) = LOWER($1) AND merged_into_movie_id IS NULL 
+         ORDER BY id ASC LIMIT 1;`,
+        [cleanedTitle]
       );
-      movieId = movieRes.rows[0].id;
+
+      if (canonicalMatch.rows.length > 0) {
+        const canonical = canonicalMatch.rows[0];
+        await client.query(
+          `INSERT INTO movies (external_id, title, poster_url, duration, age_rating, release_date, tracking_enabled, tracking_end_date, merged_into_movie_id, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW());`,
+          [m.external_id, cleanedTitle, m.poster_url, m.duration, m.age_rating, m.release_date, canonical.tracking_enabled, canonical.tracking_end_date, canonical.id]
+        );
+        canonicalMovieId = canonical.id;
+      } else {
+        const newMovieRes = await client.query<{ id: number }>(
+          `INSERT INTO movies (external_id, title, poster_url, duration, age_rating, release_date, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, NOW())
+           RETURNING id;`,
+          [m.external_id, cleanedTitle, m.poster_url, m.duration, m.age_rating, m.release_date]
+        );
+        canonicalMovieId = newMovieRes.rows[0].id;
+      }
     }
 
     // 2. Upsert cinema
@@ -509,7 +529,7 @@ export async function persistSingleSession(
          active = true,
          updated_at = NOW()
        RETURNING id;`,
-      [movieId, cinemaId, roomId, s.external_session_id, safeStartsAt, s.operational_date, s.format, s.description]
+      [canonicalMovieId, cinemaId, roomId, s.external_session_id, safeStartsAt, s.operational_date, s.format, s.description]
     );
     const sessionId = sessionRes.rows[0].id;
 
