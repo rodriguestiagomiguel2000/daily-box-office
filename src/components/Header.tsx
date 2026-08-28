@@ -54,7 +54,7 @@ export const Header: React.FC<HeaderProps> = ({
 }) => {
   const isCollecting = status?.scheduler?.isCollecting || isTriggering;
   const snapshotsCount = status?.totals?.snapshots || 0;
-  const intervalMins = status?.scheduler?.intervalMinutes || 15;
+  const intervalMins = status?.scheduler?.intervalMinutes || 20;
   const nextRunFormatted = formatNextRunTime(status?.scheduler?.nextRunTime);
 
   return (

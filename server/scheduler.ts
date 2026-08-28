@@ -1,15 +1,16 @@
 import { executeCollectionRun, getActiveProgress, CollectorJobResult } from "./collector";
 import { computeRoomStructuralBlocks } from "./revenue";
+import { envConfig } from "./env";
 
 class CollectorScheduler {
-  private intervalMinutes: number = 15;
+  private intervalMinutes: number = envConfig.COLLECTOR_INTERVAL_MINUTES || 20;
   private timer: NodeJS.Timeout | null = null;
   private isRunning: boolean = false;
   private lastRunTime: Date | null = null;
   private nextRunTime: Date | null = null;
   private lastRunResult: CollectorJobResult | null = null;
 
-  public start(intervalMinutes: number = 15) {
+  public start(intervalMinutes: number = 20) {
     this.intervalMinutes = Math.max(1, intervalMinutes);
     this.isRunning = true;
     console.log(`Collector scheduler started with ${this.intervalMinutes}-minute interval.`);

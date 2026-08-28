@@ -54,7 +54,7 @@ export const CollectorStatusModal: React.FC<CollectorStatusModalProps> = ({
               <span>Collector Telemetry & Persistent Storage</span>
             </h2>
             <p className="text-xs text-slate-400 mt-0.5">
-              Automated 15-minute background collector worker & Neon PostgreSQL database metrics
+              Automated 20-minute background collector worker & Neon PostgreSQL database metrics
             </p>
           </div>
           <button
@@ -273,7 +273,7 @@ export const CollectorStatusModal: React.FC<CollectorStatusModalProps> = ({
               <div>
                 <span className="text-slate-400">Interval:</span>
                 <div className="flex items-center space-x-1 mt-1">
-                  {[5, 15, 30, 60].map((mins) => (
+                  {[5, 15, 20, 30, 60].map((mins) => (
                     <button
                       key={mins}
                       onClick={() => onUpdateConfig(mins)}

@@ -20,6 +20,7 @@ import {
   mergeDuplicateMoviesInDb
 } from "./revenue";
 import { computeMovieEODForecast, runHistoricalBacktests, getBacktestSummaryMetrics } from "./forecast";
+import { runDiagnostics } from "./diagnostics";
 
 export const apiRouter = Router();
 
@@ -1095,6 +1096,18 @@ apiRouter.post("/collector/trigger", async (req, res) => {
   } catch (err: any) {
     console.error("Error triggering manual collection:", err);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// Diagnostic endpoint to analyze root causes of FAILED/PARTIAL collection runs
+apiRouter.get("/collector/diagnostics", async (req, res) => {
+  try {
+    const days = req.query.days ? parseInt(req.query.days as string, 10) : 14;
+    const report = await runDiagnostics(days);
+    res.json({ success: true, ...report });
+  } catch (err: any) {
+    console.error("Error generating collection diagnostics:", err);
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 

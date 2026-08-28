@@ -52,7 +52,7 @@ O scraper inclui lógica de resiliência (retries com backoff exponencial, timeo
 
 ### Scheduling
 
-A recolha corre a cada 15 minutos, acionada por um **Render Cron Job** que faz `POST` autenticado ao endpoint `/api/collector/cron` do backend. O scheduler interno em Node (`setInterval`) existe como alternativa, mas vem **desativado em produção** — o Render Cron é a fonte de verdade.
+A recolha corre a cada 20 minutos, acionada por um **Render Cron Job** que faz `POST` autenticado ao endpoint `/api/collector/cron` do backend. O scheduler interno em Node (`setInterval`) existe como alternativa, mas vem **desativado em produção** — o Render Cron é a fonte de verdade.
 
 ---
 

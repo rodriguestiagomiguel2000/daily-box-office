@@ -5,6 +5,7 @@
 export interface AppEnvConfig {
   DATABASE_URL?: string;
   COLLECTOR_CRON_SECRET?: string;
+  COLLECTOR_INTERVAL_MINUTES: number;
   ENABLE_IN_MEMORY_SCHEDULER: boolean;
   NODE_ENV: string;
   PORT: number;
@@ -13,9 +14,14 @@ export interface AppEnvConfig {
 }
 
 export function validateAndGetEnv(): AppEnvConfig {
+  const parsedInterval = process.env.COLLECTOR_INTERVAL_MINUTES
+    ? parseInt(process.env.COLLECTOR_INTERVAL_MINUTES, 10)
+    : NaN;
+
   const config: AppEnvConfig = {
     DATABASE_URL: process.env.DATABASE_URL?.trim() || undefined,
     COLLECTOR_CRON_SECRET: process.env.COLLECTOR_CRON_SECRET?.trim() || undefined,
+    COLLECTOR_INTERVAL_MINUTES: !isNaN(parsedInterval) && parsedInterval > 0 ? parsedInterval : 20,
     ENABLE_IN_MEMORY_SCHEDULER: process.env.ENABLE_IN_MEMORY_SCHEDULER === "true",
     NODE_ENV: process.env.NODE_ENV || "development",
     PORT: 3000,

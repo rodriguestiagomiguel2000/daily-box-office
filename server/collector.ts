@@ -63,7 +63,7 @@ export interface PreparedRun {
 }
 
 export async function prepareCollectionRun(options: CollectorJobOptions = {}): Promise<PreparedRun | null> {
-  // 1. Auto-recover stale runs: Mark any run in status 'RUNNING' that started more than 10 minutes ago as FAILED
+  // 1. Auto-recover stale runs: Mark any run in status 'RUNNING' that started more than 13 minutes ago as FAILED
   try {
     const staleRecoverRes = await query(
       `UPDATE collection_runs 
@@ -71,10 +71,10 @@ export async function prepareCollectionRun(options: CollectorJobOptions = {}): P
            completed_at = NOW(), 
            errors = '["Terminated due to timeout"]'::jsonb
        WHERE status = 'RUNNING' 
-         AND started_at < NOW() - INTERVAL '10 minutes';`
+         AND started_at < NOW() - INTERVAL '13 minutes';`
     );
     if (staleRecoverRes.rowCount && staleRecoverRes.rowCount > 0) {
-      console.log(`Auto-recovered ${staleRecoverRes.rowCount} stale running collection runs (elapsed > 10m).`);
+      console.log(`Auto-recovered ${staleRecoverRes.rowCount} stale running collection runs (elapsed > 13m).`);
     }
   } catch (err) {
     console.error("Failed to perform auto-recovery of stale runs:", err);
@@ -93,9 +93,9 @@ export async function prepareCollectionRun(options: CollectorJobOptions = {}): P
     if (activeCheck.rows.length > 0) {
       const activeRun = activeCheck.rows[0];
       const elapsed = Number(activeRun.elapsed_seconds || 0);
-      if (elapsed > 600) {
+      if (elapsed > 780) {
         console.warn(
-          `Active run ${activeRun.run_id} has exceeded 10 minutes (${Math.round(elapsed)}s). Marking as FAILED due to timeout.`
+          `Active run ${activeRun.run_id} has exceeded 13 minutes (${Math.round(elapsed)}s). Marking as FAILED due to timeout.`
         );
         await query(
           `UPDATE collection_runs 
@@ -268,12 +268,12 @@ export async function executeCollectionRunFromPrepared(
       console.warn("Could not pre-fetch known ticket sessions from DB:", knownErr);
     }
 
-    // 3. Spawn Python process and parse line-by-line streaming JSON progress/sessions with 10-minute timeout protection
+    // 3. Spawn Python process and parse line-by-line streaming JSON progress/sessions with 13-minute timeout protection
     let finalPayload: any = null;
     let stderrOutput = "";
     let incrementalSnapshotsCount = 0;
     const sessionWritePromises: Promise<void>[] = [];
-    const TIMEOUT_MS = 600000; // 10 minutes (600 seconds)
+    const TIMEOUT_MS = 780000; // 13 minutes (780 seconds)
 
     await new Promise<void>((resolve, reject) => {
       const py = spawn("python3", args, { cwd: process.cwd() });
@@ -282,7 +282,7 @@ export async function executeCollectionRunFromPrepared(
       const timeoutTimer = setTimeout(() => {
         if (!isSettled) {
           isSettled = true;
-          console.warn(`Collection run ${runId} exceeded 10 minutes. Terminating child process.`);
+          console.warn(`Collection run ${runId} exceeded 13 minutes. Terminating child process.`);
           py.kill("SIGTERM");
           setTimeout(() => {
             try { py.kill("SIGKILL"); } catch {}

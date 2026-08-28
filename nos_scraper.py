@@ -18,6 +18,7 @@ import http.cookiejar
 import json
 import logging
 import re
+import socket
 import threading
 import time
 import urllib.error
@@ -291,11 +292,11 @@ class NOSScraper:
             data = json.loads(resp.read().decode("utf-8", errors="replace"))
             return data.get("data", {}).get("theaterList", {}).get("items", [])
 
-    def get_movie_sessions(self, aggregate_movie_id: str, max_retries: int = 3, timeout_sec: int = 20) -> Dict[str, Any]:
+    def get_movie_sessions(self, aggregate_movie_id: str, max_retries: int = 2, timeout_sec: int = 20) -> Dict[str, Any]:
         """
         Fetches structured session timetable for a movie by aggregate format number.
-        Includes retry logic up to 3 attempts with exponential backoff (2s, then 4s)
-        and an increased 20s timeout to prevent transient skips caused by slow responses.
+        Includes single retry logic (max 1 retry / 2 attempts total) with a 2.5s delay
+        when NOS returns non-JSON/HTML error pages or transient network drops.
         """
         url = f"{BASE_SITE}/bin/cinemas/render/getMovieSessions.getMovieSessionsAggregator.json?aggregateMovieId={aggregate_movie_id}"
         req = urllib.request.Request(url, headers={**COMMON_HEADERS, "X-Requested-With": "XMLHttpRequest"})
@@ -316,15 +317,15 @@ class NOSScraper:
             except Exception as e:
                 last_exception = e
                 if attempt < max_retries:
-                    backoff_sec = 2 ** attempt  # attempt 1: 2s, attempt 2: 4s
+                    retry_delay_sec = 2.5
                     log.info(
                         f"Schedule discovery for movie {aggregate_movie_id} failed on attempt {attempt}/{max_retries} ({type(e).__name__}: {e}). "
-                        f"Retrying in {backoff_sec}s..."
+                        f"Waiting {retry_delay_sec}s and retrying once..."
                     )
-                    time.sleep(backoff_sec)
+                    time.sleep(retry_delay_sec)
                 else:
                     log.warning(
-                        f"Schedule discovery for movie {aggregate_movie_id} failed after all {max_retries} attempts. "
+                        f"Schedule discovery for movie {aggregate_movie_id} failed after {max_retries} attempts (1 retry). "
                         f"Last error: {type(e).__name__}: {e}"
                     )
                     raise last_exception if last_exception is not None else e
@@ -480,7 +481,8 @@ class NOSScraper:
         self,
         session_uuid: str,
         theater_room_uuid: Optional[str] = None,
-        fetch_ticket_types: bool = True
+        fetch_ticket_types: bool = True,
+        max_retries: int = 1
     ) -> SeatSnapshot:
         """
         Executes end-to-end collection for a single session:
@@ -490,81 +492,102 @@ class NOSScraper:
         4. Parse and validate seat classification invariant
         5. DT04: Retrieve ticket prices (optional, skipped if already known)
         6. Return immutable SeatSnapshot
+
+        Includes single-retry recovery (max 1 retry / 2 attempts total) when an
+        individual session's socket read (urllib.request 12-15s) times out.
         """
-        config = self.get_session_config(session_uuid)
-        if not theater_room_uuid:
-            theater_room_uuid = config.get("out_TheaterRoomUUID", "")
-
-        theater_uuid = config.get("out_TheaterUUID", "")
-        movie_uuid = config.get("out_MovieUUID", "")
-        movie_title = config.get("out_MovieTitle", "")
-        theater_name = config.get("out_TheaterName", "")
-        room_name = config.get("out_RoomName", "")
-        session_time = config.get("out_SessionStartDateTime", "")
-
-        if not theater_room_uuid:
-            raise ValueError(f"Could not resolve theater room UUID for session {session_uuid}")
-
-        # Establish booking reservation context required for accurate seat availability
-        booking_uuid = self.create_booking(session_uuid, theater_uuid, movie_uuid, theater_room_uuid)
-
-        raw_seats_data = self.get_seats_raw(
-            session_uuid=session_uuid,
-            theater_room_uuid=theater_room_uuid,
-            theater_uuid=theater_uuid,
-            movie_uuid=movie_uuid,
-            booking_uuid=booking_uuid
-        )
-
-        parsed_seats: SeatClassification = parse_seat_map(
-            raw_seats_data,
-            fallback_room_uuid=theater_room_uuid
-        )
-
-        ticket_types = []
-        if fetch_ticket_types:
+        for attempt in range(max_retries + 1):
             try:
-                ticket_types = self.get_ticket_types(session_uuid)
+                config = self.get_session_config(session_uuid)
+                if not theater_room_uuid:
+                    theater_room_uuid = config.get("out_TheaterRoomUUID", "")
+
+                theater_uuid = config.get("out_TheaterUUID", "")
+                movie_uuid = config.get("out_MovieUUID", "")
+                movie_title = config.get("out_MovieTitle", "")
+                theater_name = config.get("out_TheaterName", "")
+                room_name = config.get("out_RoomName", "")
+                session_time = config.get("out_SessionStartDateTime", "")
+
+                if not theater_room_uuid:
+                    raise ValueError(f"Could not resolve theater room UUID for session {session_uuid}")
+
+                # Establish booking reservation context required for accurate seat availability
+                booking_uuid = self.create_booking(session_uuid, theater_uuid, movie_uuid, theater_room_uuid)
+
+                raw_seats_data = self.get_seats_raw(
+                    session_uuid=session_uuid,
+                    theater_room_uuid=theater_room_uuid,
+                    theater_uuid=theater_uuid,
+                    movie_uuid=movie_uuid,
+                    booking_uuid=booking_uuid
+                )
+
+                parsed_seats: SeatClassification = parse_seat_map(
+                    raw_seats_data,
+                    fallback_room_uuid=theater_room_uuid
+                )
+
+                ticket_types = []
+                if fetch_ticket_types:
+                    try:
+                        ticket_types = self.get_ticket_types(session_uuid)
+                    except Exception as e:
+                        log.warning(f"Could not fetch ticket types for session {session_uuid}: {e}")
+
+                occupancy_proxy = calculate_occupancy_proxy(
+                    unavailable_seats=parsed_seats.unavailable_seats,
+                    sellable_seats=parsed_seats.sellable_seats
+                )
+
+                # Derived box office estimates (clearly marked as estimated)
+                estimated_sold = parsed_seats.unavailable_seats
+                estimated_revenue = RevenueEstimator.estimate_session_revenue(
+                    sold_seats=estimated_sold,
+                    ticket_types=ticket_types,
+                    format_hint=movie_title
+                )
+
+                return SeatSnapshot(
+                    session_id=session_uuid,
+                    theater_room_uuid=theater_room_uuid,
+                    movie_title=movie_title,
+                    theater_name=theater_name,
+                    room_name=room_name,
+                    session_time=session_time,
+                    total_seats=parsed_seats.total_seats,
+                    sellable_seats=parsed_seats.sellable_seats,
+                    available_seats=parsed_seats.available_seats,
+                    unavailable_seats=parsed_seats.unavailable_seats,
+                    safety_seats=parsed_seats.safety_seats,
+                    unknown_seats=parsed_seats.unknown_seats,
+                    occupancy_proxy=occupancy_proxy,
+                    is_invariant_valid=parsed_seats.is_invariant_valid,
+                    invariant_error_msg=parsed_seats.invariant_error_msg,
+                    seats=parsed_seats.seats,
+                    estimated_sold_seats=estimated_sold,
+                    estimated_revenue=estimated_revenue,
+                    ticket_types=ticket_types,
+                    collected_at=datetime.utcnow(),
+                    source=SOURCE_NAME,
+                    collector_version=COLLECTOR_VERSION
+                )
             except Exception as e:
-                log.warning(f"Could not fetch ticket types for session {session_uuid}: {e}")
-
-        occupancy_proxy = calculate_occupancy_proxy(
-            unavailable_seats=parsed_seats.unavailable_seats,
-            sellable_seats=parsed_seats.sellable_seats
-        )
-
-        # Derived box office estimates (clearly marked as estimated)
-        estimated_sold = parsed_seats.unavailable_seats
-        estimated_revenue = RevenueEstimator.estimate_session_revenue(
-            sold_seats=estimated_sold,
-            ticket_types=ticket_types,
-            format_hint=movie_title
-        )
-
-        return SeatSnapshot(
-            session_id=session_uuid,
-            theater_room_uuid=theater_room_uuid,
-            movie_title=movie_title,
-            theater_name=theater_name,
-            room_name=room_name,
-            session_time=session_time,
-            total_seats=parsed_seats.total_seats,
-            sellable_seats=parsed_seats.sellable_seats,
-            available_seats=parsed_seats.available_seats,
-            unavailable_seats=parsed_seats.unavailable_seats,
-            safety_seats=parsed_seats.safety_seats,
-            unknown_seats=parsed_seats.unknown_seats,
-            occupancy_proxy=occupancy_proxy,
-            is_invariant_valid=parsed_seats.is_invariant_valid,
-            invariant_error_msg=parsed_seats.invariant_error_msg,
-            seats=parsed_seats.seats,
-            estimated_sold_seats=estimated_sold,
-            estimated_revenue=estimated_revenue,
-            ticket_types=ticket_types,
-            collected_at=datetime.utcnow(),
-            source=SOURCE_NAME,
-            collector_version=COLLECTOR_VERSION
-        )
+                err_str = str(e).lower()
+                is_socket_timeout = (
+                    isinstance(e, (socket.timeout, TimeoutError)) or
+                    "timed out" in err_str or
+                    "the read operation timed out" in err_str or
+                    (isinstance(e, urllib.error.URLError) and "timed out" in str(e.reason).lower())
+                )
+                if is_socket_timeout and attempt < max_retries:
+                    log.info(
+                        f"Session {session_uuid} hit transient socket timeout on attempt {attempt + 1}/{max_retries + 1} ({e}). "
+                        f"Retrying once with same timeout..."
+                    )
+                    time.sleep(1.0)
+                    continue
+                raise
 
     def run_collection_cycle(
         self,

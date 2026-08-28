@@ -353,9 +353,9 @@ def collect_data(
                     log.warning(f"Initial session setup warning: {init_err}")
 
                 def process_candidate(candidate: Dict[str, Any]) -> Dict[str, Any]:
-                    # Stale run auto-cleanup check: 10 minute timeout (600s)
+                    # Stale run auto-cleanup check: 13 minute timeout (780s)
                     elapsed_check = (datetime.now(timezone.utc) - start_time_dt).total_seconds()
-                    if elapsed_check > 600:
+                    if elapsed_check > 780:
                         raise TimeoutError("Terminated due to timeout")
 
                     cand_uuid = candidate["s_uuid"]
@@ -475,8 +475,8 @@ def collect_data(
                         "snapshot": snapshot_data
                     }
 
-                # Bounded concurrency: 3 parallel workers for low-memory footprint & high reliability
-                MAX_CONCURRENT_SCRAPERS = 3
+                # Bounded concurrency: 5 parallel workers for balanced throughput & high reliability
+                MAX_CONCURRENT_SCRAPERS = 5
                 with concurrent.futures.ThreadPoolExecutor(max_workers=MAX_CONCURRENT_SCRAPERS) as executor:
                     future_to_cand = {
                         executor.submit(process_candidate, cand): cand
@@ -528,7 +528,7 @@ def collect_data(
                                 last_err = err_msg
 
                         elapsed = (datetime.now(timezone.utc) - start_time_dt).total_seconds()
-                        if elapsed > 600:
+                        if elapsed > 780:
                             timed_out = True
 
                         with progress_lock:
@@ -565,7 +565,7 @@ def collect_data(
         movies_completed += 1
 
     run.finish()
-    if timed_out or (datetime.now(timezone.utc) - start_time_dt).total_seconds() > 600:
+    if timed_out or (datetime.now(timezone.utc) - start_time_dt).total_seconds() > 780:
         final_status = "FAILED"
         if "Terminated due to timeout" not in run.errors:
             run.errors.append("Terminated due to timeout")
