@@ -101,7 +101,7 @@ apiRouter.get("/movies/catalog", async (req, res) => {
         `INSERT INTO movies (external_id, title, poster_url, duration, age_rating, release_date, tracking_enabled, updated_at)
          VALUES ($1, $2, $3, $4, $5, $6, FALSE, NOW())
          ON CONFLICT (external_id) DO UPDATE SET
-           title = EXCLUDED.title,
+           title = COALESCE(NULLIF(NULLIF(EXCLUDED.title, 'Unknown Movie'), ''), movies.title),
            poster_url = COALESCE(NULLIF(EXCLUDED.poster_url, ''), movies.poster_url),
            duration = COALESCE(EXCLUDED.duration, movies.duration),
            age_rating = COALESCE(NULLIF(EXCLUDED.age_rating, ''), movies.age_rating),
@@ -151,7 +151,7 @@ apiRouter.post("/movies/track", async (req, res) => {
     }
 
     const isTracking = Boolean(tracking_enabled);
-    const cleanTitle = cleanMovieTitle(title) || title;
+    const cleanTitle = (cleanMovieTitle(title) || title || "").trim();
 
     let targetEndDate: string | null | undefined = undefined;
     if (tracking_end_date !== undefined) {
@@ -165,25 +165,41 @@ apiRouter.post("/movies/track", async (req, res) => {
       }
     }
 
+    // Look up existing movie from DB to prevent overwriting known title with fallback
+    let existingDbMovie: any = null;
+    if (id) {
+      const res = await query(`SELECT * FROM movies WHERE id = $1 LIMIT 1;`, [id]);
+      existingDbMovie = res.rows[0];
+    } else if (external_id) {
+      const res = await query(`SELECT * FROM movies WHERE external_id = $1 LIMIT 1;`, [external_id]);
+      existingDbMovie = res.rows[0];
+    }
+
+    const resolvedTitle = (cleanTitle && cleanTitle !== "Unknown Movie")
+      ? cleanTitle
+      : (existingDbMovie?.title && existingDbMovie.title !== "Unknown Movie"
+          ? existingDbMovie.title
+          : (cleanTitle || "Untitled Movie"));
+
     if (id) {
       if (targetEndDate !== undefined) {
         await query(
           `UPDATE movies 
            SET tracking_enabled = $1, 
                tracking_end_date = $2, 
-               title = COALESCE(NULLIF($3, ''), title), 
+               title = COALESCE(NULLIF(NULLIF($3, 'Unknown Movie'), ''), title), 
                updated_at = NOW() 
            WHERE id = $4;`,
-          [isTracking, targetEndDate, cleanTitle, id]
+          [isTracking, targetEndDate, resolvedTitle, id]
         );
       } else {
         await query(
           `UPDATE movies 
            SET tracking_enabled = $1, 
-               title = COALESCE(NULLIF($2, ''), title), 
+               title = COALESCE(NULLIF(NULLIF($2, 'Unknown Movie'), ''), title), 
                updated_at = NOW() 
            WHERE id = $3;`,
-          [isTracking, cleanTitle, id]
+          [isTracking, resolvedTitle, id]
         );
       }
     } else if (external_id) {
@@ -194,10 +210,10 @@ apiRouter.post("/movies/track", async (req, res) => {
            ON CONFLICT (external_id) DO UPDATE SET
              tracking_enabled = EXCLUDED.tracking_enabled,
              tracking_end_date = EXCLUDED.tracking_end_date,
-             title = COALESCE(NULLIF(EXCLUDED.title, ''), movies.title),
+             title = COALESCE(NULLIF(NULLIF(EXCLUDED.title, 'Unknown Movie'), ''), movies.title),
              poster_url = COALESCE(NULLIF(EXCLUDED.poster_url, ''), movies.poster_url),
              updated_at = NOW();`,
-          [external_id, cleanTitle || "Unknown Movie", poster_url || "", duration || null, age_rating || "", release_date || "", isTracking, targetEndDate]
+          [external_id, resolvedTitle, poster_url || existingDbMovie?.poster_url || "", duration || existingDbMovie?.duration || null, age_rating || existingDbMovie?.age_rating || "", release_date || existingDbMovie?.release_date || "", isTracking, targetEndDate]
         );
       } else {
         await query(
@@ -205,15 +221,15 @@ apiRouter.post("/movies/track", async (req, res) => {
            VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
            ON CONFLICT (external_id) DO UPDATE SET
              tracking_enabled = EXCLUDED.tracking_enabled,
-             title = COALESCE(NULLIF(EXCLUDED.title, ''), movies.title),
+             title = COALESCE(NULLIF(NULLIF(EXCLUDED.title, 'Unknown Movie'), ''), movies.title),
              poster_url = COALESCE(NULLIF(EXCLUDED.poster_url, ''), movies.poster_url),
              updated_at = NOW();`,
-          [external_id, cleanTitle || "Unknown Movie", poster_url || "", duration || null, age_rating || "", release_date || "", isTracking]
+          [external_id, resolvedTitle, poster_url || existingDbMovie?.poster_url || "", duration || existingDbMovie?.duration || null, age_rating || existingDbMovie?.age_rating || "", release_date || existingDbMovie?.release_date || "", isTracking]
         );
       }
     }
 
-    if (cleanTitle) {
+    if (cleanTitle && cleanTitle !== "Unknown Movie") {
       if (targetEndDate !== undefined) {
         await query(
           `UPDATE movies SET tracking_enabled = $1, tracking_end_date = $2, title = $3 WHERE LOWER(title) = LOWER($3);`,
@@ -233,10 +249,10 @@ apiRouter.post("/movies/track", async (req, res) => {
     let movieRes;
     if (id) {
       movieRes = await query(`SELECT * FROM movies WHERE id = $1;`, [id]);
-    } else if (cleanTitle) {
-      movieRes = await query(`SELECT * FROM movies WHERE LOWER(title) = LOWER($1) LIMIT 1;`, [cleanTitle]);
-    } else {
+    } else if (external_id) {
       movieRes = await query(`SELECT * FROM movies WHERE external_id = $1 LIMIT 1;`, [external_id]);
+    } else if (cleanTitle && cleanTitle !== "Unknown Movie") {
+      movieRes = await query(`SELECT * FROM movies WHERE LOWER(title) = LOWER($1) LIMIT 1;`, [cleanTitle]);
     }
 
     const movie = movieRes.rows[0];

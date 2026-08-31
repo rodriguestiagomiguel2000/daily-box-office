@@ -210,13 +210,15 @@ export function App() {
   };
 
   // Untrack from movie card
-  const handleUntrack = async (movieId: number, externalId: string) => {
+  const handleUntrack = async (movieId: number, externalId: string, title?: string) => {
     try {
       await fetch("/api/movies/track", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
+          id: movieId,
           external_id: externalId,
+          title: title,
           tracking_enabled: false,
         }),
       });

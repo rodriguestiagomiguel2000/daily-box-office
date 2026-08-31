@@ -7,7 +7,7 @@ import { cleanMovieTitle } from "../utils/title";
 interface TrackedMoviesViewProps {
   movies: TrackedMovieSummary[];
   onSelectMovie: (movieId: number) => void;
-  onUntrackMovie: (movieId: number, externalId: string) => void;
+  onUntrackMovie: (movieId: number, externalId: string, title?: string) => void;
   onOpenCatalog: () => void;
   onRefreshMovies: () => void;
   isLoading: boolean;
@@ -260,7 +260,7 @@ export const TrackedMoviesView: React.FC<TrackedMoviesViewProps> = ({
 
                       <button
                         title="Disable Tracking"
-                        onClick={() => onUntrackMovie(movie.id, movie.external_id)}
+                        onClick={() => onUntrackMovie(movie.id, movie.external_id, movie.title)}
                         className="text-slate-500 hover:text-rose-400 p-1.5 rounded-lg hover:bg-slate-800 transition flex-shrink-0"
                       >
                         <EyeOff className="w-4 h-4" />

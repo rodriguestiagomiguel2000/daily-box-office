@@ -211,18 +211,36 @@ export async function getUnifiedDailyBoxOfficeData(movieId?: number) {
     sessionParams
   );
 
-  // 3. Fetch movies metadata
+  // 3. Fetch movies metadata (all canonical/unmerged movies in DB, plus merged relationships)
   const moviesRes = await query(
-    `SELECT id, external_id, title, poster_url, duration, age_rating, release_date, tracking_enabled
+    `SELECT id, external_id, title, poster_url, duration, age_rating, release_date, tracking_enabled, merged_into_movie_id
      FROM movies
-     ${movieId ? "WHERE id = $1" : "WHERE merged_into_movie_id IS NULL AND (tracking_enabled = true OR id IN (SELECT DISTINCT movie_id FROM sessions WHERE COALESCE(NULLIF(operational_date, ''), TO_CHAR((starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD')) <= $1))"}
+     ${movieId ? "WHERE id = $1" : ""}
      ORDER BY tracking_enabled DESC, id ASC;`,
-    movieId ? [movieId] : [todayStr]
+    movieId ? [movieId] : []
   );
 
   const moviesMap = new Map<number, any>();
+  const mergedIntoMap = new Map<number, number>();
   for (const m of moviesRes.rows) {
+    if (m.merged_into_movie_id) {
+      mergedIntoMap.set(m.id, m.merged_into_movie_id);
+    }
     moviesMap.set(m.id, m);
+  }
+  // Inherit metadata for merged movie entries from their canonical movie row
+  for (const [subId, canonicalId] of mergedIntoMap.entries()) {
+    const canonical = moviesMap.get(canonicalId);
+    if (canonical) {
+      const subMovie = moviesMap.get(subId);
+      if (subMovie) {
+        if (!subMovie.title || subMovie.title === "Unknown Movie" || subMovie.title === "Untitled Movie") {
+          subMovie.title = canonical.title;
+        }
+        subMovie.poster_url = subMovie.poster_url || canonical.poster_url;
+        subMovie.release_date = subMovie.release_date || canonical.release_date;
+      }
+    }
   }
 
   // 4. Build unified daily map: Map<`${movie_id}_${op_date}`, DailyEntry>
@@ -528,7 +546,7 @@ export async function getWeekendBoxOffice() {
 
         return {
           movie_id: movieId,
-          title: movie?.title || "Unknown Movie",
+          title: movie?.title && movie.title !== "Unknown Movie" ? movie.title : (movie?.title || `Movie #${movieId}`),
           poster_url: movie?.poster_url || "",
           release_date: movie?.release_date || "",
           tracking_enabled: movie?.tracking_enabled ?? true,
@@ -660,7 +678,7 @@ export async function getWeeklyBoxOffice() {
 
         return {
           movie_id: movieId,
-          title: movie?.title || "Unknown Movie",
+          title: movie?.title && movie.title !== "Unknown Movie" ? movie.title : (movie?.title || `Movie #${movieId}`),
           poster_url: movie?.poster_url || "",
           release_date: movie?.release_date || "",
           tracking_enabled: movie?.tracking_enabled ?? true,
