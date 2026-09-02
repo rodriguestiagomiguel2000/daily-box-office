@@ -7,6 +7,7 @@ import {
   RefreshCw,
   CheckCircle,
   AlertCircle,
+  AlertTriangle,
   Play,
   Pause,
   Server,
@@ -39,6 +40,8 @@ export const CollectorStatusModal: React.FC<CollectorStatusModalProps> = ({
   const scheduler = status?.scheduler;
   const totals = status?.totals || { snapshots: 0, individual_seat_states: 0, transitions_recorded: 0 };
   const recentRuns = status?.recent_runs || [];
+  const formatHealth = status?.format_health || [];
+  const persistentFailures = formatHealth.filter((f) => f.consecutive_failures >= 6);
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fade-in">
@@ -67,6 +70,104 @@ export const CollectorStatusModal: React.FC<CollectorStatusModalProps> = ({
         </div>
 
         <div className="p-6 overflow-y-auto flex-1 space-y-6">
+          {/* Persistent Upstream Format Failure Alert Banner */}
+          {persistentFailures.length > 0 && (
+            <div
+              id="persistent-format-failures-alert"
+              className="bg-rose-950/30 border-2 border-rose-500/60 rounded-2xl p-5 space-y-4 shadow-xl shadow-rose-950/30 animate-fade-in"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-start space-x-3">
+                  <div className="p-2.5 rounded-xl bg-rose-500/20 text-rose-400 border border-rose-500/40 mt-0.5 shrink-0">
+                    <AlertTriangle className="w-6 h-6 text-rose-400" />
+                  </div>
+                  <div>
+                    <div className="flex items-center space-x-2.5 flex-wrap gap-y-1">
+                      <h3 className="text-sm font-bold text-rose-100">
+                        Persistent Upstream Schedule Discovery Failure
+                      </h3>
+                      <span className="px-2.5 py-0.5 rounded-full text-xs font-bold bg-rose-500/20 text-rose-300 border border-rose-500/40 font-mono">
+                        {persistentFailures.length} format{persistentFailures.length > 1 ? "s" : ""} affected (&ge;6 consecutive runs)
+                      </span>
+                    </div>
+                    <p className="text-xs text-rose-200/90 mt-1 leading-relaxed">
+                      The NOS origin server has repeatedly returned HTTP 500 error responses for specific movie format timetable aggregators across consecutive runs. Cache-busting retry was attempted and origin continues to fail. This indicates an invalid or unconfigured schedule aggregator on NOS origin servers, not a transient network timeout.
+                    </p>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-3 pt-1">
+                {persistentFailures.map((pf) => {
+                  const approxHours = ((pf.consecutive_failures * 20) / 60).toFixed(
+                    (pf.consecutive_failures * 20) % 60 === 0 ? 0 : 1
+                  );
+                  return (
+                    <div
+                      key={pf.format_external_id}
+                      className="bg-slate-950/80 border border-rose-500/40 rounded-xl p-4 space-y-2.5"
+                    >
+                      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                        <div className="flex items-center space-x-2.5 flex-wrap">
+                          <span className="font-bold text-rose-200 text-sm">
+                            {pf.movie_title}
+                          </span>
+                          <span className="text-xs font-mono font-bold px-2 py-0.5 rounded-full bg-rose-900/60 text-rose-300 border border-rose-700">
+                            {approxHours}h+ ({pf.consecutive_failures} consecutive runs)
+                          </span>
+                        </div>
+                        <span className="text-[11px] text-slate-400 font-mono select-all">
+                          Format UUID: {pf.format_external_id}
+                        </span>
+                      </div>
+
+                      <div className="text-xs text-rose-300 font-medium bg-rose-950/40 border border-rose-800/50 rounded-lg p-2.5">
+                        &ldquo;{pf.movie_title} has failed schedule discovery for {approxHours}h+ &mdash; likely broken upstream, not a transient error&rdquo;
+                      </div>
+
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 text-xs text-slate-400 pt-1 border-t border-slate-800/80">
+                        <div>
+                          <span className="text-slate-500">Last Successful Schedule:</span>{" "}
+                          <span className="text-slate-300 font-medium">
+                            {pf.last_success_at
+                              ? new Date(pf.last_success_at).toLocaleString("pt-PT", {
+                                  timeZone: "Europe/Lisbon",
+                                  day: "2-digit",
+                                  month: "2-digit",
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })
+                              : "None recorded"}
+                          </span>
+                        </div>
+                        <div>
+                          <span className="text-slate-500">Last Failure Attempt:</span>{" "}
+                          <span className="text-rose-300 font-medium">
+                            {pf.last_failure_at
+                              ? new Date(pf.last_failure_at).toLocaleString("pt-PT", {
+                                  timeZone: "Europe/Lisbon",
+                                  day: "2-digit",
+                                  month: "2-digit",
+                                  hour: "2-digit",
+                                  minute: "2-digit",
+                                })
+                              : "Most recent run"}
+                          </span>
+                        </div>
+                      </div>
+
+                      {pf.last_failure_detail && (
+                        <div className="bg-slate-900/90 rounded p-2.5 text-[11px] font-mono text-slate-400 border border-slate-800/80 break-words">
+                          <span className="text-rose-400 font-semibold">Error Detail:</span> {pf.last_failure_detail}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
           {/* Live Active Collection Progress Card */}
           {(status?.is_collecting || status?.active_progress) && (() => {
             const progress = status.active_progress;
@@ -391,6 +492,96 @@ export const CollectorStatusModal: React.FC<CollectorStatusModalProps> = ({
               </div>
             </div>
           </div>
+
+          {/* Format Discovery Health Matrix */}
+          {formatHealth.length > 0 && (
+            <div className="space-y-3">
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1">
+                <h3 className="text-sm font-bold text-slate-200 flex items-center space-x-2">
+                  <Activity className="w-4 h-4 text-cyan-400" />
+                  <span>Format Discovery Health Matrix</span>
+                </h3>
+                <span className="text-[11px] text-slate-400">
+                  Persistent upstream alert threshold: &ge;6 consecutive runs (~2 hours)
+                </span>
+              </div>
+
+              <div className="bg-slate-900 border border-slate-800 rounded-xl overflow-hidden">
+                <div className="overflow-x-auto max-h-56">
+                  <table className="w-full text-left text-xs">
+                    <thead className="bg-slate-800 text-slate-400 uppercase tracking-wider font-semibold sticky top-0">
+                      <tr>
+                        <th className="py-2.5 px-3">Movie & Format</th>
+                        <th className="py-2.5 px-3">Format UUID</th>
+                        <th className="py-2.5 px-3 text-center">Status</th>
+                        <th className="py-2.5 px-3 text-center">Consecutive Failures</th>
+                        <th className="py-2.5 px-3">Last Success (Lisbon)</th>
+                        <th className="py-2.5 px-3">Last Failure</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-800 text-slate-200">
+                      {formatHealth.map((fh) => {
+                        const isPersistent = fh.consecutive_failures >= 6;
+                        const isTransient = fh.consecutive_failures > 0 && fh.consecutive_failures < 6;
+                        return (
+                          <tr key={fh.format_external_id} className="hover:bg-slate-800/40">
+                            <td className="py-2.5 px-3 font-medium text-slate-200">
+                              {fh.movie_title}
+                            </td>
+                            <td className="py-2.5 px-3 font-mono text-[11px] text-slate-400 select-all">
+                              {fh.format_external_id}
+                            </td>
+                            <td className="py-2.5 px-3 text-center">
+                              {isPersistent ? (
+                                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-rose-500/20 text-rose-300 border border-rose-500/30">
+                                  BROKEN UPSTREAM
+                                </span>
+                              ) : isTransient ? (
+                                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                                  TRANSIENT RETRY
+                                </span>
+                              ) : (
+                                <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-emerald-500/20 text-emerald-300 border border-emerald-500/30">
+                                  HEALTHY
+                                </span>
+                              )}
+                            </td>
+                            <td className="py-2.5 px-3 text-center font-mono font-bold">
+                              <span className={isPersistent ? "text-rose-400" : isTransient ? "text-amber-400" : "text-emerald-400"}>
+                                {fh.consecutive_failures}
+                              </span>
+                            </td>
+                            <td className="py-2.5 px-3 text-slate-400 text-[11px]">
+                              {fh.last_success_at
+                                ? new Date(fh.last_success_at).toLocaleString("pt-PT", {
+                                    timeZone: "Europe/Lisbon",
+                                    day: "2-digit",
+                                    month: "2-digit",
+                                    hour: "2-digit",
+                                    minute: "2-digit",
+                                  })
+                                : "Never"}
+                            </td>
+                            <td className="py-2.5 px-3 text-slate-400 text-[11px]">
+                              {fh.last_failure_at
+                                ? new Date(fh.last_failure_at).toLocaleString("pt-PT", {
+                                    timeZone: "Europe/Lisbon",
+                                    day: "2-digit",
+                                    month: "2-digit",
+                                    hour: "2-digit",
+                                    minute: "2-digit",
+                                  })
+                                : "None"}
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Modal for Error Log Detail if clicked */}
           {selectedErrorLog && (

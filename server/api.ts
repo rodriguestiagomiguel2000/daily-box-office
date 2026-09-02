@@ -1053,7 +1053,7 @@ apiRouter.get("/sessions/:id/seat-map", async (req, res) => {
 // Collection monitoring and status
 apiRouter.get("/collector/status", async (req, res) => {
   try {
-    const [recentRunsRes, totalSnapshotsRes, totalStatesRes, totalTransitionsRes] =
+    const [recentRunsRes, totalSnapshotsRes, totalStatesRes, totalTransitionsRes, formatHealthRes] =
       await Promise.all([
         query(`SELECT * FROM collection_runs ORDER BY started_at DESC LIMIT 20;`),
         query(`SELECT COUNT(*) as count FROM seat_snapshots;`),
@@ -1066,6 +1066,7 @@ apiRouter.get("/collector/status", async (req, res) => {
           WHERE relname = 'seat_states';
         `),
         query(`SELECT COUNT(*) as count FROM seat_transitions;`),
+        query(`SELECT * FROM format_discovery_health ORDER BY consecutive_failures DESC, last_failure_at DESC NULLS LAST;`),
       ]);
 
     const active = getActiveProgress();
@@ -1075,6 +1076,7 @@ apiRouter.get("/collector/status", async (req, res) => {
       active_progress: active.progress,
       is_collecting: active.isCollecting,
       recent_runs: recentRunsRes.rows,
+      format_health: formatHealthRes.rows,
       totals: {
         snapshots: parseInt(totalSnapshotsRes.rows[0]?.count, 10) || 0,
         individual_seat_states: parseInt(totalStatesRes.rows[0]?.count, 10) || 0,
@@ -1083,6 +1085,16 @@ apiRouter.get("/collector/status", async (req, res) => {
     });
   } catch (err: any) {
     console.error("Error fetching collector status:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// GET /api/collector/format-health
+apiRouter.get("/collector/format-health", async (req, res) => {
+  try {
+    const resRows = await query(`SELECT * FROM format_discovery_health ORDER BY consecutive_failures DESC, last_failure_at DESC NULLS LAST;`);
+    res.json({ format_health: resRows.rows });
+  } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });

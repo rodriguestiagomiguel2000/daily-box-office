@@ -54,6 +54,29 @@ export function getActiveProgress(): { isCollecting: boolean; progress: ActiveRu
   };
 }
 
+/**
+ * Purges stale format_discovery_health records:
+ * Deletes rows where last_success_at IS NULL AND last_failure_at < NOW() - INTERVAL '2 days'
+ * (formats that have never succeeded and haven't had failure activity in >= 2 days).
+ */
+export async function cleanupStaleFormatDiscoveryHealth(): Promise<number> {
+  try {
+    const purgeRes = await query(
+      `DELETE FROM format_discovery_health 
+       WHERE last_success_at IS NULL 
+         AND last_failure_at < NOW() - INTERVAL '2 days';`
+    );
+    const count = purgeRes.rowCount || 0;
+    if (count > 0) {
+      console.log(`[Format Health Purge] Purged ${count} stale format(s) from format_discovery_health (last_success_at IS NULL and last_failure_at < 2 days ago).`);
+    }
+    return count;
+  } catch (err) {
+    console.error("Failed to purge stale format_discovery_health records:", err);
+    return 0;
+  }
+}
+
 export interface PreparedRun {
   runId: string;
   collectionRunDbId: number;
@@ -79,6 +102,9 @@ export async function prepareCollectionRun(options: CollectorJobOptions = {}): P
   } catch (err) {
     console.error("Failed to perform auto-recovery of stale runs:", err);
   }
+
+  // 1b. Cleanup stale format_discovery_health records (formats that never succeeded and haven't been seen in >= 2 days)
+  await cleanupStaleFormatDiscoveryHealth();
 
   // 2. Database-backed concurrency lock to prevent overlapping runs across different nodes/processes
   try {
@@ -319,6 +345,46 @@ export async function executeCollectionRunFromPrepared(
                WHERE external_id = $1 OR LOWER(title) = LOWER($2);`,
               [mData.external_id, cleanT]
             ).catch((e) => console.error("Error updating last_schedule_discovery_success_at:", e));
+
+            const formatId = mData.format_external_id || mData.external_id;
+            const displayTitle = mData.display_title || mData.title;
+            query(
+              `INSERT INTO format_discovery_health (format_external_id, movie_title, consecutive_failures, last_success_at)
+               VALUES ($1, $2, 0, NOW())
+               ON CONFLICT (format_external_id) DO UPDATE SET
+                 consecutive_failures = 0,
+                 last_success_at = NOW(),
+                 movie_title = EXCLUDED.movie_title;`,
+              [formatId, displayTitle]
+            ).catch((e) => console.error("Error updating format_discovery_health on success:", e));
+          } else if (parsed.type === "movie_schedule_failure" && parsed.data) {
+            const mData = parsed.data;
+            const formatId = mData.format_external_id;
+            const displayTitle = mData.movie_title;
+            const detail = mData.detail || "Schedule discovery failed";
+            query(
+              `INSERT INTO format_discovery_health (format_external_id, movie_title, consecutive_failures, last_failure_at, last_failure_detail)
+               VALUES ($1, $2, 1, NOW(), $3)
+               ON CONFLICT (format_external_id) DO UPDATE SET
+                 consecutive_failures = format_discovery_health.consecutive_failures + 1,
+                 last_failure_at = NOW(),
+                 last_failure_detail = EXCLUDED.last_failure_detail,
+                 movie_title = COALESCE(EXCLUDED.movie_title, format_discovery_health.movie_title);`,
+              [formatId, displayTitle, detail]
+            ).catch((e) => console.error("Error updating format_discovery_health on failure:", e));
+          } else if (parsed.type === "movie_schedule_skipped" && parsed.data) {
+            const mData = parsed.data;
+            const formatId = mData.format_external_id || mData.external_id;
+            const displayTitle = mData.movie_title || mData.display_title || mData.title;
+            query(
+              `INSERT INTO format_discovery_health (format_external_id, movie_title, consecutive_failures, last_failure_detail)
+               VALUES ($1, $2, 0, 'Skipped: no sessions available for this format')
+               ON CONFLICT (format_external_id) DO UPDATE SET
+                 consecutive_failures = 0,
+                 last_failure_detail = 'Skipped: no sessions available for this format',
+                 movie_title = COALESCE(EXCLUDED.movie_title, format_discovery_health.movie_title);`,
+              [formatId, displayTitle]
+            ).catch((e) => console.error("Error updating format_discovery_health on skip:", e));
           } else if (parsed.type === "progress" && parsed.data) {
             const data = parsed.data;
             activeProgress = {
@@ -835,6 +901,10 @@ export async function persistCollectionPayload(
         collectionRunDbId,
       ]
     );
+
+    // 6. Cleanup stale format_discovery_health records at the end of each collection run:
+    // Deletes rows where last_success_at IS NULL AND last_failure_at < NOW() - INTERVAL '2 days'
+    await cleanupStaleFormatDiscoveryHealth();
 
     const durationMs = Date.now() - startTime;
     console.log(`Collection run ${runId} completed in ${durationMs}ms: ${snapshotsCreatedCount} snapshots created.`);

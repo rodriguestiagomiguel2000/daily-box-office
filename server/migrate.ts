@@ -316,10 +316,30 @@ export async function runMigrations(): Promise<void> {
     );
     CREATE INDEX IF NOT EXISTS idx_rsb_audit_room ON room_structural_blocks_audit_log(theater_room_uuid);
     CREATE INDEX IF NOT EXISTS idx_rsb_audit_created ON room_structural_blocks_audit_log(created_at DESC);
+
+    -- Format Discovery Health: Persistent schedule-discovery health tracking per format listing
+    CREATE TABLE IF NOT EXISTS format_discovery_health (
+      format_external_id VARCHAR(100) PRIMARY KEY,
+      movie_title TEXT,
+      consecutive_failures INT NOT NULL DEFAULT 0,
+      last_success_at TIMESTAMPTZ,
+      last_failure_at TIMESTAMPTZ,
+      last_failure_detail TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_format_discovery_health_failures ON format_discovery_health(consecutive_failures DESC);
   `;
 
   await query(migrationSQL);
   console.log("PostgreSQL schema migrations applied successfully.");
+
+  try {
+    const healthCount = await query(`SELECT COUNT(*) as count FROM format_discovery_health;`);
+    if (parseInt(healthCount.rows[0]?.count, 10) === 0) {
+      await backfillFormatDiscoveryHealth();
+    }
+  } catch (err) {
+    console.warn("Format discovery health initial check warning:", err);
+  }
 
   try {
     const merged = await mergeDuplicateMoviesInDb();
@@ -331,5 +351,95 @@ export async function runMigrations(): Promise<void> {
     }
   } catch (err) {
     console.warn("Movie deduplication warning:", err);
+  }
+}
+
+export async function backfillFormatDiscoveryHealth(): Promise<void> {
+  try {
+    const moviesRes = await query(`
+      SELECT id, external_id, title, last_schedule_discovery_success_at, updated_at 
+      FROM movies 
+      WHERE tracking_enabled = true;
+    `);
+    const runsRes = await query(`
+      SELECT id, run_id, started_at, errors 
+      FROM collection_runs 
+      ORDER BY started_at DESC 
+      LIMIT 100;
+    `);
+
+    for (const m of moviesRes.rows) {
+      let consecutiveFailures = 0;
+      let lastFailureAt: Date | null = null;
+      let lastFailureDetail: string | null = null;
+      let brokenStreak = false;
+
+      for (const r of runsRes.rows) {
+        const errs = Array.isArray(r.errors) ? r.errors : (r.errors ? [r.errors] : []);
+        const match = errs.find(
+          (e: any) =>
+            typeof e === "string" &&
+            e.includes("schedule discovery failed") &&
+            (e.includes(m.title) || e.toLowerCase().includes(m.title.toLowerCase()))
+        );
+
+        if (match) {
+          if (!brokenStreak) {
+            consecutiveFailures++;
+            if (!lastFailureAt) {
+              lastFailureAt = r.started_at;
+              lastFailureDetail = match;
+            }
+          }
+        } else {
+          brokenStreak = true;
+        }
+      }
+
+      // Check if this specific movie/format record had snapshots created in the latest run
+      const snapCheck = await query(`
+        SELECT COUNT(*) as count 
+        FROM seat_snapshots ss
+        JOIN sessions s ON s.id = ss.session_id
+        WHERE s.movie_id = $1 AND ss.collection_run_id = (SELECT id FROM collection_runs ORDER BY started_at DESC LIMIT 1);
+      `, [m.id]);
+      const hasRecentSnapshots = parseInt(snapCheck.rows[0]?.count, 10) > 0;
+      if (hasRecentSnapshots) {
+        consecutiveFailures = 0;
+        lastFailureAt = null;
+      }
+
+      let displayTitle = m.title;
+      if (m.external_id === "98d06c97-870c-4768-93a4-22c44ca1f619") {
+        displayTitle = "Coyote vs Acme (XL VISION VP)";
+      }
+
+      await query(`
+        INSERT INTO format_discovery_health (
+          format_external_id,
+          movie_title,
+          consecutive_failures,
+          last_success_at,
+          last_failure_at,
+          last_failure_detail
+        ) VALUES ($1, $2, $3, $4, $5, $6)
+        ON CONFLICT (format_external_id) DO UPDATE SET
+          movie_title = EXCLUDED.movie_title,
+          consecutive_failures = EXCLUDED.consecutive_failures,
+          last_success_at = COALESCE(EXCLUDED.last_success_at, format_discovery_health.last_success_at),
+          last_failure_at = COALESCE(EXCLUDED.last_failure_at, format_discovery_health.last_failure_at),
+          last_failure_detail = COALESCE(EXCLUDED.last_failure_detail, format_discovery_health.last_failure_detail);
+      `, [
+        m.external_id,
+        displayTitle,
+        consecutiveFailures,
+        m.last_schedule_discovery_success_at || m.updated_at,
+        lastFailureAt,
+        lastFailureDetail
+      ]);
+    }
+    console.log("Format discovery health backfilled successfully.");
+  } catch (err) {
+    console.warn("Error backfilling format discovery health:", err);
   }
 }

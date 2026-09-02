@@ -90,6 +90,19 @@ def emit_movie_schedule_success(run_id: str, movie_meta: Dict[str, Any]):
     print(json.dumps(event), flush=True)
 
 
+def emit_movie_schedule_failure(run_id: str, format_external_id: str, movie_title: str, detail: str):
+    event = {
+        "type": "movie_schedule_failure",
+        "run_id": run_id,
+        "data": {
+            "format_external_id": format_external_id,
+            "movie_title": movie_title,
+            "detail": detail
+        }
+    }
+    print(json.dumps(event), flush=True)
+
+
 def emit_progress(
     run_id: str,
     status: str,
@@ -182,6 +195,13 @@ def collect_data(
     movies_total = len(target_movies)
     run.movies_found = movies_total
 
+    # Temporary debug logging of the exact movie processing sequence per run
+    target_sequence_log = [
+        f"[{idx+1}/{movies_total}] '{m.get('title')}' (id={m.get('external_id') or m.get('aggregateformatnumber')})"
+        for idx, m in enumerate(target_movies)
+    ]
+    log.info(f"Target movie processing sequence ({movies_total} total): {' -> '.join(target_sequence_log)}")
+
     collected_sessions: List[Dict[str, Any]] = []
     seen_session_uuids_in_run: Set[str] = set()
     sessions_with_ticket_prices: Set[str] = set(known_ticket_sessions or [])
@@ -250,7 +270,9 @@ def collect_data(
 
         movie_meta = {
             "external_id": str(agg_id),
+            "format_external_id": str(agg_id),
             "title": movie_title,
+            "display_title": raw_title or movie_title,
             "poster_url": m.get("poster_url") or m.get("imageportraiturl") or m.get("imagelandscapeurl") or "",
             "duration": int(m.get("duration") or 0) if str(m.get("duration") or "").isdigit() else None,
             "age_rating": m.get("age_rating") or m.get("certificatedescription") or m.get("certificate") or "",
@@ -572,6 +594,12 @@ def collect_data(
             log.warning(err_msg)
             run.errors.append(err_msg)
             last_err = err_msg
+            emit_movie_schedule_failure(
+                run.collection_run_id,
+                format_external_id=agg_id,
+                movie_title=raw_title or movie_title,
+                detail=str(e)
+            )
 
         movies_completed += 1
 

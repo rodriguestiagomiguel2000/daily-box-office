@@ -297,51 +297,113 @@ class NOSScraper:
         """
         Fetches structured session timetable for a movie by aggregate format number.
         Uses an expanded timeout (default 35s) scaled for large blockbuster schedules,
-        plus retry-once logic (max_retries=2, 3.0s delay) catching read timeouts, socket
-        interruptions, HTTP errors, and malformed HTML/JSON error responses.
+        plus retry-once logic (max_retries=2, 3.0s delay) for genuine transient network errors
+        (socket timeouts, ECONNRESET, IncompleteRead, and invalid JSON on 200 OK).
+
+        Distinguishes between:
+        - HTTP 200 + valid JSON -> normal success, return data
+        - HTTP 200 + invalid JSON -> CDN/transient issue, retry once with cache-busting (existing behaviour)
+        - HTTP 500/4xx + non-JSON body -> format has no sessions, skip gracefully with a warning (new behaviour)
+        - HTTP 500/4xx + valid JSON -> structured API error, log and skip (new behaviour)
         """
-        url = f"{BASE_SITE}/bin/cinemas/render/getMovieSessions.getMovieSessionsAggregator.json?aggregateMovieId={aggregate_movie_id}"
-        req = urllib.request.Request(url, headers={**COMMON_HEADERS, "X-Requested-With": "XMLHttpRequest"})
+        base_url = f"{BASE_SITE}/bin/cinemas/render/getMovieSessions.getMovieSessionsAggregator.json?aggregateMovieId={aggregate_movie_id}"
         
-        last_exception: Optional[Exception] = None
+        attempt_history: List[str] = []
         for attempt in range(1, max_retries + 1):
+            if attempt == 1:
+                url = base_url
+            else:
+                # Append unique cache-busting query parameter specifically on the retry attempt
+                url = f"{base_url}&_cb={int(time.time() * 1000)}"
+
+            req = urllib.request.Request(url, headers={**COMMON_HEADERS, "X-Requested-With": "XMLHttpRequest"})
             try:
                 with urllib.request.urlopen(req, timeout=timeout_sec) as resp:
+                    status = getattr(resp, "status", getattr(resp, "code", 200))
                     raw = resp.read()
                     try:
                         text = raw.decode("utf-8")
                     except UnicodeDecodeError:
                         text = raw.decode("latin-1", errors="replace")
+
+                    # 1. Before calling json.loads(text), check the HTTP response status code
+                    if status >= 400:
+                        # If the status is 4xx or 5xx, do not attempt JSON parsing for non-JSON bodies.
+                        if text.strip()[:1] in ('<', ''):
+                            log.warning(f"Format {aggregate_movie_id} returned HTTP {status} with non-JSON body — no sessions available, skipping.")
+                            return {"sessions": [], "days": []}
+                        else:
+                            # HTTP 500/4xx with structured JSON error
+                            try:
+                                err_data = json.loads(text)
+                                log.warning(f"Format {aggregate_movie_id} returned HTTP {status} with structured JSON: {err_data} — skipping.")
+                            except Exception:
+                                log.warning(f"Format {aggregate_movie_id} returned HTTP {status} with non-JSON body — no sessions available, skipping.")
+                            return {"sessions": [], "days": []}
+
+                    # HTTP 200 (status < 400):
+                    # Valid JSON returns data; invalid JSON raises JSONDecodeError and triggers transient retry
                     data = json.loads(text)
                     if attempt > 1:
-                        log.info(f"Successfully fetched schedule for movie {aggregate_movie_id} on retry attempt {attempt}/{max_retries}.")
+                        success_msg = f"Schedule discovery for movie {aggregate_movie_id}: attempt 1 failed: {attempt_history[0]}, retry attempt {attempt} succeeded."
+                        log.info(success_msg)
                     return data
+
+            except urllib.error.HTTPError as e:
+                # Handle HTTP 4xx / 5xx error responses without retrying
+                status = e.code
+                try:
+                    raw = e.read()
+                    try:
+                        text = raw.decode("utf-8")
+                    except UnicodeDecodeError:
+                        text = raw.decode("latin-1", errors="replace")
+                except Exception:
+                    text = ""
+
+                if text.strip()[:1] in ('<', ''):
+                    log.warning(f"Format {aggregate_movie_id} returned HTTP {status} with non-JSON body — no sessions available, skipping.")
+                    return {"sessions": [], "days": []}
+                else:
+                    try:
+                        err_data = json.loads(text)
+                        log.warning(f"Format {aggregate_movie_id} returned HTTP {status} with structured JSON: {err_data} — skipping.")
+                    except Exception:
+                        log.warning(f"Format {aggregate_movie_id} returned HTTP {status} with non-JSON body — no sessions available, skipping.")
+                    return {"sessions": [], "days": []}
+
             except (
                 socket.timeout,
                 TimeoutError,
                 urllib.error.URLError,
-                urllib.error.HTTPError,
                 http.client.RemoteDisconnected,
                 http.client.IncompleteRead,
+                ConnectionResetError,
                 json.JSONDecodeError,
                 UnicodeDecodeError,
                 Exception,
             ) as e:
-                last_exception = e
                 err_desc = f"{type(e).__name__}: {e}"
-                if attempt < max_retries:
+                if attempt == 1:
+                    attempt_history.append(f"attempt 1 failed: {err_desc}")
                     retry_delay_sec = 3.0
                     log.info(
-                        f"Schedule discovery for movie {aggregate_movie_id} encountered {err_desc} on attempt {attempt}/{max_retries} "
-                        f"(timeout={timeout_sec}s). Waiting {retry_delay_sec}s and retrying..."
+                        f"Schedule discovery for movie {aggregate_movie_id} encountered {err_desc} on attempt 1/{max_retries} "
+                        f"(timeout={timeout_sec}s). Waiting {retry_delay_sec}s and retrying with cache-busting..."
                     )
                     time.sleep(retry_delay_sec)
                 else:
+                    attempt_history.append(f"retry attempt {attempt} failed: {err_desc}")
+                    full_err_summary = ", ".join(attempt_history)
                     log.warning(
                         f"Schedule discovery for movie {aggregate_movie_id} failed after {max_retries} attempts "
-                        f"(timeout={timeout_sec}s). Last error: {err_desc}"
+                        f"(timeout={timeout_sec}s). Outcomes: {full_err_summary}"
                     )
-                    raise last_exception if last_exception is not None else e
+                    # Raise an exception containing the full attempt breakdown for telemetry & run history
+                    raise RuntimeError(full_err_summary) from e
+
+    # Alias for compatibility with get_movie_sessions_aggregator
+    get_movie_sessions_aggregator = get_movie_sessions
 
     def get_session_config(self, session_uuid: str) -> Dict[str, Any]:
         """Resolves Room UUID, movie title, room name, and cinema metadata for a session."""

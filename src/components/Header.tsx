@@ -56,6 +56,7 @@ export const Header: React.FC<HeaderProps> = ({
   const snapshotsCount = status?.totals?.snapshots || 0;
   const intervalMins = status?.scheduler?.intervalMinutes || 20;
   const nextRunFormatted = formatNextRunTime(status?.scheduler?.nextRunTime);
+  const hasPersistentFailures = (status?.format_health || []).some((f) => f.consecutive_failures >= 6);
 
   return (
     <header className="sticky top-0 z-30 bg-slate-900/95 backdrop-blur border-b border-slate-800 text-white shadow-xl">
@@ -100,10 +101,21 @@ export const Header: React.FC<HeaderProps> = ({
             <button
               id="system-status-btn"
               onClick={onOpenStatus}
-              className="inline-flex items-center space-x-2 px-3.5 py-2 rounded-lg bg-slate-800 hover:bg-slate-700 border border-slate-700 text-xs sm:text-sm font-medium text-slate-200 transition active:scale-95 shadow-sm"
+              className={`relative inline-flex items-center space-x-2 px-3.5 py-2 rounded-lg border text-xs sm:text-sm font-medium transition active:scale-95 shadow-sm ${
+                hasPersistentFailures
+                  ? "bg-rose-950/40 hover:bg-rose-900/50 border-rose-500/50 text-rose-200"
+                  : "bg-slate-800 hover:bg-slate-700 border-slate-700 text-slate-200"
+              }`}
+              title={hasPersistentFailures ? "Persistent upstream schedule discovery failure detected" : "View Collector Telemetry"}
             >
-              <Activity className="w-4 h-4 text-cyan-400" />
+              <Activity className={`w-4 h-4 ${hasPersistentFailures ? "text-rose-400" : "text-cyan-400"}`} />
               <span className="hidden sm:inline">Telemetry</span>
+              {hasPersistentFailures && (
+                <span className="flex h-2 w-2 relative">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-rose-500"></span>
+                </span>
+              )}
             </button>
 
             <button

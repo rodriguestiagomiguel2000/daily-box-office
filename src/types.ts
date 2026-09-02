@@ -233,6 +233,15 @@ export interface ActiveRunProgress {
   last_error: string | null;
 }
 
+export interface FormatDiscoveryHealth {
+  format_external_id: string;
+  movie_title: string;
+  consecutive_failures: number;
+  last_success_at: string | null;
+  last_failure_at: string | null;
+  last_failure_detail: string | null;
+}
+
 export interface CollectorStatusResponse {
   scheduler: {
     isRunning: boolean;
@@ -246,6 +255,7 @@ export interface CollectorStatusResponse {
   active_progress?: ActiveRunProgress | null;
   is_collecting?: boolean;
   recent_runs: CollectionRunRecord[];
+  format_health?: FormatDiscoveryHealth[];
   totals: {
     snapshots: number;
     individual_seat_states: number;
