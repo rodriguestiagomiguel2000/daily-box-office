@@ -309,6 +309,16 @@ export async function executeCollectionRunFromPrepared(
                 console.error("Error persisting incremental session:", err);
               });
             sessionWritePromises.push(writePromise);
+          } else if (parsed.type === "movie_schedule_success" && parsed.data) {
+            const mData = parsed.data;
+            const cleanT = cleanMovieTitle(mData.title) || mData.title;
+            query(
+              `UPDATE movies SET 
+                 last_schedule_discovery_success_at = NOW(),
+                 updated_at = NOW()
+               WHERE external_id = $1 OR LOWER(title) = LOWER($2);`,
+              [mData.external_id, cleanT]
+            ).catch((e) => console.error("Error updating last_schedule_discovery_success_at:", e));
           } else if (parsed.type === "progress" && parsed.data) {
             const data = parsed.data;
             activeProgress = {
@@ -444,6 +454,7 @@ export async function persistSingleSession(
            poster_url = COALESCE(NULLIF($2, ''), poster_url),
            duration = COALESCE($3, duration),
            age_rating = COALESCE($4, age_rating),
+           last_schedule_discovery_success_at = NOW(),
            updated_at = NOW()
          WHERE id = $5;`,
         [cleanedTitle, m.poster_url, m.duration, m.age_rating, row.id]
@@ -462,15 +473,15 @@ export async function persistSingleSession(
       if (canonicalMatch.rows.length > 0) {
         const canonical = canonicalMatch.rows[0];
         await client.query(
-          `INSERT INTO movies (external_id, title, poster_url, duration, age_rating, release_date, tracking_enabled, tracking_end_date, merged_into_movie_id, updated_at)
-           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW());`,
+          `INSERT INTO movies (external_id, title, poster_url, duration, age_rating, release_date, tracking_enabled, tracking_end_date, merged_into_movie_id, last_schedule_discovery_success_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, NOW(), NOW());`,
           [m.external_id, cleanedTitle, m.poster_url, m.duration, m.age_rating, m.release_date, canonical.tracking_enabled, canonical.tracking_end_date, canonical.id]
         );
         canonicalMovieId = canonical.id;
       } else {
         const newMovieRes = await client.query<{ id: number }>(
-          `INSERT INTO movies (external_id, title, poster_url, duration, age_rating, release_date, updated_at)
-           VALUES ($1, $2, $3, $4, $5, $6, NOW())
+          `INSERT INTO movies (external_id, title, poster_url, duration, age_rating, release_date, last_schedule_discovery_success_at, updated_at)
+           VALUES ($1, $2, $3, $4, $5, $6, NOW(), NOW())
            RETURNING id;`,
           [m.external_id, cleanedTitle, m.poster_url, m.duration, m.age_rating, m.release_date]
         );

@@ -14,6 +14,7 @@ OutSystems Multi-Step Protocol:
 8. Parse, preserve raw states, validate invariant, and generate immutable SeatSnapshot.
 """
 
+import http.client
 import http.cookiejar
 import json
 import logging
@@ -292,11 +293,12 @@ class NOSScraper:
             data = json.loads(resp.read().decode("utf-8", errors="replace"))
             return data.get("data", {}).get("theaterList", {}).get("items", [])
 
-    def get_movie_sessions(self, aggregate_movie_id: str, max_retries: int = 2, timeout_sec: int = 20) -> Dict[str, Any]:
+    def get_movie_sessions(self, aggregate_movie_id: str, max_retries: int = 2, timeout_sec: int = 35) -> Dict[str, Any]:
         """
         Fetches structured session timetable for a movie by aggregate format number.
-        Includes single retry logic (max 1 retry / 2 attempts total) with a 2.5s delay
-        when NOS returns non-JSON/HTML error pages or transient network drops.
+        Uses an expanded timeout (default 35s) scaled for large blockbuster schedules,
+        plus retry-once logic (max_retries=2, 3.0s delay) catching read timeouts, socket
+        interruptions, HTTP errors, and malformed HTML/JSON error responses.
         """
         url = f"{BASE_SITE}/bin/cinemas/render/getMovieSessions.getMovieSessionsAggregator.json?aggregateMovieId={aggregate_movie_id}"
         req = urllib.request.Request(url, headers={**COMMON_HEADERS, "X-Requested-With": "XMLHttpRequest"})
@@ -314,19 +316,30 @@ class NOSScraper:
                     if attempt > 1:
                         log.info(f"Successfully fetched schedule for movie {aggregate_movie_id} on retry attempt {attempt}/{max_retries}.")
                     return data
-            except Exception as e:
+            except (
+                socket.timeout,
+                TimeoutError,
+                urllib.error.URLError,
+                urllib.error.HTTPError,
+                http.client.RemoteDisconnected,
+                http.client.IncompleteRead,
+                json.JSONDecodeError,
+                UnicodeDecodeError,
+                Exception,
+            ) as e:
                 last_exception = e
+                err_desc = f"{type(e).__name__}: {e}"
                 if attempt < max_retries:
-                    retry_delay_sec = 2.5
+                    retry_delay_sec = 3.0
                     log.info(
-                        f"Schedule discovery for movie {aggregate_movie_id} failed on attempt {attempt}/{max_retries} ({type(e).__name__}: {e}). "
-                        f"Waiting {retry_delay_sec}s and retrying once..."
+                        f"Schedule discovery for movie {aggregate_movie_id} encountered {err_desc} on attempt {attempt}/{max_retries} "
+                        f"(timeout={timeout_sec}s). Waiting {retry_delay_sec}s and retrying..."
                     )
                     time.sleep(retry_delay_sec)
                 else:
                     log.warning(
-                        f"Schedule discovery for movie {aggregate_movie_id} failed after {max_retries} attempts (1 retry). "
-                        f"Last error: {type(e).__name__}: {e}"
+                        f"Schedule discovery for movie {aggregate_movie_id} failed after {max_retries} attempts "
+                        f"(timeout={timeout_sec}s). Last error: {err_desc}"
                     )
                     raise last_exception if last_exception is not None else e
 

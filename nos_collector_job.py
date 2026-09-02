@@ -81,6 +81,15 @@ def emit_session(run_id: str, session_data: Dict[str, Any]):
     print(json.dumps(session_event), flush=True)
 
 
+def emit_movie_schedule_success(run_id: str, movie_meta: Dict[str, Any]):
+    event = {
+        "type": "movie_schedule_success",
+        "run_id": run_id,
+        "data": movie_meta
+    }
+    print(json.dumps(event), flush=True)
+
+
 def emit_progress(
     run_id: str,
     status: str,
@@ -249,8 +258,10 @@ def collect_data(
         }
 
         try:
-            sched = scraper.get_movie_sessions(agg_id)
+            sched = scraper.get_movie_sessions(agg_id, max_retries=2, timeout_sec=35)
             days = sched.get("days", []) if isinstance(sched, dict) else []
+            # Emit movie schedule discovery success event for health tracking
+            emit_movie_schedule_success(run.collection_run_id, movie_meta)
 
             # 1. Discover all candidate sessions for this movie (Current day + Tracked opening-day presale)
             movie_candidates: List[Dict[str, Any]] = []

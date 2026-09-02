@@ -248,6 +248,23 @@ export const TrackedMoviesView: React.FC<TrackedMoviesViewProps> = ({
                               </span>
                             );
                           })()}
+                          {(() => {
+                            const lastSuccess = movie.last_schedule_discovery_success_at;
+                            if (!lastSuccess) return null;
+                            const diffHours = (Date.now() - new Date(lastSuccess).getTime()) / (1000 * 60 * 60);
+                            if (diffHours >= 2.0) {
+                              return (
+                                <span
+                                  title={`Schedule discovery delayed. Last success: ${new Date(lastSuccess).toLocaleTimeString("pt-PT", { hour: "2-digit", minute: "2-digit" })}`}
+                                  className="text-xs px-2 py-0.5 rounded bg-amber-500/10 text-amber-400 font-medium border border-amber-500/20 flex items-center gap-1"
+                                >
+                                  <AlertCircle className="w-3 h-3 text-amber-400" />
+                                  <span>Schedule Delayed</span>
+                                </span>
+                              );
+                            }
+                            return null;
+                          })()}
                         </div>
                         <h3
                           id={`movie-title-${movie.id}`}

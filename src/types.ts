@@ -8,6 +8,7 @@ export interface Movie {
   release_date: string;
   tracking_enabled: boolean;
   tracking_end_date?: string | null;
+  last_schedule_discovery_success_at?: string | null;
   updated_at?: string;
   formats?: string[];
   status?: "CURRENTLY_PLAYING" | "UPCOMING" | "NO_LONGER_PLAYING";
@@ -29,6 +30,7 @@ export interface TrackedMovieSummary {
   release_date: string;
   tracking_enabled?: boolean;
   tracking_end_date?: string | null;
+  last_schedule_discovery_success_at?: string | null;
   sessions_count: number;
   cinemas_count: number;
   total_sellable_capacity: number;

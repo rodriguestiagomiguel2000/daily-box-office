@@ -530,6 +530,55 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
                   </span>
                 );
               })()}
+
+              {/* Schedule Discovery Health Status Badge */}
+              {(() => {
+                const lastSuccess = movie.last_schedule_discovery_success_at;
+                const isEnabled = Boolean(movie.tracking_enabled);
+                if (!lastSuccess) {
+                  return (
+                    <span
+                      title="Schedule discovery status across NOS cinema aggregators"
+                      className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-slate-800 text-slate-400 border border-slate-700 flex items-center gap-1.5"
+                    >
+                      <Activity className="w-3 h-3 text-slate-500" />
+                      <span>Schedule Discovery: Pending Sync</span>
+                    </span>
+                  );
+                }
+                const date = new Date(lastSuccess);
+                const diffMs = Date.now() - date.getTime();
+                const diffMins = Math.floor(diffMs / 60000);
+                let relText = "just now";
+                if (diffMins >= 1 && diffMins < 60) relText = `${diffMins}m ago`;
+                else if (diffMins >= 60 && diffMins < 1440) relText = `${Math.floor(diffMins / 60)}h ago`;
+                else if (diffMins >= 1440) relText = `${Math.floor(diffMins / 1440)}d ago`;
+
+                const diffHours = diffMs / (1000 * 60 * 60);
+                const isDelayed = isEnabled && diffHours >= 2.0;
+
+                if (isDelayed) {
+                  return (
+                    <span
+                      title={`Schedule discovery last succeeded at ${new Date(lastSuccess).toLocaleString("pt-PT")}`}
+                      className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-500/10 text-amber-300 border border-amber-500/20 flex items-center gap-1.5"
+                    >
+                      <AlertTriangle className="w-3 h-3 text-amber-400" />
+                      <span>Schedule Discovery: Delayed ({relText})</span>
+                    </span>
+                  );
+                }
+
+                return (
+                  <span
+                    title={`Schedule discovery last succeeded at ${new Date(lastSuccess).toLocaleString("pt-PT")}`}
+                    className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 flex items-center gap-1.5"
+                  >
+                    <Activity className="w-3 h-3 text-emerald-400" />
+                    <span>Schedule Discovery: Healthy ({relText})</span>
+                  </span>
+                );
+              })()}
             </div>
 
             <div className="flex items-center gap-4 text-xs text-slate-400 flex-wrap">

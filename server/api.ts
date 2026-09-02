@@ -116,7 +116,7 @@ apiRouter.get("/movies/catalog", async (req, res) => {
 
     // 3. Fetch local tracking states for canonical records
     const dbMovies = await query(
-      "SELECT id, external_id, title, poster_url, duration, age_rating, release_date, tracking_enabled, tracking_end_date, updated_at FROM movies WHERE merged_into_movie_id IS NULL;"
+      "SELECT id, external_id, title, poster_url, duration, age_rating, release_date, tracking_enabled, tracking_end_date, last_schedule_discovery_success_at, updated_at FROM movies WHERE merged_into_movie_id IS NULL;"
     );
     const trackingMap = new Map<string, any>();
     for (const m of dbMovies.rows) {
@@ -132,6 +132,7 @@ apiRouter.get("/movies/catalog", async (req, res) => {
         title: dbEntry ? dbEntry.title : m.title,
         tracking_enabled: dbEntry ? dbEntry.tracking_enabled : false,
         tracking_end_date: dbEntry ? (dbEntry.tracking_end_date ? String(dbEntry.tracking_end_date).slice(0, 10) : null) : null,
+        last_schedule_discovery_success_at: dbEntry?.last_schedule_discovery_success_at || null,
       };
     });
 
@@ -426,6 +427,9 @@ apiRouter.get("/dashboard/summary", async (req, res) => {
         sales_velocity_proxy: totalVelocity,
         estimated_revenue: Math.round(estimatedRevenue * 100) / 100,
         latest_collection_time: latestCollectedAt ? latestCollectedAt.toISOString() : null,
+        last_schedule_discovery_success_at: movie.last_schedule_discovery_success_at
+          ? new Date(movie.last_schedule_discovery_success_at).toISOString()
+          : null,
       });
     }
 
