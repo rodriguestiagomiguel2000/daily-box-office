@@ -69,13 +69,18 @@ export const Header: React.FC<HeaderProps> = ({
             onClick={onHomeClick}
             className="flex items-center space-x-3.5 cursor-pointer group select-none"
           >
-            <div className="w-10 h-10 rounded-xl bg-amber-500/10 border border-amber-500/30 flex items-center justify-center text-amber-400 group-hover:bg-amber-500/20 group-hover:border-amber-500/50 transition">
-              <Film className="w-5 h-5" />
+            <div className="w-10 h-10 rounded-xl overflow-hidden bg-slate-950 border border-amber-500/30 flex items-center justify-center group-hover:border-amber-500/50 transition shrink-0">
+              <img
+                src="/logo-icon.png"
+                alt="Box Office Portugal Logo"
+                className="w-full h-full object-cover"
+                referrerPolicy="no-referrer"
+              />
             </div>
             <div>
               <div className="flex items-center space-x-2">
                 <span className="font-bold text-lg tracking-tight text-slate-100 group-hover:text-amber-400 transition">
-                  NOS Portugal
+                  Box Office Portugal
                 </span>
                 <span className="text-[11px] px-2 py-0.5 rounded-full font-semibold bg-amber-500/20 text-amber-300 border border-amber-500/30">
                   Phase 2 Box Office

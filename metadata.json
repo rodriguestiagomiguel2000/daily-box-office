@@ -1,6 +1,6 @@
 {
-  "name": "Portugal Box Office Tracker",
-  "description": "Track theatrical box office, cinema sessions, seat maps, and admissions across Portuguese cinemas starting with NOS Cinemas.",
+  "name": "Box Office Portugal",
+  "description": "Theatrical box office tracking, cinema sessions, seat maps, and admissions telemetry across Portuguese cinemas starting with NOS Cinemas.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

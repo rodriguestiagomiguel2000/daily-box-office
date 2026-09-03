@@ -40,6 +40,9 @@ async function startServer() {
     res.status(404).json({ error: `API route not found: ${req.method} ${req.originalUrl}` });
   });
 
+  // Serve public static assets (e.g. logo-icon.png, favicon)
+  app.use(express.static(path.join(process.cwd(), "public")));
+
   // Vite middleware for development vs static dist for production
   if (process.env.NODE_ENV !== "production") {
     const vite = await createViteServer({
@@ -56,7 +59,7 @@ async function startServer() {
   }
 
   app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Portugal Box Office Tracker server running on http://0.0.0.0:${PORT}`);
+    console.log(`Box Office Portugal server running on http://0.0.0.0:${PORT}`);
   });
 }
 
