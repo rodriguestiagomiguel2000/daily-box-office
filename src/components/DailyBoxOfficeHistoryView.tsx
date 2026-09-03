@@ -22,7 +22,7 @@ import { fetchJson } from "../utils/api";
 interface DailyBoxOfficeHistoryViewProps {
   onSelectMovie: (movieId: number) => void;
   onBackToDashboard: () => void;
-  onSelectView?: (view: "daily" | "weekend" | "weekly") => void;
+  onSelectView?: (view: "today" | "daily" | "weekend" | "weekly") => void;
 }
 
 // Calculate release day number: (operational_date - release_date) + 1
@@ -341,6 +341,14 @@ export const DailyBoxOfficeHistoryView: React.FC<DailyBoxOfficeHistoryViewProps>
           {/* Box Office Period Tabs */}
           {onSelectView && (
             <div className="bg-slate-950 border border-slate-800 p-1 rounded-xl flex items-center text-xs font-semibold">
+              <button
+                id="today-live-tab-btn"
+                onClick={() => onSelectView("today")}
+                className="px-3.5 py-1.5 rounded-lg text-slate-400 hover:text-slate-200 transition cursor-pointer flex items-center gap-1.5"
+              >
+                <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+                <span>Today (Live)</span>
+              </button>
               <button
                 id="daily-tab-btn"
                 onClick={() => onSelectView("daily")}

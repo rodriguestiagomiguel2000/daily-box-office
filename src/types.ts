@@ -647,6 +647,76 @@ export interface WeeklyBoxOfficeResponse {
   weeks: WeeklyBoxOfficePeriod[];
 }
 
+export interface TodayHourlyBucket {
+  hour: string; // e.g. "09:00", "10:00", ..., "01:00 (+1d)"
+  raw_hour: number;
+  tickets: number;
+  revenue: number;
+  cumulative_tickets: number;
+  cumulative_revenue: number;
+  is_open_hours: boolean;
+}
+
+export interface TodayBoxOfficeMovieItem {
+  movie_id: number;
+  title: string;
+  poster_url: string | null;
+  release_date: string | null;
+  revenue_today: number;
+  admissions_today: number;
+  cinemas_active_today: number;
+  sessions_today: number;
+  shows_completed: number;
+  shows_started: number;
+  avg_ticket_price: number;
+  occupancy_pct: number;
+  structural_blocks_excluded: number;
+  sales_velocity: number;
+  vs_yesterday_pct: number | null;
+  yesterday_revenue: number | null;
+  yesterday_admissions: number | null;
+  as_of_time: string;
+  as_of_timestamp: string;
+  hourly_buckets?: TodayHourlyBucket[];
+}
+
+export interface TodayBoxOfficeSummary {
+  operational_date: string;
+  current_operational_date?: string;
+  is_today?: boolean;
+  is_live?: boolean;
+  previous_date?: string;
+  next_date?: string;
+  current_lisbon_time: string;
+  total_revenue_today: number;
+  total_admissions_today: number;
+  total_cinemas_active: number;
+  total_sessions_today: number;
+  total_shows_completed: number;
+  overall_occupancy_pct: number;
+  total_structural_blocks: number;
+  avg_ticket_price: number;
+  vs_yesterday_revenue_pct: number | null;
+  vs_yesterday_admissions_pct: number | null;
+  top_movie: {
+    movie_id: number;
+    title: string;
+    revenue: number;
+    admissions: number;
+    share_of_box_office: number;
+  } | null;
+}
+
+export interface TodayBoxOfficeResponse {
+  summary: TodayBoxOfficeSummary;
+  movies: TodayBoxOfficeMovieItem[];
+  hourly_timeline: TodayHourlyBucket[];
+  operating_hours_window: {
+    start: string;
+    end: string;
+  };
+}
+
 export interface PresaleBucket {
   days_before_release: number; // e.g. 7 for T-7, 0 for T-0
   t_label: string; // "T-7", "T-6", ... "T-0"

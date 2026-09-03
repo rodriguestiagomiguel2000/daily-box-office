@@ -18,11 +18,12 @@ interface HeaderProps {
   onOpenCatalog: () => void;
   onOpenStatus: () => void;
   onHomeClick: () => void;
+  onOpenTodayLive?: () => void;
   onOpenDailyHistory: () => void;
   onOpenWeekendHistory?: () => void;
   onOpenWeeklyHistory?: () => void;
   onOpenRawIngestion?: () => void;
-  activeView: "tracked" | "daily-history" | "weekend-history" | "weekly-history" | "raw-ingestion" | "detail";
+  activeView: "tracked" | "today-live" | "daily-history" | "weekend-history" | "weekly-history" | "raw-ingestion" | "detail";
 }
 
 function formatNextRunTime(nextRunStr: string | null | undefined): string {
@@ -46,6 +47,7 @@ export const Header: React.FC<HeaderProps> = ({
   onOpenCatalog,
   onOpenStatus,
   onHomeClick,
+  onOpenTodayLive,
   onOpenDailyHistory,
   onOpenWeekendHistory,
   onOpenWeeklyHistory,
@@ -53,7 +55,6 @@ export const Header: React.FC<HeaderProps> = ({
   activeView,
 }) => {
   const isCollecting = status?.scheduler?.isCollecting || isTriggering;
-  const snapshotsCount = status?.totals?.snapshots || 0;
   const intervalMins = status?.scheduler?.intervalMinutes || 20;
   const nextRunFormatted = formatNextRunTime(status?.scheduler?.nextRunTime);
   const hasPersistentFailures = (status?.format_health || []).some((f) => f.consecutive_failures >= 6);
@@ -156,6 +157,24 @@ export const Header: React.FC<HeaderProps> = ({
               <span>Tracked Movies</span>
             </button>
 
+            {onOpenTodayLive && (
+              <button
+                id="nav-today-live-boxoffice-tab"
+                onClick={onOpenTodayLive}
+                className={`py-2.5 transition border-b-2 flex items-center gap-2 whitespace-nowrap ${
+                  activeView === "today-live"
+                    ? "border-amber-500 text-amber-400 font-semibold"
+                    : "border-transparent text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                <span className="relative flex h-2 w-2">
+                  <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  <span className="relative inline-flex rounded-full h-2 w-2 bg-emerald-500"></span>
+                </span>
+                <span>Today (Live)</span>
+              </button>
+            )}
+
             <button
               id="nav-daily-boxoffice-tab"
               onClick={onOpenDailyHistory}
@@ -222,15 +241,6 @@ export const Header: React.FC<HeaderProps> = ({
             className="hidden md:flex items-center space-x-2 text-slate-400 hover:text-slate-200 cursor-pointer transition py-2 text-[11px] whitespace-nowrap select-none"
             title="Click to view detailed system telemetry"
           >
-            <div className="flex items-center space-x-1.5 px-2 py-0.5 rounded bg-slate-950/80 border border-slate-800">
-              <Database className="w-3 h-3 text-emerald-400" />
-              <span>
-                Neon PostgreSQL: <strong className="text-emerald-400 font-mono">{snapshotsCount}</strong> Snapshots
-              </span>
-            </div>
-
-            <span className="text-slate-600">•</span>
-
             <div className="flex items-center space-x-1.5 px-2 py-0.5 rounded bg-slate-950/80 border border-slate-800">
               <Clock className="w-3 h-3 text-amber-400" />
               <span>

@@ -33,7 +33,7 @@ import { fetchJson } from "../utils/api";
 
 interface WeekendBoxOfficeViewProps {
   onSelectMovie: (movieId: number) => void;
-  onSelectView?: (view: "daily" | "weekend" | "weekly") => void;
+  onSelectView?: (view: "today" | "daily" | "weekend" | "weekly") => void;
   onBackToDashboard?: () => void;
 }
 
@@ -181,8 +181,16 @@ export const WeekendBoxOfficeView: React.FC<WeekendBoxOfficeViewProps> = ({
           </p>
         </div>
 
-        {/* View Switcher Tabs (Daily | Weekend | Weekly) */}
+        {/* View Switcher Tabs (Today | Daily | Weekend | Weekly) */}
         <div className="flex items-center gap-1.5 bg-slate-950 p-1 rounded-xl border border-slate-800 self-stretch sm:self-auto justify-center">
+          <button
+            id="switch-to-today-live-btn"
+            onClick={() => onSelectView?.("today")}
+            className="px-3.5 py-1.5 rounded-lg text-xs font-semibold text-slate-400 hover:text-slate-200 transition cursor-pointer flex items-center gap-1.5"
+          >
+            <span className="w-2 h-2 rounded-full bg-emerald-500"></span>
+            <span>Today (Live)</span>
+          </button>
           <button
             id="switch-to-daily-btn"
             onClick={() => onSelectView?.("daily")}

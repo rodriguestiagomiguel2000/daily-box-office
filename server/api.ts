@@ -1345,6 +1345,13 @@ function getPreviousDateStr(dateStr: string, daysBack: number): string {
   return dt.toISOString().split("T")[0];
 }
 
+function getNextDateStr(dateStr: string, daysForward: number = 1): string {
+  const [y, m, d] = dateStr.split("-").map((s) => parseInt(s, 10));
+  const dt = new Date(Date.UTC(y, m - 1, d));
+  dt.setUTCDate(dt.getUTCDate() + daysForward);
+  return dt.toISOString().split("T")[0];
+}
+
 // Helper function to get or aggregate movie performance snapshots for multiple target points in time in batch
 export async function getOrComputeMovieSnapshotsBatch(
   movieId: number,
@@ -2311,6 +2318,390 @@ apiRouter.get("/movies/:id/hourly-breakdown", async (req, res) => {
   }
 });
 
+
+// GET /api/boxoffice/today (and /api/boxoffice/live)
+apiRouter.get(["/boxoffice/today", "/boxoffice/live"], async (req, res) => {
+  try {
+    const currentOperationalDate = getOperationalDateStr();
+    const dateParam = typeof req.query.date === "string" && /^\d{4}-\d{2}-\d{2}$/.test(req.query.date)
+      ? req.query.date
+      : null;
+    const todayStr = dateParam || currentOperationalDate;
+    const isViewingToday = (todayStr === currentOperationalDate);
+    const yesterdayStr = getPreviousDateStr(todayStr, 1);
+    const tomorrowStr = getNextDateStr(todayStr, 1);
+
+    const now = new Date();
+    const currentLisbonTime = now.toLocaleTimeString("pt-PT", {
+      hour: "2-digit",
+      minute: "2-digit",
+      hour12: false,
+      timeZone: "Europe/Lisbon",
+    });
+
+    // Target timestamp yesterday: at the exact same point in time if today, or end of previous day if historical
+    let yesterdayTargetTs: Date;
+    if (isViewingToday) {
+      yesterdayTargetTs = new Date(now.getTime() - 24 * 3600 * 1000);
+    } else {
+      yesterdayTargetTs = parseLisbonLocalToUTC(yesterdayStr, "05:59");
+    }
+
+    // Standard open cinema hours 09:00 - 02:00 window (09:00 to 01:00 (+1d))
+    const standardOperatingHours = [
+      { hour: 9, label: "09:00" },
+      { hour: 10, label: "10:00" },
+      { hour: 11, label: "11:00" },
+      { hour: 12, label: "12:00" },
+      { hour: 13, label: "13:00" },
+      { hour: 14, label: "14:00" },
+      { hour: 15, label: "15:00" },
+      { hour: 16, label: "16:00" },
+      { hour: 17, label: "17:00" },
+      { hour: 18, label: "18:00" },
+      { hour: 19, label: "19:00" },
+      { hour: 20, label: "20:00" },
+      { hour: 21, label: "21:00" },
+      { hour: 22, label: "22:00" },
+      { hour: 23, label: "23:00" },
+      { hour: 0, label: "00:00 (+1d)" },
+      { hour: 1, label: "01:00 (+1d)" },
+    ];
+
+    // 1. Query today's active sessions, admissions, revenue, structural blocks, active cinemas
+    // Reusing the canonical getSessionPricesSqlCte() and room_structural_blocks join
+    const sessionsRes = await query(`
+      WITH session_latest AS (
+        SELECT DISTINCT ON (s.id)
+          s.id as session_id,
+          s.movie_id,
+          s.cinema_id,
+          s.format,
+          s.starts_at,
+          ss.collected_at,
+          ss.sellable_seats,
+          ss.available_seats,
+          ss.unavailable_seats,
+          COALESCE(sb.blocked_count, 0)::int as structural_blocked_seats
+        FROM sessions s
+        JOIN seat_snapshots ss ON ss.session_id = s.id
+        LEFT JOIN rooms r ON s.room_id = r.id
+        LEFT JOIN LATERAL (
+          SELECT COUNT(*)::int as blocked_count
+          FROM room_structural_blocks rsb
+          WHERE rsb.theater_room_uuid = r.external_id
+            AND rsb.first_observed_at::date <= NULLIF(s.operational_date, '')::date
+            AND (rsb.removed_at IS NULL OR rsb.removed_at::date > NULLIF(s.operational_date, '')::date)
+        ) sb ON true
+        WHERE (s.operational_date = $1 OR TO_CHAR((s.starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD') = $1)
+        ORDER BY s.id, ss.collected_at DESC
+      ),
+      ${getSessionPricesSqlCte()}
+      SELECT 
+        sl.movie_id,
+        m.title,
+        m.poster_url,
+        m.release_date,
+        COUNT(DISTINCT sl.session_id)::int as sessions_today,
+        COUNT(DISTINCT sl.cinema_id)::int as cinemas_active_today,
+        COUNT(DISTINCT CASE WHEN sl.starts_at + INTERVAL '2 hours' <= NOW() THEN sl.session_id END)::int as shows_completed,
+        COUNT(DISTINCT CASE WHEN sl.starts_at <= NOW() THEN sl.session_id END)::int as shows_started,
+        COALESCE(SUM(sl.sellable_seats), 0)::int as total_sellable,
+        COALESCE(SUM(sl.available_seats), 0)::int as total_available,
+        COALESCE(SUM(sl.structural_blocked_seats), 0)::int as structural_blocks_excluded,
+        COALESCE(SUM(GREATEST(0, sl.unavailable_seats - sl.structural_blocked_seats)), 0)::int as admissions_today,
+        COALESCE(SUM(GREATEST(0, sl.unavailable_seats - sl.structural_blocked_seats) * sp.resolved_unit_price), 0.0)::numeric as revenue_today,
+        MAX(sl.collected_at) as latest_snapshot_timestamp,
+        ROUND(AVG(sp.resolved_unit_price)::numeric, 2) as avg_unit_price
+      FROM session_latest sl
+      JOIN movies m ON sl.movie_id = m.id
+      LEFT JOIN session_prices sp ON sl.session_id = sp.session_id
+      GROUP BY sl.movie_id, m.title, m.poster_url, m.release_date
+      HAVING COUNT(DISTINCT sl.session_id) > 0 OR SUM(GREATEST(0, sl.unavailable_seats - sl.structural_blocked_seats)) > 0
+      ORDER BY revenue_today DESC;
+    `, [todayStr]);
+
+    const activeRows = sessionsRes.rows;
+    if (activeRows.length === 0) {
+      return res.json({
+        summary: {
+          operational_date: todayStr,
+          current_operational_date: currentOperationalDate,
+          is_today: isViewingToday,
+          is_live: isViewingToday,
+          previous_date: yesterdayStr,
+          next_date: tomorrowStr,
+          current_lisbon_time: currentLisbonTime,
+          total_revenue_today: 0,
+          total_admissions_today: 0,
+          total_cinemas_active: 0,
+          total_sessions_today: 0,
+          total_shows_completed: 0,
+          overall_occupancy_pct: 0,
+          total_structural_blocks: 0,
+          avg_ticket_price: 0,
+          vs_yesterday_revenue_pct: null,
+          vs_yesterday_admissions_pct: null,
+          top_movie: null,
+        },
+        movies: [],
+        hourly_timeline: [],
+        operating_hours_window: { start: "09:00", end: "02:00" },
+      });
+    }
+
+    const movieIds = activeRows.map((r) => Number(r.movie_id));
+
+    // 2. Query sales velocity from movie_performance_snapshots
+    const mpsVelocityRes = await query(`
+      SELECT DISTINCT ON (movie_id)
+        movie_id, sales_velocity, snapshot_timestamp
+      FROM movie_performance_snapshots
+      WHERE operational_date = $1 AND movie_id = ANY($2::int[])
+      ORDER BY movie_id, snapshot_timestamp DESC;
+    `, [todayStr, movieIds]);
+    const velocityMap = new Map<number, number>();
+    for (const r of mpsVelocityRes.rows) {
+      velocityMap.set(Number(r.movie_id), parseFloat(r.sales_velocity) || 0);
+    }
+
+    // 3. Yesterday snapshots comparison at the same time
+    const yesterdayBatch = await Promise.all(
+      movieIds.map(async (id) => {
+        const snaps = await getOrComputeMovieSnapshotsBatch(id, [
+          { date: yesterdayStr, targetTs: yesterdayTargetTs },
+        ]);
+        return { movieId: id, snap: snaps[0] || null };
+      })
+    );
+    const yesterdayMap = new Map<number, any>();
+    for (const item of yesterdayBatch) {
+      yesterdayMap.set(item.movieId, item.snap);
+    }
+
+    // 4. Query hourly transitions across active movies for the 09:00-02:00 open cinema window
+    const hourlyTransRes = await query(`
+      WITH ${getSessionPricesSqlCte()}
+      SELECT 
+        s.movie_id,
+        EXTRACT(HOUR FROM st.transition_timestamp AT TIME ZONE 'Europe/Lisbon')::int as lisbon_hour,
+        COALESCE(SUM(st.newly_unavailable - st.newly_available), 0)::int as net_tickets,
+        COALESCE(SUM((st.newly_unavailable - st.newly_available) * sp.resolved_unit_price), 0.0)::numeric as net_revenue
+      FROM seat_transitions st
+      JOIN sessions s ON st.session_id = s.id
+      LEFT JOIN session_prices sp ON s.id = sp.session_id
+      WHERE s.movie_id = ANY($1::int[])
+        AND (
+          st.transition_timestamp >= (($2::text || ' 06:00:00')::timestamp AT TIME ZONE 'Europe/Lisbon')
+          AND st.transition_timestamp < ((($2::date + 1)::text || ' 06:00:00')::timestamp AT TIME ZONE 'Europe/Lisbon')
+        )
+      GROUP BY s.movie_id, lisbon_hour;
+    `, [movieIds, todayStr]);
+
+    // Map: hour -> { tickets, revenue, byMovie: Map<movieId, { tickets, revenue }> }
+    const hourMap = new Map<number, { tickets: number; revenue: number; byMovie: Map<number, { tickets: number; revenue: number }> }>();
+    for (const h of standardOperatingHours) {
+      hourMap.set(h.hour, { tickets: 0, revenue: 0, byMovie: new Map() });
+    }
+
+    for (const row of hourlyTransRes.rows) {
+      const h = Number(row.lisbon_hour);
+      const mId = Number(row.movie_id);
+      const tickets = Number(row.net_tickets) || 0;
+      const revenue = Math.round((parseFloat(row.net_revenue) || 0) * 100) / 100;
+
+      if (hourMap.has(h)) {
+        const entry = hourMap.get(h)!;
+        entry.tickets += tickets;
+        entry.revenue = Math.round((entry.revenue + revenue) * 100) / 100;
+        entry.byMovie.set(mId, { tickets, revenue });
+      }
+    }
+
+    // Build timeline for 09:00 - 02:00
+    let cumTickets = 0;
+    let cumRevenue = 0;
+    const hourlyTimeline = standardOperatingHours.map((h) => {
+      const data = hourMap.get(h.hour) || { tickets: 0, revenue: 0 };
+      cumTickets += data.tickets;
+      cumRevenue = Math.round((cumRevenue + data.revenue) * 100) / 100;
+      return {
+        hour: h.label,
+        raw_hour: h.hour,
+        tickets: data.tickets,
+        revenue: data.revenue,
+        cumulative_tickets: cumTickets,
+        cumulative_revenue: cumRevenue,
+        is_open_hours: true,
+      };
+    });
+
+    // 5. Build Movie Items
+    let totalRevenue = 0;
+    let totalAdmissions = 0;
+    let totalSessions = 0;
+    let totalShowsCompleted = 0;
+    let totalSellableCapacity = 0;
+    let totalStructuralBlocks = 0;
+    let totalYesterdayRevenue = 0;
+    let totalYesterdayAdmissions = 0;
+    let hasYesterdayData = false;
+
+    const movies = activeRows.map((r) => {
+      const movieId = Number(r.movie_id);
+      const rev = Math.round((parseFloat(r.revenue_today) || 0) * 100) / 100;
+      const adm = parseInt(r.admissions_today, 10) || 0;
+      const sessionsCount = parseInt(r.sessions_today, 10) || 0;
+      const cinemasCount = parseInt(r.cinemas_active_today, 10) || 0;
+      const showsCompleted = parseInt(r.shows_completed, 10) || 0;
+      const showsStarted = parseInt(r.shows_started, 10) || 0;
+      const sellable = parseInt(r.total_sellable, 10) || 0;
+      const structBlocks = parseInt(r.structural_blocks_excluded, 10) || 0;
+      const avgPrice = adm > 0 ? Math.round((rev / adm) * 100) / 100 : (parseFloat(r.avg_unit_price) || 0);
+
+      // Effective occupancy post-structural blocks
+      const effectiveSellable = Math.max(1, sellable - structBlocks);
+      const occupancyPct = effectiveSellable > 0 ? Math.round((adm / effectiveSellable) * 1000) / 10 : 0;
+
+      // Sales velocity
+      const velocity = Math.round((velocityMap.get(movieId) || 0) * 10) / 10;
+
+      // Yesterday comparison
+      const yestSnap = yesterdayMap.get(movieId);
+      let vsYesterdayPct: number | null = null;
+      let yestRev: number | null = null;
+      let yestAdm: number | null = null;
+      if (yestSnap && yestSnap.estimated_revenue !== undefined) {
+        yestRev = Math.round(Number(yestSnap.estimated_revenue) * 100) / 100;
+        yestAdm = Number(yestSnap.estimated_admissions) || 0;
+        if (yestRev > 0) {
+          vsYesterdayPct = Math.round(((rev - yestRev) / yestRev) * 1000) / 10;
+          totalYesterdayRevenue += yestRev;
+          totalYesterdayAdmissions += yestAdm;
+          hasYesterdayData = true;
+        }
+      }
+
+      // As of HH:MM
+      const asOfDate = r.latest_snapshot_timestamp ? new Date(r.latest_snapshot_timestamp) : now;
+      const asOfTime = asOfDate.toLocaleTimeString("pt-PT", {
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+        timeZone: "Europe/Lisbon",
+      });
+
+      totalRevenue += rev;
+      totalAdmissions += adm;
+      totalSessions += sessionsCount;
+      totalShowsCompleted += showsCompleted;
+      totalSellableCapacity += effectiveSellable;
+      totalStructuralBlocks += structBlocks;
+
+      // Movie's own hourly buckets for open hours
+      const movieHourlyBuckets = standardOperatingHours.map((h) => {
+        const entry = hourMap.get(h.hour)?.byMovie.get(movieId) || { tickets: 0, revenue: 0 };
+        return {
+          hour: h.label,
+          raw_hour: h.hour,
+          tickets: entry.tickets,
+          revenue: entry.revenue,
+          cumulative_tickets: 0,
+          cumulative_revenue: 0,
+          is_open_hours: true,
+        };
+      });
+
+      return {
+        movie_id: movieId,
+        title: r.title,
+        poster_url: r.poster_url,
+        release_date: r.release_date,
+        revenue_today: rev,
+        admissions_today: adm,
+        cinemas_active_today: cinemasCount,
+        sessions_today: sessionsCount,
+        shows_completed: showsCompleted,
+        shows_started: showsStarted,
+        avg_ticket_price: avgPrice,
+        occupancy_pct: occupancyPct,
+        structural_blocks_excluded: structBlocks,
+        sales_velocity: velocity,
+        vs_yesterday_pct: vsYesterdayPct,
+        yesterday_revenue: yestRev,
+        yesterday_admissions: yestAdm,
+        as_of_time: asOfTime,
+        as_of_timestamp: asOfDate.toISOString(),
+        hourly_buckets: movieHourlyBuckets,
+      };
+    });
+
+    // Sort by today's revenue descending by default (leaderboard style)
+    movies.sort((a, b) => b.revenue_today - a.revenue_today);
+
+    // Summary calculation
+    const overallOccupancyPct = totalSellableCapacity > 0 ? Math.round((totalAdmissions / totalSellableCapacity) * 1000) / 10 : 0;
+    const overallAvgTicket = totalAdmissions > 0 ? Math.round((totalRevenue / totalAdmissions) * 100) / 100 : 0;
+
+    let vsYesterdayTotalRevPct: number | null = null;
+    let vsYesterdayTotalAdmPct: number | null = null;
+    if (hasYesterdayData && totalYesterdayRevenue > 0) {
+      vsYesterdayTotalRevPct = Math.round(((totalRevenue - totalYesterdayRevenue) / totalYesterdayRevenue) * 1000) / 10;
+    }
+    if (hasYesterdayData && totalYesterdayAdmissions > 0) {
+      vsYesterdayTotalAdmPct = Math.round(((totalAdmissions - totalYesterdayAdmissions) / totalYesterdayAdmissions) * 1000) / 10;
+    }
+
+    // Top movie (#1 Box Office Leader)
+    const topM = movies.length > 0 ? {
+      movie_id: movies[0].movie_id,
+      title: movies[0].title,
+      revenue: movies[0].revenue_today,
+      admissions: movies[0].admissions_today,
+      share_of_box_office: totalRevenue > 0 ? Math.round((movies[0].revenue_today / totalRevenue) * 1000) / 10 : 0,
+    } : null;
+
+    // Distinct total cinemas active today
+    const totalCinemasRes = await query(`
+      SELECT COUNT(DISTINCT s.cinema_id)::int as total_cinemas
+      FROM sessions s
+      WHERE (s.operational_date = $1 OR TO_CHAR((s.starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD') = $1);
+    `, [todayStr]);
+    const totalCinemasCount = parseInt(totalCinemasRes.rows[0]?.total_cinemas, 10) || 0;
+
+    return res.json({
+      summary: {
+        operational_date: todayStr,
+        current_operational_date: currentOperationalDate,
+        is_today: isViewingToday,
+        is_live: isViewingToday,
+        previous_date: yesterdayStr,
+        next_date: tomorrowStr,
+        current_lisbon_time: currentLisbonTime,
+        total_revenue_today: Math.round(totalRevenue * 100) / 100,
+        total_admissions_today: totalAdmissions,
+        total_cinemas_active: totalCinemasCount,
+        total_sessions_today: totalSessions,
+        total_shows_completed: totalShowsCompleted,
+        overall_occupancy_pct: overallOccupancyPct,
+        total_structural_blocks: totalStructuralBlocks,
+        avg_ticket_price: overallAvgTicket,
+        vs_yesterday_revenue_pct: vsYesterdayTotalRevPct,
+        vs_yesterday_admissions_pct: vsYesterdayTotalAdmPct,
+        top_movie: topM,
+      },
+      movies,
+      hourly_timeline: hourlyTimeline,
+      operating_hours_window: {
+        start: "09:00",
+        end: "02:00",
+      },
+    });
+  } catch (err: any) {
+    console.error("Error generating today box office:", err);
+    res.status(500).json({ error: err.message });
+  }
+});
 
 // GET /api/boxoffice/daily-history
 apiRouter.get("/boxoffice/daily-history", async (req, res) => {

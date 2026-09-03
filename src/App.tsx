@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from "react";
 import { Header } from "./components/Header";
 import { TrackedMoviesView } from "./components/TrackedMoviesView";
 import { MovieDetailView } from "./components/MovieDetailView";
+import { TodayLiveBoxOfficeView } from "./components/TodayLiveBoxOfficeView";
 import { DailyBoxOfficeHistoryView } from "./components/DailyBoxOfficeHistoryView";
 import { WeekendBoxOfficeView } from "./components/WeekendBoxOfficeView";
 import { WeeklyBoxOfficeView } from "./components/WeeklyBoxOfficeView";
@@ -10,7 +11,7 @@ import { CatalogModal } from "./components/CatalogModal";
 import { CollectorStatusModal } from "./components/CollectorStatusModal";
 import { TrackedMovieSummary, MovieDetailResponse, CollectorStatusResponse, Movie } from "./types";
 
-type ActiveDashboardView = "tracked" | "daily-history" | "weekend-history" | "weekly-history" | "raw-ingestion";
+type ActiveDashboardView = "tracked" | "today-live" | "daily-history" | "weekend-history" | "weekly-history" | "raw-ingestion";
 
 export function App() {
   const [trackedMovies, setTrackedMovies] = useState<TrackedMovieSummary[]>([]);
@@ -284,6 +285,11 @@ export function App() {
         onTriggerRun={handleTriggerRun}
         onOpenCatalog={handleOpenCatalog}
         onOpenStatus={() => setIsStatusOpen(true)}
+        onOpenTodayLive={() => {
+          setSelectedMovieId(null);
+          setMovieDetail(null);
+          setDashboardView("today-live");
+        }}
         onOpenDailyHistory={() => {
           setSelectedMovieId(null);
           setMovieDetail(null);
@@ -341,13 +347,31 @@ export function App() {
             onTriggerNosRun={handleTriggerRun}
             isNosCollecting={isTriggeringRun || Boolean(collectorStatus?.is_collecting || collectorStatus?.scheduler?.isCollecting)}
           />
+        ) : dashboardView === "today-live" ? (
+          <TodayLiveBoxOfficeView
+            onSelectMovie={handleSelectMovie}
+            onBackToDashboard={() => setDashboardView("tracked")}
+            onSelectView={(v) =>
+              setDashboardView(
+                v === "today"
+                  ? "today-live"
+                  : v === "daily"
+                  ? "daily-history"
+                  : v === "weekend"
+                  ? "weekend-history"
+                  : "weekly-history"
+              )
+            }
+          />
         ) : dashboardView === "daily-history" ? (
           <DailyBoxOfficeHistoryView
             onSelectMovie={handleSelectMovie}
             onBackToDashboard={() => setDashboardView("tracked")}
             onSelectView={(v) =>
               setDashboardView(
-                v === "daily"
+                v === "today"
+                  ? "today-live"
+                  : v === "daily"
                   ? "daily-history"
                   : v === "weekend"
                   ? "weekend-history"
@@ -361,7 +385,9 @@ export function App() {
             onBackToDashboard={() => setDashboardView("tracked")}
             onSelectView={(v) =>
               setDashboardView(
-                v === "daily"
+                v === "today"
+                  ? "today-live"
+                  : v === "daily"
                   ? "daily-history"
                   : v === "weekend"
                   ? "weekend-history"
@@ -375,7 +401,9 @@ export function App() {
             onBackToDashboard={() => setDashboardView("tracked")}
             onSelectView={(v) =>
               setDashboardView(
-                v === "daily"
+                v === "today"
+                  ? "today-live"
+                  : v === "daily"
                   ? "daily-history"
                   : v === "weekend"
                   ? "weekend-history"
