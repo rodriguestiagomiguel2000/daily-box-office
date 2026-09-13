@@ -430,6 +430,11 @@ export function App() {
         movies={catalogMovies}
         isLoading={isLoadingCatalog}
         onToggleTrack={handleToggleTrack}
+        onMergeSuccess={() => {
+          fetchCatalog();
+          fetchSummary(true);
+          fetchStatus();
+        }}
       />
 
       {/* System & Collector Telemetry Modal */}

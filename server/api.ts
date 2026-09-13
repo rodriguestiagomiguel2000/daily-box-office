@@ -281,6 +281,145 @@ apiRouter.post("/movies/track", async (req, res) => {
   }
 });
 
+// Manual "merge into existing movie" action as permanent fallback for release variants
+apiRouter.post("/movies/:id/merge-into", async (req, res) => {
+  try {
+    const sourceParam = req.params.id;
+    const { target_movie_id, target_id } = req.body || {};
+    const targetParam = target_movie_id || target_id;
+
+    if (!sourceParam) {
+      return res.status(400).json({ error: "Source movie id is required in URL parameter" });
+    }
+    if (!targetParam) {
+      return res.status(400).json({ error: "target_movie_id is required in request body" });
+    }
+
+    // 1. Resolve source movie by numeric id or external_id
+    const isSourceNumeric = /^\d+$/.test(String(sourceParam).trim());
+    const sourceQuery = isSourceNumeric
+      ? "SELECT id, external_id, title, tracking_enabled, tracking_end_date, merged_into_movie_id FROM movies WHERE id = $1 LIMIT 1;"
+      : "SELECT id, external_id, title, tracking_enabled, tracking_end_date, merged_into_movie_id FROM movies WHERE external_id = $1 LIMIT 1;";
+    const sourceRes = await query<{
+      id: number;
+      external_id: string;
+      title: string;
+      tracking_enabled: boolean;
+      tracking_end_date: string | null;
+      merged_into_movie_id: number | null;
+    }>(sourceQuery, [isSourceNumeric ? Number(sourceParam) : String(sourceParam).trim()]);
+
+    if (sourceRes.rows.length === 0) {
+      return res.status(404).json({ error: `Source movie not found for identifier: ${sourceParam}` });
+    }
+    const sourceMovie = sourceRes.rows[0];
+
+    // 2. Resolve target movie by numeric id or external_id
+    const isTargetNumeric = /^\d+$/.test(String(targetParam).trim());
+    const targetQuery = isTargetNumeric
+      ? "SELECT id, external_id, title, tracking_enabled, tracking_end_date, merged_into_movie_id FROM movies WHERE id = $1 LIMIT 1;"
+      : "SELECT id, external_id, title, tracking_enabled, tracking_end_date, merged_into_movie_id FROM movies WHERE external_id = $1 LIMIT 1;";
+    const targetRes = await query<{
+      id: number;
+      external_id: string;
+      title: string;
+      tracking_enabled: boolean;
+      tracking_end_date: string | null;
+      merged_into_movie_id: number | null;
+    }>(targetQuery, [isTargetNumeric ? Number(targetParam) : String(targetParam).trim()]);
+
+    if (targetRes.rows.length === 0) {
+      return res.status(404).json({ error: `Target movie not found for identifier: ${targetParam}` });
+    }
+    const targetMovie = targetRes.rows[0];
+
+    // Check self-merge
+    if (sourceMovie.id === targetMovie.id) {
+      return res.status(400).json({ error: "Cannot merge a movie into itself" });
+    }
+
+    // Resolve canonical target ID (if target was already merged into another movie)
+    const canonicalTargetId = targetMovie.merged_into_movie_id || targetMovie.id;
+    if (canonicalTargetId === sourceMovie.id) {
+      return res.status(400).json({ error: "Circular merge detected" });
+    }
+
+    // Fetch canonical target details
+    const canonicalRes = await query<{
+      id: number;
+      external_id: string;
+      title: string;
+      tracking_enabled: boolean;
+      tracking_end_date: string | null;
+    }>("SELECT id, external_id, title, tracking_enabled, tracking_end_date FROM movies WHERE id = $1;", [canonicalTargetId]);
+    const canonicalMovie = canonicalRes.rows[0] || targetMovie;
+
+    console.log(`[Manual Merge] Merging source movie "${sourceMovie.title}" (ID: ${sourceMovie.id}) into canonical movie "${canonicalMovie.title}" (ID: ${canonicalTargetId})`);
+
+    // 3. Keep tracking_enabled as-is on the source row (or enable if canonical is enabled so scraper visits both catalog entries),
+    // and set merged_into_movie_id to canonicalTargetId
+    const shouldSourceTrack = sourceMovie.tracking_enabled || canonicalMovie.tracking_enabled;
+    const shouldCanonicalTrack = canonicalMovie.tracking_enabled || sourceMovie.tracking_enabled;
+
+    // Propagate tracking to canonical if source was tracked
+    if (shouldCanonicalTrack !== canonicalMovie.tracking_enabled) {
+      await query("UPDATE movies SET tracking_enabled = $1, updated_at = NOW() WHERE id = $2;", [shouldCanonicalTrack, canonicalTargetId]);
+    }
+
+    // Update source row: set merged_into_movie_id = canonicalTargetId, keep tracking_enabled active
+    await query(
+      `UPDATE movies 
+       SET merged_into_movie_id = $1,
+           tracking_enabled = $2,
+           updated_at = NOW()
+       WHERE id = $3;`,
+      [canonicalTargetId, shouldSourceTrack, sourceMovie.id]
+    );
+
+    // If any other movie was pointing to sourceMovie.id, redirect to canonicalTargetId
+    await query("UPDATE movies SET merged_into_movie_id = $1, updated_at = NOW() WHERE merged_into_movie_id = $2;", [canonicalTargetId, sourceMovie.id]);
+
+    // 4. Re-link existing database sessions, snapshots, backtests, and calibration factors
+    await query("UPDATE sessions SET movie_id = $1 WHERE movie_id = $2;", [canonicalTargetId, sourceMovie.id]);
+    await query("UPDATE movie_performance_snapshots SET movie_id = $1 WHERE movie_id = $2;", [canonicalTargetId, sourceMovie.id]);
+    await query("UPDATE forecast_backtests SET movie_id = $1 WHERE movie_id = $2;", [canonicalTargetId, sourceMovie.id]);
+    await query(
+      `UPDATE calibration_factors SET movie_id = $1 WHERE movie_id = $2 
+       AND NOT EXISTS (SELECT 1 FROM calibration_factors WHERE movie_id = $1);`,
+      [canonicalTargetId, sourceMovie.id]
+    );
+    await query("DELETE FROM calibration_factors WHERE movie_id = $1;", [sourceMovie.id]);
+
+    // 5. Recalculate performance snapshots for the merged movie
+    await recalculateAllPerformanceSnapshots(canonicalTargetId);
+
+    // 6. Trigger collection sweep for both external IDs if tracking is enabled
+    if (shouldCanonicalTrack) {
+      const extIdsRes = await query<{ external_id: string }>(
+        `SELECT external_id FROM movies WHERE (id = $1 OR merged_into_movie_id = $1) AND external_id IS NOT NULL;`,
+        [canonicalTargetId]
+      );
+      const movieExtIds = extIdsRes.rows.map((r) => r.external_id).filter(Boolean);
+      if (movieExtIds.length > 0) {
+        executeCollectionRun({ movieExternalIds: movieExtIds }).catch((e) =>
+          console.error("[Manual Merge] Background collection trigger failed:", e)
+        );
+      }
+    }
+
+    res.json({
+      success: true,
+      source_movie_id: sourceMovie.id,
+      canonical_movie_id: canonicalTargetId,
+      canonical_movie_title: canonicalMovie.title,
+      message: `Successfully linked and merged "${sourceMovie.title}" into canonical "${canonicalMovie.title}". Future scraper runs will persist sessions under ID ${canonicalTargetId}.`
+    });
+  } catch (err: any) {
+    console.error("[Manual Merge] Error merging movie:", err);
+    res.status(500).json({ error: err.message || "Failed to merge movie" });
+  }
+});
+
 // Summary dashboard metrics for all tracked movies (Based on CURRENT/FUTURE sessions only)
 apiRouter.get("/dashboard/summary", async (req, res) => {
   try {

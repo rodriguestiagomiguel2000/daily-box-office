@@ -4,6 +4,7 @@
  */
 
 const FORMAT_TAGS = [
+  "INFINITY\\s+VISION", "INFINITY",
   "XL[- ]?VISION", "X[- ]?VISION", "XL[- ]?VIS[ÃA]O", "X[- ]?VIS[ÃA]O",
   "VO", "VP", "V\\.O\\.", "V\\.P\\.",
   "DOB\\.?", "SUB\\.?", "LEG\\.?", "DOBRADO", "DOBRADA", "LEGENDADO", "LEGENDADA",
@@ -18,18 +19,36 @@ const FORMAT_TAGS = [
   "3D(?:\\s+HFR)?", "2D", "HFR", "D[- ]?BOX", "VIP", "ISENSE", "ONYX"
 ];
 
+// Release-event variant terms that appear as bare trailing words (not format tags)
+const RELEASE_VARIANT_TAGS = [
+  "ENCORE",
+  "ANIVERS[AÁ]RIO",
+  "ANIVERSARIO",
+  "REPOSI[CÇ][AÃ]O",
+  "REPOSICAO",
+  "REISSUE",
+  "ANNIVERSARY\\s+EDITION",
+  "EDI[CÇ][AÃ]O\\s+ESPECIAL",
+  "EDICAO\\s+ESPECIAL"
+];
+
 const TAG_REGEX_STR = `(?:${FORMAT_TAGS.join("|")})`;
 const MULTI_TAG_REGEX_STR = `(?:${TAG_REGEX_STR})(?:\\s*[/\\\\+&,-]\\s*${TAG_REGEX_STR}|\\s+${TAG_REGEX_STR})*`;
+
+// Keyword list used in stage 3 (standalone trailing word stripping) extending to release-variant terms
+const TRAILING_TAGS = [...FORMAT_TAGS, ...RELEASE_VARIANT_TAGS];
+const TRAILING_TAG_REGEX_STR = `(?:${TRAILING_TAGS.join("|")})`;
+const MULTI_TRAILING_TAG_REGEX_STR = `(?:${TRAILING_TAG_REGEX_STR})(?:\\s*[/\\\\+&,-]\\s*${TRAILING_TAG_REGEX_STR}|\\s+${TRAILING_TAG_REGEX_STR})*`;
 
 export function cleanMovieTitle(title: string): string {
   if (!title) return "";
   let cleaned = title
-    // 1. Remove parenthetical/bracketed version & format tags like (VO), (VP), (XL VISION VP), (VP XLVISION), (3D ATMOS), (XLVISION), [IMAX], etc.
+    // 1. Remove parenthetical/bracketed version & format tags like (VO), (VP), (XL VISION VP), (VP XLVISION), (3D ATMOS), (XLVISION), [IMAX], (Infinity Vision), etc.
     .replace(new RegExp(`\\s*[\\(\\[]\\s*${MULTI_TAG_REGEX_STR}\\s*[\\)\\]]`, "gi"), "")
-    // 2. Remove trailing dash-separated version/format tags like - XLVISION VP, - VO, - VP, - Dobrado, - Versão Portuguesa, - XL VISION
-    .replace(new RegExp(`\\s*[-–—]\\s*${MULTI_TAG_REGEX_STR}\\s*$`, "gi"), "")
-    // 3. Remove standalone trailing version/format tags like Movie VO, Movie VP, Movie XLVISION VP
-    .replace(new RegExp(`\\s+\\b${MULTI_TAG_REGEX_STR}\\s*$`, "gi"), "");
+    // 2. Remove trailing dash-separated version/format/variant tags like - XLVISION VP, - VO, - VP, - Dobrado, - Versão Portuguesa, - XL VISION, - Encore
+    .replace(new RegExp(`\\s*[-–—]\\s*${MULTI_TRAILING_TAG_REGEX_STR}\\s*$`, "gi"), "")
+    // 3. Remove standalone trailing version/format tags & bare release variants like Movie VO, Movie VP, Movie XLVISION VP, Movie Encore, Movie Aniversário
+    .replace(new RegExp(`\\s+\\b${MULTI_TRAILING_TAG_REGEX_STR}\\s*$`, "gi"), "");
 
   // Normalize multiple spaces and trim
   return cleaned.replace(/\s+/g, " ").trim();
