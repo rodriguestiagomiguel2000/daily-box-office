@@ -240,6 +240,10 @@ export interface FormatDiscoveryHealth {
   last_success_at: string | null;
   last_failure_at: string | null;
   last_failure_detail: string | null;
+  movie_id?: number | null;
+  parent_movie_title?: string | null;
+  tracking_enabled?: boolean;
+  tracking_end_date?: string | null;
 }
 
 export interface CollectorStatusResponse {

@@ -77,6 +77,37 @@ export async function cleanupStaleFormatDiscoveryHealth(): Promise<number> {
   }
 }
 
+/**
+ * Resets consecutive_failures to 0 in format_discovery_health for all formats
+ * belonging to a movie (including any merged secondaries and title matches).
+ * Called when tracking_enabled flips from false back to true for a movie,
+ * ensuring old failure counts don't immediately re-trigger alerts upon re-release or re-tracking.
+ */
+export async function resetFormatDiscoveryFailuresForMovie(movieId: number, movieTitle?: string): Promise<number> {
+  try {
+    const res = await query(
+      `UPDATE format_discovery_health
+       SET consecutive_failures = 0
+       WHERE format_external_id IN (
+         SELECT external_id FROM movies 
+         WHERE (id = $1 OR merged_into_movie_id = $1 OR id = (SELECT merged_into_movie_id FROM movies WHERE id = $1)) 
+           AND external_id IS NOT NULL
+       )
+       OR (NULLIF($2::text, '') IS NOT NULL AND LOWER(TRIM(movie_title)) = LOWER(TRIM($2)))
+       OR (NULLIF($2::text, '') IS NOT NULL AND LOWER(movie_title) LIKE LOWER($3));`,
+      [movieId, movieTitle || "", `${movieTitle || ""}%`]
+    );
+    const count = res.rowCount || 0;
+    if (count > 0) {
+      console.log(`[Format Health] Reset consecutive_failures to 0 for ${count} format(s) of movie ID ${movieId} ("${movieTitle || ""}") on tracking re-enable.`);
+    }
+    return count;
+  } catch (err) {
+    console.error(`Failed to reset format discovery health for movie ID ${movieId}:`, err);
+    return 0;
+  }
+}
+
 export interface PreparedRun {
   runId: string;
   collectionRunDbId: number;

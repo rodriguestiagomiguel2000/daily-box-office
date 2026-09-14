@@ -8,7 +8,13 @@ import {
 import { getMoviePresaleCurve } from "./presale";
 import { query } from "./db";
 import { scheduler } from "./scheduler";
-import { executeCollectionRun, getActiveProgress, prepareCollectionRun, executeCollectionRunFromPrepared } from "./collector";
+import { 
+  executeCollectionRun, 
+  getActiveProgress, 
+  prepareCollectionRun, 
+  executeCollectionRunFromPrepared,
+  resetFormatDiscoveryFailuresForMovie
+} from "./collector";
 import { 
   resolveSessionUnitPriceJs, 
   recalculateAllPerformanceSnapshots,
@@ -174,7 +180,14 @@ apiRouter.post("/movies/track", async (req, res) => {
     } else if (external_id) {
       const res = await query(`SELECT * FROM movies WHERE external_id = $1 LIMIT 1;`, [external_id]);
       existingDbMovie = res.rows[0];
+    } else if (cleanTitle) {
+      const res = await query(`SELECT * FROM movies WHERE LOWER(title) = LOWER($1) LIMIT 1;`, [cleanTitle]);
+      existingDbMovie = res.rows[0];
     }
+
+    const currentOpDate = getOperationalDateStr();
+    const wasTracking = existingDbMovie ? Boolean(existingDbMovie.tracking_enabled) : false;
+    const wasExpired = Boolean(existingDbMovie?.tracking_end_date && existingDbMovie.tracking_end_date < currentOpDate);
 
     const resolvedTitle = (cleanTitle && cleanTitle !== "Unknown Movie")
       ? cleanTitle
@@ -258,9 +271,15 @@ apiRouter.post("/movies/track", async (req, res) => {
 
     const movie = movieRes.rows[0];
 
+    // Reset consecutive_failures to 0 for its formats if tracking_enabled flipped from false back to true
+    // or if an expired tracking window was re-opened (so old failures don't immediately re-trigger alerts)
+    const isNowActive = isTracking && (!movie?.tracking_end_date || movie.tracking_end_date >= currentOpDate);
+    if (movie && ((!wasTracking && isTracking) || (wasExpired && isNowActive))) {
+      await resetFormatDiscoveryFailuresForMovie(movie.id, movie.title || resolvedTitle);
+    }
+
     // If enabled and still effectively active, trigger a background collection sweep for this movie and all its merged versions
     if (isTracking && movie) {
-      const currentOpDate = getOperationalDateStr();
       const isStillActive = !movie.tracking_end_date || movie.tracking_end_date >= currentOpDate;
       if (isStillActive) {
         const extIdsRes = await query<{ external_id: string }>(
@@ -364,6 +383,9 @@ apiRouter.post("/movies/:id/merge-into", async (req, res) => {
     // Propagate tracking to canonical if source was tracked
     if (shouldCanonicalTrack !== canonicalMovie.tracking_enabled) {
       await query("UPDATE movies SET tracking_enabled = $1, updated_at = NOW() WHERE id = $2;", [shouldCanonicalTrack, canonicalTargetId]);
+      if (!canonicalMovie.tracking_enabled && shouldCanonicalTrack) {
+        await resetFormatDiscoveryFailuresForMovie(canonicalTargetId, canonicalMovie.title);
+      }
     }
 
     // Update source row: set merged_into_movie_id = canonicalTargetId, keep tracking_enabled active
@@ -1192,6 +1214,7 @@ apiRouter.get("/sessions/:id/seat-map", async (req, res) => {
 // Collection monitoring and status
 apiRouter.get("/collector/status", async (req, res) => {
   try {
+    const currentOpDate = getOperationalDateStr();
     const [recentRunsRes, totalSnapshotsRes, totalStatesRes, totalTransitionsRes, formatHealthRes] =
       await Promise.all([
         query(`SELECT * FROM collection_runs ORDER BY started_at DESC LIMIT 20;`),
@@ -1205,7 +1228,29 @@ apiRouter.get("/collector/status", async (req, res) => {
           WHERE relname = 'seat_states';
         `),
         query(`SELECT COUNT(*) as count FROM seat_transitions;`),
-        query(`SELECT * FROM format_discovery_health ORDER BY consecutive_failures DESC, last_failure_at DESC NULLS LAST;`),
+        query(`
+          SELECT 
+            fdh.format_external_id,
+            fdh.movie_title,
+            fdh.consecutive_failures,
+            fdh.last_success_at,
+            fdh.last_failure_at,
+            fdh.last_failure_detail,
+            COALESCE(parent.id, m.id, m_title.id) AS movie_id,
+            COALESCE(parent.title, m.title, m_title.title) AS parent_movie_title,
+            COALESCE(parent.tracking_enabled, m.tracking_enabled, m_title.tracking_enabled, false) AS tracking_enabled,
+            COALESCE(parent.tracking_end_date, m.tracking_end_date, m_title.tracking_end_date) AS tracking_end_date
+          FROM format_discovery_health fdh
+          LEFT JOIN movies m ON fdh.format_external_id = m.external_id
+          LEFT JOIN movies m_title ON m.id IS NULL AND LOWER(TRIM(fdh.movie_title)) = LOWER(TRIM(m_title.title))
+          LEFT JOIN movies parent ON COALESCE(m.merged_into_movie_id, m_title.merged_into_movie_id) = parent.id
+          WHERE COALESCE(parent.tracking_enabled, m.tracking_enabled, m_title.tracking_enabled, false) = true
+            AND (
+              COALESCE(parent.tracking_end_date, m.tracking_end_date, m_title.tracking_end_date) IS NULL
+              OR COALESCE(parent.tracking_end_date, m.tracking_end_date, m_title.tracking_end_date) >= $1
+            )
+          ORDER BY fdh.consecutive_failures DESC, fdh.last_failure_at DESC NULLS LAST;
+        `, [currentOpDate]),
       ]);
 
     const active = getActiveProgress();
@@ -1231,8 +1276,40 @@ apiRouter.get("/collector/status", async (req, res) => {
 // GET /api/collector/format-health
 apiRouter.get("/collector/format-health", async (req, res) => {
   try {
-    const resRows = await query(`SELECT * FROM format_discovery_health ORDER BY consecutive_failures DESC, last_failure_at DESC NULLS LAST;`);
-    res.json({ format_health: resRows.rows });
+    const currentOpDate = getOperationalDateStr();
+    const includeAll = req.query.all === "true";
+    let sql = `
+      SELECT 
+        fdh.format_external_id,
+        fdh.movie_title,
+        fdh.consecutive_failures,
+        fdh.last_success_at,
+        fdh.last_failure_at,
+        fdh.last_failure_detail,
+        COALESCE(parent.id, m.id, m_title.id) AS movie_id,
+        COALESCE(parent.title, m.title, m_title.title) AS parent_movie_title,
+        COALESCE(parent.tracking_enabled, m.tracking_enabled, m_title.tracking_enabled, false) AS tracking_enabled,
+        COALESCE(parent.tracking_end_date, m.tracking_end_date, m_title.tracking_end_date) AS tracking_end_date
+      FROM format_discovery_health fdh
+      LEFT JOIN movies m ON fdh.format_external_id = m.external_id
+      LEFT JOIN movies m_title ON m.id IS NULL AND LOWER(TRIM(fdh.movie_title)) = LOWER(TRIM(m_title.title))
+      LEFT JOIN movies parent ON COALESCE(m.merged_into_movie_id, m_title.merged_into_movie_id) = parent.id
+    `;
+    const params: any[] = [];
+    if (!includeAll) {
+      sql += `
+        WHERE COALESCE(parent.tracking_enabled, m.tracking_enabled, m_title.tracking_enabled, false) = true
+          AND (
+            COALESCE(parent.tracking_end_date, m.tracking_end_date, m_title.tracking_end_date) IS NULL
+            OR COALESCE(parent.tracking_end_date, m.tracking_end_date, m_title.tracking_end_date) >= $1
+          )
+      `;
+      params.push(currentOpDate);
+    }
+    sql += ` ORDER BY fdh.consecutive_failures DESC, fdh.last_failure_at DESC NULLS LAST;`;
+
+    const resRows = await query(sql, params);
+    res.json({ format_health: resRows.rows, operational_date: currentOpDate });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }

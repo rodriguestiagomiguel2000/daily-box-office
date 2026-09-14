@@ -41,7 +41,11 @@ export const CollectorStatusModal: React.FC<CollectorStatusModalProps> = ({
   const totals = status?.totals || { snapshots: 0, individual_seat_states: 0, transitions_recorded: 0 };
   const recentRuns = status?.recent_runs || [];
   const formatHealth = status?.format_health || [];
-  const persistentFailures = formatHealth.filter((f) => f.consecutive_failures >= 6);
+  const persistentFailures = formatHealth.filter((f) => {
+    if (f.consecutive_failures < 6) return false;
+    if (f.tracking_enabled === false) return false;
+    return true;
+  });
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-slate-950/80 backdrop-blur-sm animate-fade-in">
