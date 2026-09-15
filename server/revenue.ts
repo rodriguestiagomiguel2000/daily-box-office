@@ -1357,21 +1357,61 @@ export async function logCollectionPricingAuditReport(collectionRunDbId: number)
   }
 }
 
+export interface MergeDuplicateMoviesOptions {
+  force?: boolean;
+  intervalMinutes?: number;
+}
+
+let lastMergeRunTimestamp = 0;
+
 /**
  * Normalizes all movie titles in DB and merges duplicate movie entries
  * (e.g., VO vs VP versions of the same movie) under a single canonical movie record.
  * Secondary movie records retain tracking_enabled so their external_ids continue to be scraped,
  * while referencing canonicalId via merged_into_movie_id.
+ * 
+ * Throttles execution unless force = true or default interval (5 minutes) has elapsed.
  */
-export async function mergeDuplicateMoviesInDb(): Promise<number> {
+export async function mergeDuplicateMoviesInDb(
+  optsOrForce: MergeDuplicateMoviesOptions | boolean = {}
+): Promise<number> {
+  const opts = typeof optsOrForce === "boolean" ? { force: optsOrForce } : optsOrForce;
+  const force = Boolean(opts.force);
+  const intervalMinutes = opts.intervalMinutes !== undefined ? opts.intervalMinutes : 5;
+
+  if (!force) {
+    const elapsedMs = Date.now() - lastMergeRunTimestamp;
+    const thresholdMs = intervalMinutes * 60 * 1000;
+    if (lastMergeRunTimestamp > 0 && elapsedMs < thresholdMs) {
+      console.debug(`[Movie Merge] Skipped merge: last run was ${Math.round(elapsedMs / 1000)}s ago (throttle interval: ${intervalMinutes}m).`);
+      return 0;
+    }
+  }
+  lastMergeRunTimestamp = Date.now();
+
   try {
-    // 1. Clean titles of all existing movies
-    const allMovies = await query<{ id: number; title: string }>("SELECT id, title FROM movies ORDER BY id ASC;");
+    // 1. Batch clean titles of all existing movies that actually need changing (1 query via unnest instead of N)
+    const allMovies = await query<{ id: number; title: string }>("SELECT id, title FROM movies;");
+    const moviesToUpdate: { id: number; title: string }[] = [];
     for (const m of allMovies.rows) {
       const cleaned = cleanMovieTitle(m.title);
       if (cleaned && cleaned !== m.title) {
-        await query("UPDATE movies SET title = $1 WHERE id = $2;", [cleaned, m.id]);
+        moviesToUpdate.push({ id: m.id, title: cleaned });
       }
+    }
+
+    if (moviesToUpdate.length > 0) {
+      const updateIds = moviesToUpdate.map((m) => m.id);
+      const updateTitles = moviesToUpdate.map((m) => m.title);
+      await query(
+        `UPDATE movies AS m
+         SET title = u.title,
+             updated_at = NOW()
+         FROM unnest($1::int[], $2::text[]) AS u(id, title)
+         WHERE m.id = u.id;`,
+        [updateIds, updateTitles]
+      );
+      console.log(`[Movie Merge] Batch updated ${moviesToUpdate.length} movie title(s) via unnest.`);
     }
 
     // 2. Find groups of movies sharing the exact same LOWER(title)

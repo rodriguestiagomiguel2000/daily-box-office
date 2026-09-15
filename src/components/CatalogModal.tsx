@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { X, Search, Film, Check, Plus, Clock, Calendar, Sparkles, Tag, Link2, ArrowRight, Loader2, AlertCircle, CheckCircle2 } from "lucide-react";
+import { X, Search, Film, Check, Plus, Clock, Calendar, Sparkles, Tag, Link2, ArrowRight, Loader2, AlertCircle, CheckCircle2, RefreshCw } from "lucide-react";
 import { Movie } from "../types";
 import { cleanMovieTitle } from "../utils/title";
 import { getCurrentTheatricalOperationalDate } from "../utils/scheduling";
@@ -31,7 +31,26 @@ export const CatalogModal: React.FC<CatalogModalProps> = ({
   const [mergePickerSearch, setMergePickerSearch] = useState("");
   const [mergeTargetFilter, setMergeTargetFilter] = useState<"ALL" | "TRACKED">("ALL");
   const [isMerging, setIsMerging] = useState(false);
+  const [isResyncing, setIsResyncing] = useState(false);
   const [mergeStatus, setMergeStatus] = useState<{ type: "success" | "error"; message: string } | null>(null);
+
+  const handleForceResync = async () => {
+    setIsResyncing(true);
+    try {
+      await fetch("/api/movies/resync", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ force: true }),
+      });
+      if (onMergeSuccess) {
+        onMergeSuccess();
+      }
+    } catch (err) {
+      console.error("Force resync error:", err);
+    } finally {
+      setIsResyncing(false);
+    }
+  };
 
   if (!isOpen) return null;
 
@@ -120,13 +139,25 @@ export const CatalogModal: React.FC<CatalogModalProps> = ({
               Select current or upcoming Portuguese theatrical movies to enable tracking.
             </p>
           </div>
-          <button
-            id="close-catalog-btn"
-            onClick={onClose}
-            className="text-slate-400 hover:text-white p-2 rounded-xl hover:bg-slate-800 transition cursor-pointer"
-          >
-            <X className="w-5 h-5" />
-          </button>
+          <div className="flex items-center space-x-2">
+            <button
+              id="force-resync-catalog-btn"
+              onClick={handleForceResync}
+              disabled={isResyncing || isLoading}
+              title="Force resync and deduplicate catalog in database"
+              className="flex items-center space-x-1.5 px-3 py-1.5 text-xs font-medium text-slate-300 hover:text-white bg-slate-800/90 hover:bg-slate-700 border border-slate-700/80 rounded-xl transition cursor-pointer disabled:opacity-50"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 text-amber-400 ${isResyncing ? "animate-spin" : ""}`} />
+              <span className="hidden sm:inline">{isResyncing ? "Resyncing..." : "Resync"}</span>
+            </button>
+            <button
+              id="close-catalog-btn"
+              onClick={onClose}
+              className="text-slate-400 hover:text-white p-2 rounded-xl hover:bg-slate-800 transition cursor-pointer"
+            >
+              <X className="w-5 h-5" />
+            </button>
+          </div>
         </div>
 
         {/* Search & Filter Bar */}

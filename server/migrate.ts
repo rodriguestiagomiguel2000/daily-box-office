@@ -342,7 +342,7 @@ export async function runMigrations(): Promise<void> {
   }
 
   try {
-    const merged = await mergeDuplicateMoviesInDb();
+    const merged = await mergeDuplicateMoviesInDb({ force: true });
     if (merged > 0) {
       console.log(`Merged ${merged} duplicate movie records (e.g. VO/VP versions).`);
     } else {

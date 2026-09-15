@@ -99,13 +99,51 @@ apiRouter.get("/movies/catalog", async (req, res) => {
     }
     const liveMovies = Array.from(liveMap.values());
 
-    // 2. Safely sync all raw catalog versions into DB while preserving tracking_enabled state
-    for (const m of rawLiveMovies) {
-      if (!m.external_id) continue;
-      const cleanTitle = cleanMovieTitle(m.title) || m.title;
+    // 2. Safely batch-sync all raw catalog versions into DB via a single bulk unnest() query (1 round-trip)
+    const validRaw = rawLiveMovies.filter((m) => Boolean(m.external_id));
+    if (validRaw.length > 0) {
+      // Deduplicate by external_id to ensure ON CONFLICT DO UPDATE operates safely
+      const uniqueByExtId = new Map<string, any>();
+      for (const m of validRaw) {
+        uniqueByExtId.set(String(m.external_id), m);
+      }
+      const uniqueList = Array.from(uniqueByExtId.values());
+
+      const extIds: string[] = [];
+      const titles: string[] = [];
+      const posterUrls: string[] = [];
+      const durations: (number | null)[] = [];
+      const ageRatings: string[] = [];
+      const releaseDates: string[] = [];
+
+      for (const m of uniqueList) {
+        extIds.push(String(m.external_id));
+        titles.push(cleanMovieTitle(m.title) || m.title || "Unknown Movie");
+        posterUrls.push(m.poster_url || "");
+        durations.push(m.duration ? Number(m.duration) : null);
+        ageRatings.push(m.age_rating || "");
+        releaseDates.push(m.release_date || "");
+      }
+
       await query(
         `INSERT INTO movies (external_id, title, poster_url, duration, age_rating, release_date, tracking_enabled, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, FALSE, NOW())
+         SELECT 
+           u.external_id,
+           u.title,
+           u.poster_url,
+           u.duration,
+           u.age_rating,
+           u.release_date,
+           FALSE,
+           NOW()
+         FROM unnest(
+           $1::text[],
+           $2::text[],
+           $3::text[],
+           $4::int[],
+           $5::text[],
+           $6::text[]
+         ) AS u(external_id, title, poster_url, duration, age_rating, release_date)
          ON CONFLICT (external_id) DO UPDATE SET
            title = COALESCE(NULLIF(NULLIF(EXCLUDED.title, 'Unknown Movie'), ''), movies.title),
            poster_url = COALESCE(NULLIF(EXCLUDED.poster_url, ''), movies.poster_url),
@@ -113,20 +151,36 @@ apiRouter.get("/movies/catalog", async (req, res) => {
            age_rating = COALESCE(NULLIF(EXCLUDED.age_rating, ''), movies.age_rating),
            release_date = COALESCE(NULLIF(EXCLUDED.release_date, ''), movies.release_date),
            updated_at = NOW();`,
-        [m.external_id, cleanTitle, m.poster_url || "", m.duration || null, m.age_rating || "", m.release_date || ""]
+        [extIds, titles, posterUrls, durations, ageRatings, releaseDates]
       );
     }
 
-    // Deduplicate any VO/VP duplicate records in DB (links secondary versions to canonical via merged_into_movie_id)
-    await mergeDuplicateMoviesInDb();
+    // Trigger background movie deduplication without awaiting (throttled to 5m, non-blocking)
+    const forceResync = req.query.force_resync === "true" || req.query.force === "true";
+    mergeDuplicateMoviesInDb({ force: forceResync }).catch((err) => {
+      console.error("Background movie deduplication error:", err);
+    });
 
-    // 3. Fetch local tracking states for canonical records
-    const dbMovies = await query(
-      "SELECT id, external_id, title, poster_url, duration, age_rating, release_date, tracking_enabled, tracking_end_date, last_schedule_discovery_success_at, updated_at FROM movies WHERE merged_into_movie_id IS NULL;"
-    );
+    // 3. Fetch local tracking states for canonical and linked records
+    const dbMovies = await query(`
+      SELECT 
+        m.id, 
+        m.external_id, 
+        COALESCE(parent.title, m.title) AS title, 
+        m.poster_url, 
+        m.duration, 
+        m.age_rating, 
+        m.release_date, 
+        COALESCE(parent.tracking_enabled, m.tracking_enabled, false) AS tracking_enabled, 
+        COALESCE(parent.tracking_end_date, m.tracking_end_date) AS tracking_end_date, 
+        COALESCE(parent.last_schedule_discovery_success_at, m.last_schedule_discovery_success_at) AS last_schedule_discovery_success_at, 
+        m.updated_at 
+      FROM movies m
+      LEFT JOIN movies parent ON m.merged_into_movie_id = parent.id;
+    `);
     const trackingMap = new Map<string, any>();
     for (const m of dbMovies.rows) {
-      trackingMap.set(m.external_id, m);
+      if (m.external_id) trackingMap.set(m.external_id, m);
       if (m.title) trackingMap.set(m.title.toLowerCase(), m);
     }
 
@@ -257,8 +311,10 @@ apiRouter.post("/movies/track", async (req, res) => {
       }
     }
 
-    // Merge duplicate movie rows across database
-    await mergeDuplicateMoviesInDb();
+    // Trigger background merge check (throttled to 5m, non-blocking)
+    mergeDuplicateMoviesInDb().catch((err) => {
+      console.error("Background movie deduplication error:", err);
+    });
 
     let movieRes;
     if (id) {
@@ -427,6 +483,10 @@ apiRouter.post("/movies/:id/merge-into", async (req, res) => {
           console.error("[Manual Merge] Background collection trigger failed:", e)
         );
       }
+      // Trigger background merge check to ensure all variant links and titles stay unified
+      mergeDuplicateMoviesInDb({ force: true }).catch((e) =>
+        console.error("[Manual Merge] Background deduplication trigger failed:", e)
+      );
     }
 
     res.json({
@@ -439,6 +499,23 @@ apiRouter.post("/movies/:id/merge-into", async (req, res) => {
   } catch (err: any) {
     console.error("[Manual Merge] Error merging movie:", err);
     res.status(500).json({ error: err.message || "Failed to merge movie" });
+  }
+});
+
+// POST /api/movies/resync - Manual endpoint to trigger deduplication scan immediately (bypassing throttle)
+apiRouter.post("/movies/resync", async (req, res) => {
+  try {
+    const force = req.body?.force !== undefined ? Boolean(req.body.force) : true;
+    console.log(`[API] Manual movie catalog resync triggered (force=${force})`);
+    const mergedCount = await mergeDuplicateMoviesInDb({ force });
+    res.json({
+      success: true,
+      merged_count: mergedCount,
+      message: force ? "Forced movie catalog deduplication completed" : "Movie catalog deduplication completed",
+    });
+  } catch (err: any) {
+    console.error("[API] Error resyncing movie duplicates:", err);
+    res.status(500).json({ success: false, error: err.message });
   }
 });
 
