@@ -15,6 +15,7 @@ import {
   Ticket,
   BarChart2,
   Info,
+  Filter,
 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -43,6 +44,7 @@ export const MovieDailyBreakdownView: React.FC<MovieDailyBreakdownViewProps> = (
   const [isRefreshing, setIsRefreshing] = useState<boolean>(false);
   const [error, setError] = useState<string | null>(null);
   const [activeChartMetric, setActiveChartMetric] = useState<"revenue" | "admissions" | "sessions">("revenue");
+  const [dateRange, setDateRange] = useState<"7d" | "30d" | "all">("30d");
 
   const fetchBreakdown = async (isManual = false) => {
     if (!movieId) return;
@@ -155,7 +157,7 @@ export const MovieDailyBreakdownView: React.FC<MovieDailyBreakdownViewProps> = (
   }
 
   // Data for chart (chronological order: oldest -> newest)
-  const chartData = data.days.map((d) => ({
+  const allChartData = data.days.map((d) => ({
     date: d.operational_date,
     label: `${d.day_of_week_short} ${d.operational_date.slice(5)}`,
     day_of_week: d.day_of_week,
@@ -166,6 +168,18 @@ export const MovieDailyBreakdownView: React.FC<MovieDailyBreakdownViewProps> = (
     sessions: d.sessions_count,
     cinemas: d.cinemas_count,
   }));
+
+  // FIX 1: Filter chart data according to selected date range (defaulting to Last 30 Days)
+  const chartData =
+    dateRange === "7d"
+      ? allChartData.slice(-7)
+      : dateRange === "30d"
+      ? allChartData.slice(-30)
+      : allChartData;
+
+  // FIX 2: Adaptive tick interval so roughly 8-10 labels show regardless of total days
+  const isDense = chartData.length > 10;
+  const tickInterval = chartData.length <= 10 ? 0 : Math.ceil(chartData.length / 10);
 
   return (
     <div className="space-y-6">
@@ -256,55 +270,116 @@ export const MovieDailyBreakdownView: React.FC<MovieDailyBreakdownViewProps> = (
 
       {/* Chart Section */}
       <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl space-y-4">
-        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-3">
           <div className="flex items-center gap-2">
             <BarChart2 className="w-4 h-4 text-amber-400" />
             <h3 className="text-sm font-semibold text-slate-200">Daily Trajectory & Weekend Highlights</h3>
+            <span className="text-xs text-slate-500 font-mono hidden sm:inline">
+              ({chartData.length} of {allChartData.length} days)
+            </span>
           </div>
 
-          <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
-            <button
-              onClick={() => setActiveChartMetric("revenue")}
-              className={`px-3 py-1 rounded-lg text-xs font-medium transition cursor-pointer ${
-                activeChartMetric === "revenue"
-                  ? "bg-amber-500 text-slate-950 font-bold"
-                  : "text-slate-400 hover:text-slate-200"
-              }`}
-            >
-              Revenue (€)
-            </button>
-            <button
-              onClick={() => setActiveChartMetric("admissions")}
-              className={`px-3 py-1 rounded-lg text-xs font-medium transition cursor-pointer ${
-                activeChartMetric === "admissions"
-                  ? "bg-cyan-500 text-slate-950 font-bold"
-                  : "text-slate-400 hover:text-slate-200"
-              }`}
-            >
-              Admissions
-            </button>
-            <button
-              onClick={() => setActiveChartMetric("sessions")}
-              className={`px-3 py-1 rounded-lg text-xs font-medium transition cursor-pointer ${
-                activeChartMetric === "sessions"
-                  ? "bg-emerald-500 text-slate-950 font-bold"
-                  : "text-slate-400 hover:text-slate-200"
-              }`}
-            >
-              Shows
-            </button>
+          <div className="flex flex-wrap items-center gap-3">
+            {/* FIX 1: Range Filter */}
+            <div className="flex items-center space-x-1.5">
+              <Filter className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+              <span className="text-xs font-medium text-slate-400">Range:</span>
+              <div className="flex items-center space-x-1 bg-slate-950 border border-slate-800 p-1 rounded-xl font-medium">
+                <button
+                  id="btn-range-7d"
+                  onClick={() => setDateRange("7d")}
+                  className={`px-2.5 py-1 rounded-lg text-xs transition cursor-pointer ${
+                    dateRange === "7d"
+                      ? "bg-slate-800 text-amber-300 font-bold shadow-sm"
+                      : "text-slate-400 hover:text-slate-200"
+                  }`}
+                >
+                  Last 7 Days
+                </button>
+                <button
+                  id="btn-range-30d"
+                  onClick={() => setDateRange("30d")}
+                  className={`px-2.5 py-1 rounded-lg text-xs transition cursor-pointer ${
+                    dateRange === "30d"
+                      ? "bg-slate-800 text-amber-300 font-bold shadow-sm"
+                      : "text-slate-400 hover:text-slate-200"
+                  }`}
+                >
+                  Last 30 Days
+                </button>
+                <button
+                  id="btn-range-all"
+                  onClick={() => setDateRange("all")}
+                  className={`px-2.5 py-1 rounded-lg text-xs transition cursor-pointer ${
+                    dateRange === "all"
+                      ? "bg-slate-800 text-amber-300 font-bold shadow-sm"
+                      : "text-slate-400 hover:text-slate-200"
+                  }`}
+                >
+                  All Time ({allChartData.length}d)
+                </button>
+              </div>
+            </div>
+
+            {/* Metric Toggle */}
+            <div className="flex items-center gap-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
+              <button
+                id="btn-metric-revenue"
+                onClick={() => setActiveChartMetric("revenue")}
+                className={`px-3 py-1 rounded-lg text-xs font-medium transition cursor-pointer ${
+                  activeChartMetric === "revenue"
+                    ? "bg-amber-500 text-slate-950 font-bold"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                Revenue (€)
+              </button>
+              <button
+                id="btn-metric-admissions"
+                onClick={() => setActiveChartMetric("admissions")}
+                className={`px-3 py-1 rounded-lg text-xs font-medium transition cursor-pointer ${
+                  activeChartMetric === "admissions"
+                    ? "bg-cyan-500 text-slate-950 font-bold"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                Admissions
+              </button>
+              <button
+                id="btn-metric-sessions"
+                onClick={() => setActiveChartMetric("sessions")}
+                className={`px-3 py-1 rounded-lg text-xs font-medium transition cursor-pointer ${
+                  activeChartMetric === "sessions"
+                    ? "bg-emerald-500 text-slate-950 font-bold"
+                    : "text-slate-400 hover:text-slate-200"
+                }`}
+              >
+                Shows
+              </button>
+            </div>
           </div>
         </div>
 
-        <div className="h-56 w-full">
+        <div className={`w-full ${isDense ? "h-64" : "h-56"}`}>
           <ResponsiveContainer width="100%" height="100%">
-            <BarChart data={chartData} margin={{ top: 10, right: 10, left: 10, bottom: 20 }}>
+            <BarChart
+              data={chartData}
+              margin={{
+                top: 10,
+                right: 10,
+                left: 10,
+                bottom: isDense ? 10 : 20,
+              }}
+            >
               <CartesianGrid strokeDasharray="3 3" stroke="#334155" opacity={0.4} />
               <XAxis
                 dataKey="label"
                 stroke="#64748b"
-                tick={{ fill: "#94a3b8", fontSize: 11 }}
-                interval={0}
+                tick={{ fill: "#94a3b8", fontSize: isDense ? 10 : 11 }}
+                interval={tickInterval}
+                angle={isDense ? -40 : 0}
+                textAnchor={isDense ? "end" : "middle"}
+                height={isDense ? 50 : 30}
               />
               <YAxis
                 stroke="#64748b"
