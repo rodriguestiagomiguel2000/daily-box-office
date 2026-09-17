@@ -149,7 +149,8 @@ def collect_data(
     tracked_movie_ids: Optional[List[str]] = None,
     limit_sessions_per_movie: Optional[int] = None,
     lookback_minutes: int = 30,
-    known_ticket_sessions: Optional[Set[str]] = None
+    known_ticket_sessions: Optional[Set[str]] = None,
+    movie_end_dates: Optional[Dict[str, str]] = None
 ) -> Dict[str, Any]:
     scraper = NOSScraper()
     run = CollectionRun()
@@ -252,6 +253,18 @@ def collect_data(
         match = re.search(r"\s*\(([^)]+)\)\s*$", raw_title)
         movie_title = raw_title[:match.start()].strip() if match else raw_title
 
+        movie_end_date = None
+        if movie_end_dates:
+            movie_end_date = (
+                movie_end_dates.get(agg_id)
+                or movie_end_dates.get(str(m.get("id") or ""))
+                or movie_end_dates.get(str(m.get("uuid") or ""))
+                or movie_end_dates.get(str(m.get("external_id") or ""))
+            )
+        if movie_end_date and current_op_date_str > movie_end_date:
+            log.info(f"[TRACKING ENDED] Skipping movie '{movie_title}' (id={agg_id}) because tracking_end_date {movie_end_date} has passed (current operational date: {current_op_date_str})")
+            continue
+
         # Determine tracking status for movie
         movie_is_tracked = bool(
             agg_id in tracked_set
@@ -321,6 +334,9 @@ def collect_data(
 
                         # STRICT THEATRICAL OPERATIONAL DAY FILTER (6:00 AM Lisbon Cutoff):
                         sess_op_date_str = compute_business_date(starts_at_utc)
+
+                        if movie_end_date and sess_op_date_str > movie_end_date:
+                            continue
 
                         is_current_day = (sess_op_date_str == current_op_date_str)
                         is_opening_day_presale = bool(
@@ -661,6 +677,7 @@ def main():
     parser.add_argument("--lookback-minutes", type=int, default=30, help="Grace window lookback in minutes for historical sessions")
     parser.add_argument("--browse-all-movies", action="store_true", help="Fetch and return full catalog of current movies")
     parser.add_argument("--known-ticket-sessions-file", type=str, default=None, help="Path to JSON file containing session UUIDs that already have ticket prices")
+    parser.add_argument("--movie-end-dates-file", type=str, default=None, help="Path to JSON file containing movie external_id -> tracking_end_date (YYYY-MM-DD)")
 
     args = parser.parse_args()
 
@@ -693,6 +710,16 @@ def main():
         except Exception as e:
             log.warning(f"Could not load known ticket sessions from file {args.known_ticket_sessions_file}: {e}")
 
+    movie_end_dates: Dict[str, str] = {}
+    if args.movie_end_dates_file and os.path.exists(args.movie_end_dates_file):
+        try:
+            with open(args.movie_end_dates_file, "r", encoding="utf-8") as f:
+                loaded = json.load(f)
+                if isinstance(loaded, dict):
+                    movie_end_dates = {str(k): str(v)[:10] for k, v in loaded.items() if v}
+        except Exception as e:
+            log.warning(f"Could not load movie end dates from file {args.movie_end_dates_file}: {e}")
+
     try:
         result = collect_data(
             run_id=run_id,
@@ -700,7 +727,8 @@ def main():
             tracked_movie_ids=args.tracked_movie_ids,
             limit_sessions_per_movie=args.limit_sessions,
             lookback_minutes=args.lookback_minutes,
-            known_ticket_sessions=known_ticket_sessions
+            known_ticket_sessions=known_ticket_sessions,
+            movie_end_dates=movie_end_dates
         )
     except Exception as scrape_error:
         print(f"Scraper execution failed with unexpected error: {str(scrape_error)}", file=sys.stderr, flush=True)

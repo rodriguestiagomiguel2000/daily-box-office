@@ -189,40 +189,55 @@ export async function prepareCollectionRun(options: CollectorJobOptions = {}): P
     let targetIds = options.movieExternalIds;
     if (!targetIds || targetIds.length === 0) {
       const trackedRes = await query<{ external_id: string }>(
-        `SELECT external_id FROM movies 
-         WHERE tracking_enabled = true 
-           AND (tracking_end_date IS NULL OR tracking_end_date >= TO_CHAR((NOW() AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD')::date);`
+        `SELECT m.external_id FROM movies m
+         LEFT JOIN movies parent ON m.merged_into_movie_id = parent.id
+         WHERE COALESCE(parent.tracking_enabled, m.tracking_enabled) = true 
+           AND (COALESCE(parent.tracking_end_date, m.tracking_end_date) IS NULL 
+                OR COALESCE(parent.tracking_end_date, m.tracking_end_date) >= TO_CHAR((NOW() AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD')::date);`
       );
       targetIds = trackedRes.rows.map((r) => r.external_id);
-      if (targetIds.length === 0) {
-        console.log("No movies currently have tracking enabled. Run finished early.");
-        isCollectingGlobal = false;
-        activeProgress = null;
+    } else {
+      // Even if external IDs were explicitly provided, filter out any whose tracking has ended
+      const trackedRes = await query<{ external_id: string }>(
+        `SELECT m.external_id FROM movies m
+         LEFT JOIN movies parent ON m.merged_into_movie_id = parent.id
+         WHERE m.external_id = ANY($1::text[])
+           AND COALESCE(parent.tracking_enabled, m.tracking_enabled) = true 
+           AND (COALESCE(parent.tracking_end_date, m.tracking_end_date) IS NULL 
+                OR COALESCE(parent.tracking_end_date, m.tracking_end_date) >= TO_CHAR((NOW() AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD')::date);`,
+        [targetIds]
+      );
+      targetIds = trackedRes.rows.map((r) => r.external_id);
+    }
 
-        // Save an early-finish run record in the database so telemetry remains correct
-        const startedAtIso = new Date().toISOString();
-        const triggerSource = options.triggerSource || "SCHEDULED";
-        const runInsertRes = await query<{ id: number }>(
-          `INSERT INTO collection_runs (
-            run_id, started_at, completed_at, status, movies_found, sessions_found,
-            sessions_attempted, sessions_successful, sessions_failed,
-            snapshots_created, errors, collector_version, trigger_source
-          ) VALUES ($1, $2, $2, 'SUCCESS', 0, 0, 0, 0, 0, 0, '["No tracked movies configured."]'::jsonb, '2.0.0', $3)
-          RETURNING id;`,
-          [`run-temp-${Date.now()}`, startedAtIso, triggerSource]
-        );
-        const collectionRunDbId = runInsertRes.rows[0].id;
-        const runId = options.runId || `run-${collectionRunDbId}`;
-        await query(`UPDATE collection_runs SET run_id = $1 WHERE id = $2;`, [runId, collectionRunDbId]);
+    if (targetIds.length === 0) {
+      console.log("No movies currently have tracking enabled. Run finished early.");
+      isCollectingGlobal = false;
+      activeProgress = null;
 
-        return {
-          runId,
-          collectionRunDbId,
-          targetIds: [],
-          startedAtIso,
-          startTime
-        };
-      }
+      // Save an early-finish run record in the database so telemetry remains correct
+      const startedAtIso = new Date().toISOString();
+      const triggerSource = options.triggerSource || "SCHEDULED";
+      const runInsertRes = await query<{ id: number }>(
+        `INSERT INTO collection_runs (
+          run_id, started_at, completed_at, status, movies_found, sessions_found,
+          sessions_attempted, sessions_successful, sessions_failed,
+          snapshots_created, errors, collector_version, trigger_source
+        ) VALUES ($1, $2, $2, 'SUCCESS', 0, 0, 0, 0, 0, 0, '["No tracked movies configured."]'::jsonb, '2.0.0', $3)
+        RETURNING id;`,
+        [`run-temp-${Date.now()}`, startedAtIso, triggerSource]
+      );
+      const collectionRunDbId = runInsertRes.rows[0].id;
+      const runId = options.runId || `run-${collectionRunDbId}`;
+      await query(`UPDATE collection_runs SET run_id = $1 WHERE id = $2;`, [runId, collectionRunDbId]);
+
+      return {
+        runId,
+        collectionRunDbId,
+        targetIds: [],
+        startedAtIso,
+        startTime
+      };
     }
 
     const startedAtIso = new Date().toISOString();
@@ -279,6 +294,7 @@ export async function executeCollectionRunFromPrepared(
 ): Promise<CollectorJobResult> {
   const { runId, collectionRunDbId, targetIds, startedAtIso, startTime } = prepared;
   let knownSessionsFile: string | null = null;
+  let movieEndDatesFile: string | null = null;
 
   try {
     // 2. Build Python process CLI arguments
@@ -294,9 +310,11 @@ export async function executeCollectionRunFromPrepared(
     // Query tracked movies from DB to pass to Python collector for targeted opening-day presale collection
     try {
       const trackedRes = await query<{ external_id: string }>(
-        `SELECT external_id FROM movies 
-         WHERE tracking_enabled = true 
-           AND (tracking_end_date IS NULL OR tracking_end_date >= TO_CHAR((NOW() AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD')::date);`
+        `SELECT m.external_id FROM movies m
+         LEFT JOIN movies parent ON m.merged_into_movie_id = parent.id
+         WHERE COALESCE(parent.tracking_enabled, m.tracking_enabled) = true 
+           AND (COALESCE(parent.tracking_end_date, m.tracking_end_date) IS NULL 
+                OR COALESCE(parent.tracking_end_date, m.tracking_end_date) >= TO_CHAR((NOW() AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD')::date);`
       );
       const trackedUuids = trackedRes.rows.map((r) => r.external_id).filter(Boolean);
       if (trackedUuids.length > 0) {
@@ -306,13 +324,42 @@ export async function executeCollectionRunFromPrepared(
       console.warn("Could not query tracked movie IDs from DB:", trErr);
     }
 
+    // Query movie tracking_end_date mappings to supply to Python collector
+    try {
+      const endDatesRes = await query<{ external_id: string; tracking_end_date: string }>(
+        `SELECT m.external_id, COALESCE(parent.tracking_end_date, m.tracking_end_date)::text as tracking_end_date
+         FROM movies m
+         LEFT JOIN movies parent ON m.merged_into_movie_id = parent.id
+         WHERE COALESCE(parent.tracking_end_date, m.tracking_end_date) IS NOT NULL;`
+      );
+      if (endDatesRes.rows.length > 0) {
+        const endDatesMap: Record<string, string> = {};
+        for (const row of endDatesRes.rows) {
+          if (row.external_id && row.tracking_end_date) {
+            endDatesMap[row.external_id] = String(row.tracking_end_date).slice(0, 10);
+          }
+        }
+        const tmpDatesPath = path.join(os.tmpdir(), `movie_end_dates_${runId}.json`);
+        await fs.promises.writeFile(tmpDatesPath, JSON.stringify(endDatesMap));
+        movieEndDatesFile = tmpDatesPath;
+        args.push("--movie-end-dates-file", tmpDatesPath);
+      }
+    } catch (edErr) {
+      console.warn("Could not query movie end dates from DB:", edErr);
+    }
+
     // Pre-fetch sessions that already have ticket prices to avoid redundant NOS API calls
     try {
       const knownSessionsRes = await query<{ external_session_id: string }>(
         `SELECT DISTINCT s.external_session_id 
          FROM sessions s 
          JOIN session_ticket_prices stp ON stp.session_id = s.id 
-         WHERE s.external_session_id IS NOT NULL;`
+         JOIN movies m ON s.movie_id = m.id
+         LEFT JOIN movies parent ON m.merged_into_movie_id = parent.id
+         WHERE s.external_session_id IS NOT NULL
+           AND COALESCE(parent.tracking_enabled, m.tracking_enabled) = true
+           AND (COALESCE(parent.tracking_end_date, m.tracking_end_date) IS NULL 
+                OR COALESCE(parent.tracking_end_date, m.tracking_end_date) >= COALESCE(NULLIF(s.operational_date, ''), TO_CHAR((s.starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD'))::date);`
       );
       const knownUuids = knownSessionsRes.rows.map((r) => r.external_session_id).filter(Boolean);
       if (knownUuids.length > 0) {
@@ -359,8 +406,10 @@ export async function executeCollectionRunFromPrepared(
           if (parsed.type === "session" && parsed.data) {
             // Incrementally write individual session snapshot to PostgreSQL immediately
             const writePromise = persistSingleSession(collectionRunDbId, parsed.data)
-              .then(() => {
-                incrementalSnapshotsCount++;
+              .then((didPersist) => {
+                if (didPersist) {
+                  incrementalSnapshotsCount++;
+                }
               })
               .catch((err) => {
                 console.error("Error persisting incremental session:", err);
@@ -509,7 +558,18 @@ export async function executeCollectionRunFromPrepared(
     if (knownSessionsFile) {
       fs.promises.unlink(knownSessionsFile).catch(() => {});
     }
+    if (movieEndDatesFile) {
+      fs.promises.unlink(movieEndDatesFile).catch(() => {});
+    }
   }
+}
+
+/**
+ * 6:00 AM Lisbon Cutoff: Subtract 6 hours from timestamp, format in Europe/Lisbon (YYYY-MM-DD)
+ */
+export function getOperationalDateStr(date: Date = new Date()): string {
+  const shifted = new Date(date.getTime() - 6 * 60 * 60 * 1000);
+  return shifted.toLocaleDateString("en-CA", { timeZone: "Europe/Lisbon" });
 }
 
 /**
@@ -519,7 +579,7 @@ export async function executeCollectionRunFromPrepared(
 export async function persistSingleSession(
   collectionRunDbId: number,
   item: any
-): Promise<void> {
+): Promise<boolean> {
   const client = await pool.connect();
   try {
     await client.query("BEGIN");
@@ -583,6 +643,28 @@ export async function persistSingleSession(
           [m.external_id, cleanedTitle, m.poster_url, m.duration, m.age_rating, m.release_date]
         );
         canonicalMovieId = newMovieRes.rows[0].id;
+      }
+    }
+
+    // 1.5 Strict enforcement: Verify tracking status of canonical movie before recording snapshots
+    const canonicalTrackRes = await client.query<{ tracking_enabled: boolean; tracking_end_date: string | null }>(
+      `SELECT tracking_enabled, tracking_end_date FROM movies WHERE id = $1;`,
+      [canonicalMovieId]
+    );
+    const canonicalTrack = canonicalTrackRes.rows[0];
+    const sessionOpDate = s.operational_date || getOperationalDateStr();
+    if (canonicalTrack) {
+      if (!canonicalTrack.tracking_enabled) {
+        await client.query("COMMIT");
+        return false;
+      }
+      if (canonicalTrack.tracking_end_date) {
+        const endDateStr = String(canonicalTrack.tracking_end_date).slice(0, 10);
+        if (endDateStr < sessionOpDate) {
+          // Operational date has moved beyond tracking_end_date. Skip saving session and snapshots.
+          await client.query("COMMIT");
+          return false;
+        }
       }
     }
 
@@ -847,6 +929,7 @@ export async function persistSingleSession(
     }
 
     await client.query("COMMIT");
+    return true;
   } catch (sessionErr) {
     await client.query("ROLLBACK");
     console.error("Error persisting session data:", sessionErr);
@@ -881,8 +964,10 @@ export async function persistCollectionPayload(
           if (!item) break;
 
           try {
-            await persistSingleSession(collectionRunDbId, item);
-            snapshotsCreatedCount++;
+            const didPersist = await persistSingleSession(collectionRunDbId, item);
+            if (didPersist) {
+              snapshotsCreatedCount++;
+            }
           } catch (sessionErr) {
             runMeta.errors = runMeta.errors || [];
             runMeta.errors.push(String(sessionErr));
@@ -1016,7 +1101,14 @@ export async function generateMoviePerformanceSnapshots(collectionRunDbId: numbe
         MAX(ss.collected_at) as snapshot_timestamp
        FROM seat_snapshots ss
        JOIN sessions s ON ss.session_id = s.id
+       JOIN movies m ON s.movie_id = m.id
+       LEFT JOIN movies parent ON m.merged_into_movie_id = parent.id
        WHERE ss.collection_run_id = $1
+         AND COALESCE(parent.tracking_enabled, m.tracking_enabled) = true
+         AND (
+           COALESCE(parent.tracking_end_date::text, m.tracking_end_date::text) IS NULL
+           OR COALESCE(parent.tracking_end_date::text, m.tracking_end_date::text) >= COALESCE(NULLIF(s.operational_date, ''), TO_CHAR((s.starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD'))
+         )
        GROUP BY s.movie_id, COALESCE(NULLIF(s.operational_date, ''), TO_CHAR((s.starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD'));`,
       [collectionRunDbId]
     );
@@ -1038,8 +1130,15 @@ export async function generateMoviePerformanceSnapshots(collectionRunDbId: numbe
             ss.collected_at
           FROM sessions s
           JOIN seat_snapshots ss ON ss.session_id = s.id
+          JOIN movies m ON s.movie_id = m.id
+          LEFT JOIN movies parent ON m.merged_into_movie_id = parent.id
           WHERE s.movie_id = $1 
-            AND (s.operational_date = $2 OR TO_CHAR((s.starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD') = $2)
+            AND COALESCE(parent.tracking_enabled, m.tracking_enabled) = true
+            AND (
+              COALESCE(parent.tracking_end_date::text, m.tracking_end_date::text) IS NULL
+              OR COALESCE(parent.tracking_end_date::text, m.tracking_end_date::text) >= $2::text
+            )
+            AND (s.operational_date = $2::text OR TO_CHAR((s.starts_at AT TIME ZONE 'Europe/Lisbon') - INTERVAL '6 hours', 'YYYY-MM-DD') = $2::text)
             AND ss.collected_at <= $3
           ORDER BY s.id, ss.collected_at DESC
         ),
