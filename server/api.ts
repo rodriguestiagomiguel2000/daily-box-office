@@ -1177,32 +1177,35 @@ apiRouter.get("/sessions/:id/seat-map", async (req, res) => {
 
     const snapshot = snapshotRes.rows[0];
 
-    // 3. Fetch seat states for this snapshot and join room_structural_blocks
+    // 3. Fetch seat states for this snapshot, joining room_seats for static seat attributes and room_structural_blocks
     const seatStatesRes = await query(
       `SELECT 
         st.id,
-        st.queue,
-        st.row,
-        st.col,
-        st.seat_number,
-        st.stable_seat_key,
+        rs.queue,
+        rs.row_num as "row",
+        rs.col_num as col,
+        rs.seat_number,
+        COALESCE(rs.stable_seat_key, st.stable_seat_key) as stable_seat_key,
         st.is_seat,
         st.is_available,
-        st.is_safety_seat,
-        st.is_premium,
-        st.is_vip,
-        st.is_love_seat,
-        st.is_handicapped,
+        rs.is_safety_seat,
+        rs.is_premium,
+        rs.is_vip,
+        rs.is_love_seat,
+        rs.is_handicapped,
         st.state,
         (rsb.stable_seat_key IS NOT NULL) as is_blocked
        FROM seat_states st
+       JOIN room_seats rs
+         ON (st.room_seat_id IS NOT NULL AND rs.id = st.room_seat_id)
+         OR (st.room_seat_id IS NULL AND rs.theater_room_uuid = COALESCE(st.theater_room_uuid, $1) AND rs.stable_seat_key = st.stable_seat_key)
        LEFT JOIN room_structural_blocks rsb 
-         ON rsb.theater_room_uuid = COALESCE(st.theater_room_uuid, $1)
-        AND rsb.stable_seat_key = st.stable_seat_key
+         ON rsb.theater_room_uuid = COALESCE(rs.theater_room_uuid, st.theater_room_uuid, $1)
+        AND rsb.stable_seat_key = COALESCE(rs.stable_seat_key, st.stable_seat_key)
         AND rsb.first_observed_at <= $3
         AND (rsb.removed_at IS NULL OR rsb.removed_at > $3)
        WHERE st.snapshot_id = $2
-       ORDER BY st.row ASC, st.col ASC, st.seat_number ASC;`,
+       ORDER BY rs.row_num ASC, rs.col_num ASC, rs.seat_number ASC;`,
       [sess.room_external_id || "", snapshot.id, snapshot.collected_at]
     );
 

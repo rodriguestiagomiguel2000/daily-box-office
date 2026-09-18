@@ -162,6 +162,31 @@ export async function runMigrations(): Promise<void> {
     CREATE INDEX IF NOT EXISTS idx_seat_states_snapshot_id ON seat_states(snapshot_id);
     CREATE INDEX IF NOT EXISTS idx_seat_states_session_key ON seat_states(session_id, stable_seat_key);
 
+    -- 7b. Static Room Seat Layouts (Phase 2 Additive Room Seats)
+    CREATE TABLE IF NOT EXISTS room_seats (
+      id BIGSERIAL UNIQUE,
+      theater_room_uuid VARCHAR(100) NOT NULL,
+      stable_seat_key VARCHAR(150) NOT NULL,
+      queue VARCHAR(20),
+      row_num INT,
+      col_num INT,
+      seat_number INT,
+      is_premium BOOLEAN DEFAULT FALSE,
+      is_vip BOOLEAN DEFAULT FALSE,
+      is_love_seat BOOLEAN DEFAULT FALSE,
+      is_handicapped BOOLEAN DEFAULT FALSE,
+      is_safety_seat BOOLEAN DEFAULT FALSE,
+      first_seen_at TIMESTAMPTZ NOT NULL,
+      last_seen_at TIMESTAMPTZ NOT NULL,
+      PRIMARY KEY (theater_room_uuid, stable_seat_key)
+    );
+    ALTER TABLE room_seats ADD COLUMN IF NOT EXISTS id BIGSERIAL UNIQUE;
+    CREATE INDEX IF NOT EXISTS idx_room_seats_room ON room_seats(theater_room_uuid);
+
+    -- Phase 5 Additive room_seat_id foreign key on seat_states
+    ALTER TABLE seat_states ADD COLUMN IF NOT EXISTS room_seat_id BIGINT;
+    CREATE INDEX IF NOT EXISTS idx_seat_states_room_seat_id ON seat_states(room_seat_id);
+
     -- 8. Seat Transitions
     CREATE TABLE IF NOT EXISTS seat_transitions (
       id SERIAL PRIMARY KEY,

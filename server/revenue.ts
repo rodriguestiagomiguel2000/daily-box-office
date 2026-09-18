@@ -421,21 +421,24 @@ export async function computeRoomStructuralBlocks(
     ),
     detected_blocks AS (
       SELECT 
-        st.theater_room_uuid,
+        rs.theater_room_uuid,
         qr.cinema_name,
         qr.room_name,
         qr.qualifying_sessions,
-        st.stable_seat_key,
+        rs.stable_seat_key,
         COUNT(DISTINCT f.session_id)::int as obs_count,
         MIN(f.starts_at) as min_ts,
         MAX(f.starts_at) as max_ts
       FROM qualified_rooms qr
       JOIN low_occ_sessions f ON f.theater_room_uuid = qr.theater_room_uuid
       JOIN seat_states st ON st.snapshot_id = f.snapshot_id
+      JOIN room_seats rs 
+        ON (st.room_seat_id IS NOT NULL AND rs.id = st.room_seat_id)
+        OR (st.room_seat_id IS NULL AND rs.theater_room_uuid = COALESCE(st.theater_room_uuid, f.theater_room_uuid) AND rs.stable_seat_key = st.stable_seat_key)
       WHERE st.is_seat = true 
         AND (st.is_available = false OR st.state = 'UNAVAILABLE')
-        AND (st.is_safety_seat = false OR st.is_safety_seat IS NULL)
-      GROUP BY st.theater_room_uuid, qr.cinema_name, qr.room_name, qr.qualifying_sessions, st.stable_seat_key
+        AND (rs.is_safety_seat = false OR rs.is_safety_seat IS NULL)
+      GROUP BY rs.theater_room_uuid, qr.cinema_name, qr.room_name, qr.qualifying_sessions, rs.stable_seat_key
       HAVING COUNT(DISTINCT f.session_id) >= $3 
          AND COUNT(DISTINCT f.session_id)::float / qr.qualifying_sessions >= $4
     )

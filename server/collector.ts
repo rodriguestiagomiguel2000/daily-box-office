@@ -740,7 +740,10 @@ export async function persistSingleSession(
       prevCollectedAt = prevSnapRes.rows[0].collected_at;
 
       const prevStatesRes = await client.query<{ stable_seat_key: string; state: string }>(
-        `SELECT stable_seat_key, state FROM seat_states WHERE snapshot_id = $1;`,
+        `SELECT COALESCE(rs.stable_seat_key, st.stable_seat_key) as stable_seat_key, st.state 
+         FROM seat_states st
+         LEFT JOIN room_seats rs ON rs.id = st.room_seat_id
+         WHERE st.snapshot_id = $1;`,
         [prevSnapshotId]
       );
       for (const row of prevStatesRes.rows) {
@@ -774,48 +777,87 @@ export async function persistSingleSession(
     );
     const snapshotDbId = snapRes.rows[0].id;
 
-    // 7. Bulk insert individual physical seat states in safe chunks of 100
+    // 7. Bulk upsert room_seats layouts and insert dynamic seat_states
     const seats = snap.seats || [];
     const CHUNK_SIZE = 100;
+    const roomUuid = r.external_id || snap.room_uuid || "";
+
+    // 7a. Upsert room_seats for every seat in this snapshot (keeping static layout learning current)
     for (let i = 0; i < seats.length; i += CHUNK_SIZE) {
       const chunk = seats.slice(i, i + CHUNK_SIZE);
-      const valuePlaceholders: string[] = [];
-      const values: any[] = [];
-      let pIdx = 1;
+      const roomSeatPlaceholders: string[] = [];
+      const roomSeatValues: any[] = [];
+      let rsIdx = 1;
 
       for (const seat of chunk) {
-        valuePlaceholders.push(
-          `($${pIdx}, $${pIdx + 1}, $${pIdx + 2}, $${pIdx + 3}, $${pIdx + 4}, $${pIdx + 5}, $${pIdx + 6}, $${pIdx + 7}, $${pIdx + 8}, $${pIdx + 9}, $${pIdx + 10}, $${pIdx + 11}, $${pIdx + 12}, $${pIdx + 13}, $${pIdx + 14}, $${pIdx + 15})`
+        const seatRoomUuid = seat.theater_room_uuid || roomUuid;
+        roomSeatPlaceholders.push(
+          `($${rsIdx}, $${rsIdx + 1}, $${rsIdx + 2}, $${rsIdx + 3}, $${rsIdx + 4}, $${rsIdx + 5}, $${rsIdx + 6}, $${rsIdx + 7}, $${rsIdx + 8}, $${rsIdx + 9}, $${rsIdx + 10}, NOW(), NOW())`
         );
-        values.push(
-          snapshotDbId,
-          sessionId,
-          seat.theater_room_uuid,
-          seat.queue,
-          seat.row,
-          seat.col,
-          seat.seat_number,
+        roomSeatValues.push(
+          seatRoomUuid,
           seat.stable_seat_key,
-          Boolean(seat.is_seat),
-          Boolean(seat.is_available),
-          Boolean(seat.is_safety_seat),
+          seat.queue || null,
+          seat.row !== undefined && seat.row !== null ? Number(seat.row) : null,
+          seat.col !== undefined && seat.col !== null ? Number(seat.col) : null,
+          seat.seat_number !== undefined && seat.seat_number !== null ? Number(seat.seat_number) : null,
           Boolean(seat.is_premium),
           Boolean(seat.is_vip),
           Boolean(seat.is_love_seat),
           Boolean(seat.is_handicapped),
-          seat.state
+          Boolean(seat.is_safety_seat)
         );
-        pIdx += 16;
+        rsIdx += 11;
       }
 
-      const seatInsertSQL = `
-        INSERT INTO seat_states (
-          snapshot_id, session_id, theater_room_uuid, queue, row, col,
-          seat_number, stable_seat_key, is_seat, is_available, is_safety_seat,
-          is_premium, is_vip, is_love_seat, is_handicapped, state
-        ) VALUES ${valuePlaceholders.join(", ")};
-      `;
-      await client.query(seatInsertSQL, values);
+      const seatIdMap = new Map<string, number>();
+
+      if (roomSeatValues.length > 0) {
+        const roomSeatsUpsertSQL = `
+          INSERT INTO room_seats (
+            theater_room_uuid, stable_seat_key, queue, row_num, col_num, seat_number,
+            is_premium, is_vip, is_love_seat, is_handicapped, is_safety_seat,
+            first_seen_at, last_seen_at
+          ) VALUES ${roomSeatPlaceholders.join(", ")}
+          ON CONFLICT (theater_room_uuid, stable_seat_key) DO UPDATE SET
+            last_seen_at = EXCLUDED.last_seen_at
+          RETURNING id, stable_seat_key;
+        `;
+        const rsUpsertRes = await client.query<{ id: string | number; stable_seat_key: string }>(roomSeatsUpsertSQL, roomSeatValues);
+        for (const row of rsUpsertRes.rows) {
+          seatIdMap.set(row.stable_seat_key, Number(row.id));
+        }
+      }
+
+      // 7b. Insert seat_states using snapshot_id, session_id, is_seat, is_available, state, room_seat_id
+      const statePlaceholders: string[] = [];
+      const stateValues: any[] = [];
+      let sIdx = 1;
+
+      for (const seat of chunk) {
+        const roomSeatId = seatIdMap.get(seat.stable_seat_key) || null;
+        statePlaceholders.push(
+          `($${sIdx}, $${sIdx + 1}, $${sIdx + 2}, $${sIdx + 3}, $${sIdx + 4}, $${sIdx + 5})`
+        );
+        stateValues.push(
+          snapshotDbId,
+          sessionId,
+          Boolean(seat.is_seat),
+          Boolean(seat.is_available),
+          seat.state,
+          roomSeatId
+        );
+        sIdx += 6;
+      }
+
+      if (stateValues.length > 0) {
+        const seatInsertSQL = `
+          INSERT INTO seat_states (
+            snapshot_id, session_id, is_seat, is_available, state, room_seat_id
+          ) VALUES ${statePlaceholders.join(", ")};
+        `;
+        await client.query(seatInsertSQL, stateValues);
+      }
     }
 
     // 8. Compute and persist seat transitions if previous snapshot existed
