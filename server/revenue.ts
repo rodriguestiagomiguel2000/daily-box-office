@@ -434,7 +434,7 @@ export async function computeRoomStructuralBlocks(
       JOIN seat_states st ON st.snapshot_id = f.snapshot_id
       JOIN room_seats rs 
         ON (st.room_seat_id IS NOT NULL AND rs.id = st.room_seat_id)
-        OR (st.room_seat_id IS NULL AND rs.theater_room_uuid = COALESCE(st.theater_room_uuid, f.theater_room_uuid) AND rs.stable_seat_key = st.stable_seat_key)
+
       WHERE st.is_seat = true 
         AND (st.is_available = false OR st.state = 'UNAVAILABLE')
         AND (rs.is_safety_seat = false OR rs.is_safety_seat IS NULL)

@@ -740,9 +740,9 @@ export async function persistSingleSession(
       prevCollectedAt = prevSnapRes.rows[0].collected_at;
 
       const prevStatesRes = await client.query<{ stable_seat_key: string; state: string }>(
-        `SELECT COALESCE(rs.stable_seat_key, st.stable_seat_key) as stable_seat_key, st.state 
+        `SELECT rs.stable_seat_key, st.state 
          FROM seat_states st
-         LEFT JOIN room_seats rs ON rs.id = st.room_seat_id
+         JOIN room_seats rs ON rs.id = st.room_seat_id
          WHERE st.snapshot_id = $1;`,
         [prevSnapshotId]
       );
@@ -1034,7 +1034,15 @@ export async function persistCollectionPayload(
     }
 
     // 5. Finalize collection_runs record in PostgreSQL
-    const finalRunStatus = runMeta.errors && runMeta.errors.length > 0 ? (snapshotsCreatedCount > 0 ? "PARTIAL" : "FAILED") : "SUCCESS";
+    const hasAttemptedSessions = (runMeta.sessions_attempted || 0) > 0;
+    let finalRunStatus = "SUCCESS";
+    if (snapshotsCreatedCount === 0 && hasAttemptedSessions) {
+      finalRunStatus = "FAILED";
+    } else if (snapshotsCreatedCount < (runMeta.sessions_attempted || 0) && snapshotsCreatedCount > 0) {
+      finalRunStatus = "PARTIAL";
+    } else if (runMeta.errors && runMeta.errors.length > 0) {
+      finalRunStatus = snapshotsCreatedCount > 0 ? "PARTIAL" : "FAILED";
+    }
     await query(
       `UPDATE collection_runs SET
         completed_at = NOW(),
