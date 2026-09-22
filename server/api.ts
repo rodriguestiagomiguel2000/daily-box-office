@@ -1185,7 +1185,7 @@ apiRouter.get("/sessions/:id/seat-map", async (req, res) => {
         rs.row_num as "row",
         rs.col_num as col,
         rs.seat_number,
-        COALESCE(rs.stable_seat_key, st.stable_seat_key) as stable_seat_key,
+        rs.stable_seat_key,
         st.is_seat,
         st.is_available,
         rs.is_safety_seat,
@@ -1196,12 +1196,10 @@ apiRouter.get("/sessions/:id/seat-map", async (req, res) => {
         st.state,
         (rsb.stable_seat_key IS NOT NULL) as is_blocked
        FROM seat_states st
-       JOIN room_seats rs
-         ON (st.room_seat_id IS NOT NULL AND rs.id = st.room_seat_id)
-         OR (st.room_seat_id IS NULL AND rs.theater_room_uuid = COALESCE(st.theater_room_uuid, $1) AND rs.stable_seat_key = st.stable_seat_key)
+       JOIN room_seats rs ON rs.id = st.room_seat_id
        LEFT JOIN room_structural_blocks rsb 
-         ON rsb.theater_room_uuid = COALESCE(rs.theater_room_uuid, st.theater_room_uuid, $1)
-        AND rsb.stable_seat_key = COALESCE(rs.stable_seat_key, st.stable_seat_key)
+          ON rsb.theater_room_uuid = COALESCE(rs.theater_room_uuid, $1)
+        AND rsb.stable_seat_key = rs.stable_seat_key
         AND rsb.first_observed_at <= $3
         AND (rsb.removed_at IS NULL OR rsb.removed_at > $3)
        WHERE st.snapshot_id = $2

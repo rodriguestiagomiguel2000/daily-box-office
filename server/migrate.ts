@@ -160,7 +160,7 @@ export async function runMigrations(): Promise<void> {
       state VARCHAR(30) NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_seat_states_snapshot_id ON seat_states(snapshot_id);
-    CREATE INDEX IF NOT EXISTS idx_seat_states_session_key ON seat_states(session_id, stable_seat_key);
+    -- Index on seat_states(session_id, stable_seat_key) dropped in Phase 5 since stable_seat_key was removed
 
     -- 7b. Static Room Seat Layouts (Phase 2 Additive Room Seats)
     CREATE TABLE IF NOT EXISTS room_seats (
