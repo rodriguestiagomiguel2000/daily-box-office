@@ -69,6 +69,7 @@ export interface SessionDetail {
   estimated_revenue: number;
   ticket_prices: SessionTicketPrice[];
   latest_update: string | null;
+  seats_last_captured_at?: string | null;
   is_current?: boolean;
 }
 
@@ -107,6 +108,7 @@ export interface SessionHistoryResponse {
     effective_unavailable_seats?: number;
     occupancy_proxy: number;
     latest_collected_at: string | null;
+    seats_last_captured_at?: string | null;
     movie_title?: string;
   };
   snapshots: SessionSnapshotHistory[];
@@ -143,6 +145,7 @@ export interface SeatMapResponse {
     room_name: string;
     format?: string;
     snapshot_collected_at: string | null;
+    seats_last_captured_at?: string | null;
     snapshot_id: number | null;
     total_seats: number;
     sold_count: number;
@@ -264,6 +267,7 @@ export interface CollectorStatusResponse {
     snapshots: number;
     individual_seat_states: number;
     transitions_recorded: number;
+    seats_last_captured_at?: string | null;
   };
 }
 

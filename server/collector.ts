@@ -12,6 +12,7 @@ export interface CollectorJobOptions {
   limitSessionsPerMovie?: number;
   lookbackMinutes?: number;
   triggerSource?: "MANUAL" | "SCHEDULED" | "CRON" | "CLI";
+  detailedSeatCapture?: boolean;
 }
 
 export interface CollectorJobResult {
@@ -24,6 +25,7 @@ export interface CollectorJobResult {
   snapshotsCreated: number;
   errors: string[];
   durationMs: number;
+  detailedSeatsCaptured?: boolean;
 }
 
 export interface ActiveRunProgress {
@@ -114,6 +116,7 @@ export interface PreparedRun {
   targetIds: string[];
   startedAtIso: string;
   startTime: number;
+  detailedSeatCapture: boolean;
 }
 
 export async function prepareCollectionRun(options: CollectorJobOptions = {}): Promise<PreparedRun | null> {
@@ -210,6 +213,39 @@ export async function prepareCollectionRun(options: CollectorJobOptions = {}): P
       targetIds = trackedRes.rows.map((r) => r.external_id);
     }
 
+    // Split-speed collection (Option B): Determine if this run should capture detailed seat states
+    let detailedSeatCapture = options.detailedSeatCapture;
+    if (detailedSeatCapture === undefined) {
+      try {
+        const lastDetailedRes = await query<{ id: number; started_at: Date }>(
+          `SELECT id, started_at FROM collection_runs 
+           WHERE detailed_seats_captured = true AND status = 'SUCCESS' 
+           ORDER BY started_at DESC LIMIT 1;`
+        );
+        if (lastDetailedRes.rows.length === 0) {
+          detailedSeatCapture = true;
+        } else {
+          const lastDetailed = lastDetailedRes.rows[0];
+          const elapsedMins = (Date.now() - new Date(lastDetailed.started_at).getTime()) / 60000;
+          const runsSinceRes = await query<{ count: string }>(
+            `SELECT COUNT(*) as count FROM collection_runs 
+             WHERE status = 'SUCCESS' AND id > $1;`,
+            [lastDetailed.id]
+          );
+          const runsSince = parseInt(runsSinceRes.rows[0]?.count || "0", 10);
+          // Run detailed capture every 6th run (~every 2 hours) or if >= 110 minutes have elapsed
+          if (runsSince >= 5 || elapsedMins >= 110) {
+            detailedSeatCapture = true;
+          } else {
+            detailedSeatCapture = false;
+          }
+        }
+      } catch (err) {
+        console.warn("Could not determine previous detailed capture status from DB. Defaulting to true:", err);
+        detailedSeatCapture = true;
+      }
+    }
+
     if (targetIds.length === 0) {
       console.log("No movies currently have tracking enabled. Run finished early.");
       isCollectingGlobal = false;
@@ -222,10 +258,10 @@ export async function prepareCollectionRun(options: CollectorJobOptions = {}): P
         `INSERT INTO collection_runs (
           run_id, started_at, completed_at, status, movies_found, sessions_found,
           sessions_attempted, sessions_successful, sessions_failed,
-          snapshots_created, errors, collector_version, trigger_source
-        ) VALUES ($1, $2, $2, 'SUCCESS', 0, 0, 0, 0, 0, 0, '["No tracked movies configured."]'::jsonb, '2.0.0', $3)
+          snapshots_created, errors, collector_version, trigger_source, detailed_seats_captured
+        ) VALUES ($1, $2, $2, 'SUCCESS', 0, 0, 0, 0, 0, 0, '["No tracked movies configured."]'::jsonb, '2.0.0', $3, $4)
         RETURNING id;`,
-        [`run-temp-${Date.now()}`, startedAtIso, triggerSource]
+        [`run-temp-${Date.now()}`, startedAtIso, triggerSource, detailedSeatCapture]
       );
       const collectionRunDbId = runInsertRes.rows[0].id;
       const runId = options.runId || `run-${collectionRunDbId}`;
@@ -236,7 +272,8 @@ export async function prepareCollectionRun(options: CollectorJobOptions = {}): P
         collectionRunDbId,
         targetIds: [],
         startedAtIso,
-        startTime
+        startTime,
+        detailedSeatCapture
       };
     }
 
@@ -246,10 +283,10 @@ export async function prepareCollectionRun(options: CollectorJobOptions = {}): P
       `INSERT INTO collection_runs (
         run_id, started_at, status, movies_found, sessions_found,
         sessions_attempted, sessions_successful, sessions_failed,
-        snapshots_created, errors, collector_version, trigger_source
-      ) VALUES ($1, $2, 'RUNNING', 0, 0, 0, 0, 0, 0, '[]'::jsonb, '2.0.0', $3)
+        snapshots_created, errors, collector_version, trigger_source, detailed_seats_captured
+      ) VALUES ($1, $2, 'RUNNING', 0, 0, 0, 0, 0, 0, '[]'::jsonb, '2.0.0', $3, $4)
       RETURNING id;`,
-      [`run-temp-${Date.now()}`, startedAtIso, triggerSource]
+      [`run-temp-${Date.now()}`, startedAtIso, triggerSource, detailedSeatCapture]
     );
     const collectionRunDbId = runInsertRes.rows[0].id;
     const runId = options.runId || `run-${collectionRunDbId}`;
@@ -279,7 +316,8 @@ export async function prepareCollectionRun(options: CollectorJobOptions = {}): P
       collectionRunDbId,
       targetIds,
       startedAtIso,
-      startTime
+      startTime,
+      detailedSeatCapture
     };
   } catch (err) {
     isCollectingGlobal = false;
@@ -405,7 +443,7 @@ export async function executeCollectionRunFromPrepared(
           const parsed = JSON.parse(trimmed);
           if (parsed.type === "session" && parsed.data) {
             // Incrementally write individual session snapshot to PostgreSQL immediately
-            const writePromise = persistSingleSession(collectionRunDbId, parsed.data)
+            const writePromise = persistSingleSession(collectionRunDbId, parsed.data, prepared.detailedSeatCapture)
               .then((didPersist) => {
                 if (didPersist) {
                   incrementalSnapshotsCount++;
@@ -578,7 +616,8 @@ export function getOperationalDateStr(date: Date = new Date()): string {
  */
 export async function persistSingleSession(
   collectionRunDbId: number,
-  item: any
+  item: any,
+  shouldCaptureDetailed: boolean = true
 ): Promise<boolean> {
   const client = await pool.connect();
   try {
@@ -723,35 +762,37 @@ export async function persistSingleSession(
     );
     const sessionId = sessionRes.rows[0].id;
 
-    // 5. Find previous snapshot to compute physical seat transitions
-    const prevSnapRes = await client.query<{ id: number; collected_at: Date }>(
-      `SELECT id, collected_at FROM seat_snapshots 
-       WHERE session_id = $1 
-       ORDER BY collected_at DESC LIMIT 1;`,
-      [sessionId]
-    );
-
+    // 5. Find previous snapshot to compute physical seat transitions (only needed if detailed seat capture is active)
     let prevSeatStatesMap: Map<string, string> = new Map();
     let prevSnapshotId: number | null = null;
     let prevCollectedAt: Date | null = null;
 
-    if (prevSnapRes.rows.length > 0) {
-      prevSnapshotId = prevSnapRes.rows[0].id;
-      prevCollectedAt = prevSnapRes.rows[0].collected_at;
-
-      const prevStatesRes = await client.query<{ stable_seat_key: string; state: string }>(
-        `SELECT rs.stable_seat_key, st.state 
-         FROM seat_states st
-         JOIN room_seats rs ON rs.id = st.room_seat_id
-         WHERE st.snapshot_id = $1;`,
-        [prevSnapshotId]
+    if (shouldCaptureDetailed) {
+      const prevSnapRes = await client.query<{ id: number; collected_at: Date }>(
+        `SELECT id, collected_at FROM seat_snapshots 
+         WHERE session_id = $1 
+         ORDER BY collected_at DESC LIMIT 1;`,
+        [sessionId]
       );
-      for (const row of prevStatesRes.rows) {
-        prevSeatStatesMap.set(row.stable_seat_key, row.state);
+
+      if (prevSnapRes.rows.length > 0) {
+        prevSnapshotId = prevSnapRes.rows[0].id;
+        prevCollectedAt = prevSnapRes.rows[0].collected_at;
+
+        const prevStatesRes = await client.query<{ stable_seat_key: string; state: string }>(
+          `SELECT rs.stable_seat_key, st.state 
+           FROM seat_states st
+           JOIN room_seats rs ON rs.id = st.room_seat_id
+           WHERE st.snapshot_id = $1;`,
+          [prevSnapshotId]
+        );
+        for (const row of prevStatesRes.rows) {
+          prevSeatStatesMap.set(row.stable_seat_key, row.state);
+        }
       }
     }
 
-    // 6. Insert immutable seat_snapshots record
+    // 6. Insert immutable seat_snapshots record (Every run: feeds 20-min fresh revenue/admissions)
     const snapRes = await client.query<{ id: number }>(
       `INSERT INTO seat_snapshots (
         session_id, collected_at, total_seats, sellable_seats, available_seats,
@@ -777,149 +818,158 @@ export async function persistSingleSession(
     );
     const snapshotDbId = snapRes.rows[0].id;
 
-    // 7. Bulk upsert room_seats layouts and insert dynamic seat_states
-    const seats = snap.seats || [];
-    const CHUNK_SIZE = 100;
-    const roomUuid = r.external_id || snap.room_uuid || "";
+    // 7 & 8: Detailed Physical Seat Capture (Run every 6th cycle / ~2 hours; skipped in lightweight runs)
+    if (shouldCaptureDetailed) {
+      // 7. Bulk upsert room_seats layouts and insert dynamic seat_states
+      const seats = snap.seats || [];
+      const CHUNK_SIZE = 100;
+      const roomUuid = r.external_id || snap.room_uuid || "";
 
-    // 7a. Upsert room_seats for every seat in this snapshot (keeping static layout learning current)
-    for (let i = 0; i < seats.length; i += CHUNK_SIZE) {
-      const chunk = seats.slice(i, i + CHUNK_SIZE);
-      const roomSeatPlaceholders: string[] = [];
-      const roomSeatValues: any[] = [];
-      let rsIdx = 1;
+      // 7a. Upsert room_seats for every seat in this snapshot (keeping static layout learning current)
+      for (let i = 0; i < seats.length; i += CHUNK_SIZE) {
+        const chunk = seats.slice(i, i + CHUNK_SIZE);
+        const roomSeatPlaceholders: string[] = [];
+        const roomSeatValues: any[] = [];
+        let rsIdx = 1;
 
-      for (const seat of chunk) {
-        const seatRoomUuid = seat.theater_room_uuid || roomUuid;
-        roomSeatPlaceholders.push(
-          `($${rsIdx}, $${rsIdx + 1}, $${rsIdx + 2}, $${rsIdx + 3}, $${rsIdx + 4}, $${rsIdx + 5}, $${rsIdx + 6}, $${rsIdx + 7}, $${rsIdx + 8}, $${rsIdx + 9}, $${rsIdx + 10}, NOW(), NOW())`
-        );
-        roomSeatValues.push(
-          seatRoomUuid,
-          seat.stable_seat_key,
-          seat.queue || null,
-          seat.row !== undefined && seat.row !== null ? Number(seat.row) : null,
-          seat.col !== undefined && seat.col !== null ? Number(seat.col) : null,
-          seat.seat_number !== undefined && seat.seat_number !== null ? Number(seat.seat_number) : null,
-          Boolean(seat.is_premium),
-          Boolean(seat.is_vip),
-          Boolean(seat.is_love_seat),
-          Boolean(seat.is_handicapped),
-          Boolean(seat.is_safety_seat)
-        );
-        rsIdx += 11;
-      }
-
-      const seatIdMap = new Map<string, number>();
-
-      if (roomSeatValues.length > 0) {
-        const roomSeatsUpsertSQL = `
-          INSERT INTO room_seats (
-            theater_room_uuid, stable_seat_key, queue, row_num, col_num, seat_number,
-            is_premium, is_vip, is_love_seat, is_handicapped, is_safety_seat,
-            first_seen_at, last_seen_at
-          ) VALUES ${roomSeatPlaceholders.join(", ")}
-          ON CONFLICT (theater_room_uuid, stable_seat_key) DO UPDATE SET
-            last_seen_at = EXCLUDED.last_seen_at
-          RETURNING id, stable_seat_key;
-        `;
-        const rsUpsertRes = await client.query<{ id: string | number; stable_seat_key: string }>(roomSeatsUpsertSQL, roomSeatValues);
-        for (const row of rsUpsertRes.rows) {
-          seatIdMap.set(row.stable_seat_key, Number(row.id));
+        for (const seat of chunk) {
+          const seatRoomUuid = seat.theater_room_uuid || roomUuid;
+          roomSeatPlaceholders.push(
+            `($${rsIdx}, $${rsIdx + 1}, $${rsIdx + 2}, $${rsIdx + 3}, $${rsIdx + 4}, $${rsIdx + 5}, $${rsIdx + 6}, $${rsIdx + 7}, $${rsIdx + 8}, $${rsIdx + 9}, $${rsIdx + 10}, NOW(), NOW())`
+          );
+          roomSeatValues.push(
+            seatRoomUuid,
+            seat.stable_seat_key,
+            seat.queue || null,
+            seat.row !== undefined && seat.row !== null ? Number(seat.row) : null,
+            seat.col !== undefined && seat.col !== null ? Number(seat.col) : null,
+            seat.seat_number !== undefined && seat.seat_number !== null ? Number(seat.seat_number) : null,
+            Boolean(seat.is_premium),
+            Boolean(seat.is_vip),
+            Boolean(seat.is_love_seat),
+            Boolean(seat.is_handicapped),
+            Boolean(seat.is_safety_seat)
+          );
+          rsIdx += 11;
         }
-      }
 
-      // 7b. Insert seat_states using snapshot_id, session_id, is_seat, is_available, state, room_seat_id
-      const statePlaceholders: string[] = [];
-      const stateValues: any[] = [];
-      let sIdx = 1;
+        const seatIdMap = new Map<string, number>();
 
-      for (const seat of chunk) {
-        const roomSeatId = seatIdMap.get(seat.stable_seat_key) || null;
-        statePlaceholders.push(
-          `($${sIdx}, $${sIdx + 1}, $${sIdx + 2}, $${sIdx + 3}, $${sIdx + 4}, $${sIdx + 5})`
-        );
-        stateValues.push(
-          snapshotDbId,
-          sessionId,
-          Boolean(seat.is_seat),
-          Boolean(seat.is_available),
-          seat.state,
-          roomSeatId
-        );
-        sIdx += 6;
-      }
-
-      if (stateValues.length > 0) {
-        const seatInsertSQL = `
-          INSERT INTO seat_states (
-            snapshot_id, session_id, is_seat, is_available, state, room_seat_id
-          ) VALUES ${statePlaceholders.join(", ")};
-        `;
-        await client.query(seatInsertSQL, stateValues);
-      }
-    }
-
-    // 8. Compute and persist seat transitions if previous snapshot existed
-    if (prevSnapshotId && prevCollectedAt) {
-      const currCollectedAt = new Date(snap.collected_at);
-      const deltaMs = Math.max(1, currCollectedAt.getTime() - new Date(prevCollectedAt).getTime());
-      const deltaHours = deltaMs / (1000 * 60 * 60);
-
-      let newlyUnavailable = 0;
-      let newlyAvailable = 0;
-      let newlySafety = 0;
-      let otherChanges = 0;
-      const transitionEvents: any[] = [];
-
-      for (const seat of seats) {
-        const prevState = prevSeatStatesMap.get(seat.stable_seat_key);
-        const currState = seat.state;
-
-        if (prevState && prevState !== currState) {
-          transitionEvents.push({
-            seat_key: seat.stable_seat_key,
-            from_state: prevState,
-            to_state: currState,
-            queue: seat.queue,
-            row: seat.row,
-            col: seat.col,
-            number: seat.seat_number,
-          });
-
-          if (prevState === "AVAILABLE" && (currState === "UNAVAILABLE" || currState === "OCCUPIED")) {
-            newlyUnavailable++;
-          } else if ((prevState === "UNAVAILABLE" || prevState === "OCCUPIED" || prevState === "SAFETY") && currState === "AVAILABLE") {
-            newlyAvailable++;
-          } else if (currState === "SAFETY" && prevState !== "SAFETY") {
-            newlySafety++;
-          } else {
-            otherChanges++;
+        if (roomSeatValues.length > 0) {
+          const roomSeatsUpsertSQL = `
+            INSERT INTO room_seats (
+              theater_room_uuid, stable_seat_key, queue, row_num, col_num, seat_number,
+              is_premium, is_vip, is_love_seat, is_handicapped, is_safety_seat,
+              first_seen_at, last_seen_at
+            ) VALUES ${roomSeatPlaceholders.join(", ")}
+            ON CONFLICT (theater_room_uuid, stable_seat_key) DO UPDATE SET
+              last_seen_at = EXCLUDED.last_seen_at
+            RETURNING id, stable_seat_key;
+          `;
+          const rsUpsertRes = await client.query<{ id: string | number; stable_seat_key: string }>(roomSeatsUpsertSQL, roomSeatValues);
+          for (const row of rsUpsertRes.rows) {
+            seatIdMap.set(row.stable_seat_key, Number(row.id));
           }
         }
+
+        // 7b. Insert seat_states using snapshot_id, session_id, is_seat, is_available, state, room_seat_id
+        const statePlaceholders: string[] = [];
+        const stateValues: any[] = [];
+        let sIdx = 1;
+
+        for (const seat of chunk) {
+          const roomSeatId = seatIdMap.get(seat.stable_seat_key) || null;
+          statePlaceholders.push(
+            `($${sIdx}, $${sIdx + 1}, $${sIdx + 2}, $${sIdx + 3}, $${sIdx + 4}, $${sIdx + 5})`
+          );
+          stateValues.push(
+            snapshotDbId,
+            sessionId,
+            Boolean(seat.is_seat),
+            Boolean(seat.is_available),
+            seat.state,
+            roomSeatId
+          );
+          sIdx += 6;
+        }
+
+        if (stateValues.length > 0) {
+          const seatInsertSQL = `
+            INSERT INTO seat_states (
+              snapshot_id, session_id, is_seat, is_available, state, room_seat_id
+            ) VALUES ${statePlaceholders.join(", ")};
+          `;
+          await client.query(seatInsertSQL, stateValues);
+        }
       }
 
-      const velocityProxy = deltaHours > 0 ? newlyUnavailable / deltaHours : 0;
+      // 8. Compute and persist seat transitions if previous snapshot existed
+      if (prevSnapshotId && prevCollectedAt) {
+        const currCollectedAt = new Date(snap.collected_at);
+        const deltaMs = Math.max(1, currCollectedAt.getTime() - new Date(prevCollectedAt).getTime());
+        const deltaHours = deltaMs / (1000 * 60 * 60);
 
+        let newlyUnavailable = 0;
+        let newlyAvailable = 0;
+        let newlySafety = 0;
+        let otherChanges = 0;
+        const transitionEvents: any[] = [];
+
+        for (const seat of seats) {
+          const prevState = prevSeatStatesMap.get(seat.stable_seat_key);
+          const currState = seat.state;
+
+          if (prevState && prevState !== currState) {
+            transitionEvents.push({
+              seat_key: seat.stable_seat_key,
+              from_state: prevState,
+              to_state: currState,
+              queue: seat.queue,
+              row: seat.row,
+              col: seat.col,
+              number: seat.seat_number,
+            });
+
+            if (prevState === "AVAILABLE" && (currState === "UNAVAILABLE" || currState === "OCCUPIED")) {
+              newlyUnavailable++;
+            } else if ((prevState === "UNAVAILABLE" || prevState === "OCCUPIED" || prevState === "SAFETY") && currState === "AVAILABLE") {
+              newlyAvailable++;
+            } else if (currState === "SAFETY" && prevState !== "SAFETY") {
+              newlySafety++;
+            } else {
+              otherChanges++;
+            }
+          }
+        }
+
+        const velocityProxy = deltaHours > 0 ? newlyUnavailable / deltaHours : 0;
+
+        await client.query(
+          `INSERT INTO seat_transitions (
+            session_id, prev_snapshot_id, curr_snapshot_id, transition_timestamp,
+            delta_time_hours, newly_unavailable, newly_available, newly_safety,
+            other_state_changes, sales_velocity_proxy, detailed_transitions
+          ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);`,
+          [
+            sessionId,
+            prevSnapshotId,
+            snapshotDbId,
+            snap.collected_at,
+            deltaHours,
+            newlyUnavailable,
+            newlyAvailable,
+            newlySafety,
+            otherChanges,
+            velocityProxy,
+            JSON.stringify(transitionEvents),
+          ]
+        );
+      }
+
+      // Update seats_last_captured_at on session to reflect this detailed physical capture
       await client.query(
-        `INSERT INTO seat_transitions (
-          session_id, prev_snapshot_id, curr_snapshot_id, transition_timestamp,
-          delta_time_hours, newly_unavailable, newly_available, newly_safety,
-          other_state_changes, sales_velocity_proxy, detailed_transitions
-        ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11);`,
-        [
-          sessionId,
-          prevSnapshotId,
-          snapshotDbId,
-          snap.collected_at,
-          deltaHours,
-          newlyUnavailable,
-          newlyAvailable,
-          newlySafety,
-          otherChanges,
-          velocityProxy,
-          JSON.stringify(transitionEvents),
-        ]
+        `UPDATE sessions SET seats_last_captured_at = NOW() WHERE id = $1;`,
+        [sessionId]
       );
     }
 
@@ -1006,7 +1056,7 @@ export async function persistCollectionPayload(
           if (!item) break;
 
           try {
-            const didPersist = await persistSingleSession(collectionRunDbId, item);
+            const didPersist = await persistSingleSession(collectionRunDbId, item, prepared.detailedSeatCapture);
             if (didPersist) {
               snapshotsCreatedCount++;
             }
@@ -1053,8 +1103,9 @@ export async function persistCollectionPayload(
         sessions_successful = $5,
         sessions_failed = $6,
         snapshots_created = $7,
-        errors = $8
-       WHERE id = $9;`,
+        errors = $8,
+        detailed_seats_captured = $9
+       WHERE id = $10;`,
       [
         finalRunStatus,
         runMeta.movies_found || targetIds.length,
@@ -1064,6 +1115,7 @@ export async function persistCollectionPayload(
         Math.max(0, (runMeta.sessions_attempted || 0) - snapshotsCreatedCount),
         snapshotsCreatedCount,
         JSON.stringify(runMeta.errors || []),
+        prepared.detailedSeatCapture,
         collectionRunDbId,
       ]
     );
@@ -1073,7 +1125,7 @@ export async function persistCollectionPayload(
     await cleanupStaleFormatDiscoveryHealth();
 
     const durationMs = Date.now() - startTime;
-    console.log(`Collection run ${runId} completed in ${durationMs}ms: ${snapshotsCreatedCount} snapshots created.`);
+    console.log(`Collection run ${runId} completed in ${durationMs}ms: ${snapshotsCreatedCount} snapshots created (detailedSeatsCaptured: ${prepared.detailedSeatCapture}).`);
 
     const result: CollectorJobResult = {
       runId,
@@ -1085,6 +1137,7 @@ export async function persistCollectionPayload(
       snapshotsCreated: snapshotsCreatedCount,
       errors: runMeta.errors || [],
       durationMs,
+      detailedSeatsCaptured: prepared.detailedSeatCapture,
     };
 
     if (activeProgress) {

@@ -113,10 +113,16 @@ export async function runMigrations(): Promise<void> {
       snapshots_created INT DEFAULT 0,
       errors JSONB DEFAULT '[]'::jsonb,
       collector_version VARCHAR(50) DEFAULT '2.0.0',
-      trigger_source VARCHAR(50) DEFAULT 'SCHEDULED'
+      trigger_source VARCHAR(50) DEFAULT 'SCHEDULED',
+      detailed_seats_captured BOOLEAN DEFAULT FALSE
     );
     ALTER TABLE collection_runs ADD COLUMN IF NOT EXISTS trigger_source VARCHAR(50) DEFAULT 'SCHEDULED';
+    ALTER TABLE collection_runs ADD COLUMN IF NOT EXISTS detailed_seats_captured BOOLEAN DEFAULT FALSE;
     CREATE INDEX IF NOT EXISTS idx_collection_runs_started ON collection_runs(started_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_collection_runs_detailed ON collection_runs(detailed_seats_captured, started_at DESC);
+
+    ALTER TABLE sessions ADD COLUMN IF NOT EXISTS seats_last_captured_at TIMESTAMPTZ;
+    CREATE INDEX IF NOT EXISTS idx_sessions_seats_last_captured ON sessions(seats_last_captured_at DESC);
 
     -- 6. Seat Snapshots (Immutable Historical Observations)
     CREATE TABLE IF NOT EXISTS seat_snapshots (
@@ -464,6 +470,23 @@ export async function backfillFormatDiscoveryHealth(): Promise<void> {
       ]);
     }
     console.log("Format discovery health backfilled successfully.");
+
+    // Backfill detailed_seats_captured on existing SUCCESS runs that produced snapshots
+    await query(`
+      UPDATE collection_runs 
+      SET detailed_seats_captured = true 
+      WHERE status = 'SUCCESS' AND snapshots_created > 0 AND detailed_seats_captured IS FALSE;
+    `).catch(() => {});
+
+    // Backfill seats_last_captured_at on existing sessions from their latest snapshot or updated_at
+    await query(`
+      UPDATE sessions s
+      SET seats_last_captured_at = COALESCE(
+        (SELECT MAX(ss.collected_at) FROM seat_snapshots ss WHERE ss.session_id = s.id),
+        s.updated_at
+      )
+      WHERE s.seats_last_captured_at IS NULL;
+    `).catch(() => {});
   } catch (err) {
     console.warn("Error backfilling format discovery health:", err);
   }

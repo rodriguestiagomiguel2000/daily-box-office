@@ -270,7 +270,7 @@ export interface RoomBlockResult {
 }
 
 /**
- * Computes per-room structural block list over a rolling 60-day window.
+ * Computes per-room structural block list over a rolling 45-day window.
  *
  * Rules:
  * 1. Absolute occupancy ceiling only (<= 15% occupancy, no relative percentile fallback).
@@ -280,7 +280,7 @@ export interface RoomBlockResult {
  * 4. If a room has < 8 qualifying sessions, detection is SKIPPED for that room (structural_blocked_seats = 0)
  *    and logged as "insufficient low-demand data, detection skipped" rather than risking false-positives
  *    from a contaminated reference set.
- * 5. Full per-room replace-on-recompute: every recompute cycle evaluates the full 60-day rolling window.
+ * 5. Full per-room replace-on-recompute: every recompute cycle evaluates the full 45-day rolling window.
  *    Any seat previously flagged as structurally blocked that is no longer detected (e.g. physically repaired
  *    and observation ratio dropped below 80%, or aged out) is automatically REMOVED from room_structural_blocks.
  * 6. Lightweight audit log: each addition and removal is recorded in room_structural_blocks_audit_log with
@@ -297,7 +297,7 @@ export async function computeRoomStructuralBlocks(
   const maxOccupancy = opts.maxOccupancyProxy !== undefined ? opts.maxOccupancyProxy : 0.15;
   const minQualifyingSessions = opts.minQualifyingSessions !== undefined ? opts.minQualifyingSessions : 8;
   const minObservationRatio = opts.minObservationRatio !== undefined ? opts.minObservationRatio : 0.80;
-  const windowDays = opts.windowDays !== undefined ? opts.windowDays : 60;
+  const windowDays = opts.windowDays !== undefined ? opts.windowDays : 45;
 
   // Ensure tracking and audit tables exist
   await query(`
@@ -376,7 +376,7 @@ export async function computeRoomStructuralBlocks(
     });
   }
 
-  // 2. Detect structural blocks across the rolling 60-day window using earliest snapshots and <= 15% occupancy gating
+  // 2. Detect structural blocks across the rolling 45-day window using earliest snapshots and <= 15% occupancy gating
   const detectSql = `
     WITH earliest_session_snaps AS (
       SELECT DISTINCT ON (ss.session_id)
@@ -480,7 +480,7 @@ export async function computeRoomStructuralBlocks(
     });
   }
 
-  // 3. Fetch all evaluated rooms in the 60-day window to distinguish qualified vs skipped rooms
+  // 3. Fetch all evaluated rooms in the 45-day window to distinguish qualified vs skipped rooms
   const allEvaluatedRoomsRes = await query(`
     WITH earliest_session_snaps AS (
       SELECT DISTINCT ON (ss.session_id)
@@ -550,14 +550,14 @@ export async function computeRoomStructuralBlocks(
     );
   }
 
-  // 4. Compile union of all rooms to evaluate (rooms active in 60-day window + any rooms with existing blocks in DB)
+  // 4. Compile union of all rooms to evaluate (rooms active in 45-day window + any rooms with existing blocks in DB)
   const allTargetRoomUuids = new Set<string>([
     ...allRooms.map(r => r.theater_room_uuid),
     ...existingByRoom.keys(),
   ]);
 
   // 5. Per-Room Replace-on-Recompute:
-  // For each room, compare existing DB set vs fresh detected set in current rolling 60-day window.
+  // For each room, compare existing DB set vs fresh detected set in current rolling 45-day window.
   const seatsToUpsert: Array<{ roomUuid: string; seatKey: string; obsCount: number; minTs: Date; maxTs: Date }> = [];
   const addedAuditEntries: Array<{ roomUuid: string; seatKey: string; reason: string; obsCount: number; qualifyingSessions: number }> = [];
   const removedSeats: Array<{ roomUuid: string; seatKey: string }> = [];
@@ -590,7 +590,7 @@ export async function computeRoomStructuralBlocks(
       if (!existingSeats.has(seatKey)) {
         newlyAdded++;
         const ratioPercent = qualifyingCount > 0 ? Math.round((targetSeat.obs_count / qualifyingCount) * 100) : 100;
-        const reason = `Qualified baseline block: observed unavailable in ${targetSeat.obs_count}/${qualifyingCount} (${ratioPercent}%) low-occupancy sessions (<=15% occ) in 60-day window`;
+        const reason = `Qualified baseline block: observed unavailable in ${targetSeat.obs_count}/${qualifyingCount} (${ratioPercent}%) low-occupancy sessions (<=15% occ) in 45-day window`;
         addedAuditEntries.push({
           roomUuid,
           seatKey,

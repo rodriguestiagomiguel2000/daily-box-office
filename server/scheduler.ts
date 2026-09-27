@@ -1,5 +1,6 @@
 import { executeCollectionRun, getActiveProgress, CollectorJobResult } from "./collector";
 import { computeRoomStructuralBlocks } from "./revenue";
+import { executeRetentionPurge } from "./retention";
 import { envConfig } from "./env";
 
 class CollectorScheduler {
@@ -9,6 +10,7 @@ class CollectorScheduler {
   private lastRunTime: Date | null = null;
   private nextRunTime: Date | null = null;
   private lastRunResult: CollectorJobResult | null = null;
+  private lastRetentionPurgeDate: string | null = null;
 
   public start(intervalMinutes: number = 20) {
     this.intervalMinutes = Math.max(1, intervalMinutes);
@@ -77,6 +79,20 @@ class CollectorScheduler {
         console.error("[Scheduler] Error updating structural seat blocks:", err);
       });
 
+      // Daily overnight retention purge on granular tables (03:00 - 05:00 Lisbon time lull)
+      const lisbonHour = parseInt(
+        new Intl.DateTimeFormat("en-US", { timeZone: "Europe/Lisbon", hour: "numeric", hour12: false }).format(new Date()),
+        10
+      );
+      const lisbonToday = new Intl.DateTimeFormat("en-CA", { timeZone: "Europe/Lisbon" }).format(new Date());
+      if (lisbonHour >= 3 && lisbonHour <= 5 && this.lastRetentionPurgeDate !== lisbonToday) {
+        this.lastRetentionPurgeDate = lisbonToday;
+        console.log(`[Scheduler] Overnight maintenance window (Lisbon hour ${lisbonHour}): triggering 45-day retention purge...`);
+        executeRetentionPurge({ retentionDays: 45 }).catch((err) => {
+          console.error("[Scheduler] Error executing daily overnight retention purge:", err);
+        });
+      }
+
       return result;
     } catch (err: any) {
       console.error(`Collection run (${triggerSource}) encountered error:`, err);
@@ -106,6 +122,7 @@ class CollectorScheduler {
       nextRunTime: this.nextRunTime ? this.nextRunTime.toISOString() : null,
       lastRunResult: this.lastRunResult,
       activeProgress: active.progress,
+      lastRetentionPurgeDate: this.lastRetentionPurgeDate,
       collectorVersion: "2.0.0",
     };
   }

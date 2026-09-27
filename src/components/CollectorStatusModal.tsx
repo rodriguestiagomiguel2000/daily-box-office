@@ -308,18 +308,25 @@ export const CollectorStatusModal: React.FC<CollectorStatusModalProps> = ({
               <div className="text-2xl font-bold text-slate-100">
                 {totals.snapshots.toLocaleString()}
               </div>
-              <div className="text-[11px] text-slate-500 mt-0.5">Immutable historical records</div>
+              <div className="text-[11px] text-slate-500 mt-0.5">Immutable historical records (20m cadence)</div>
             </div>
 
             <div className="bg-slate-800/60 border border-slate-700/60 p-4 rounded-xl">
-              <div className="flex items-center space-x-2 text-slate-400 text-xs mb-1">
-                <Layers className="w-4 h-4 text-cyan-400" />
-                <span>Physical Seat States</span>
+              <div className="flex items-center justify-between text-slate-400 text-xs mb-1">
+                <div className="flex items-center space-x-2">
+                  <Layers className="w-4 h-4 text-cyan-400" />
+                  <span>Physical Seat States</span>
+                </div>
+                {totals.seats_last_captured_at && (
+                  <span className="text-[10px] font-mono text-cyan-300/80 bg-cyan-950/60 border border-cyan-800/50 px-1.5 py-0.5 rounded">
+                    Seats last captured: {new Date(totals.seats_last_captured_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Lisbon" })}
+                  </span>
+                )}
               </div>
               <div className="text-2xl font-bold text-cyan-300">
                 {totals.individual_seat_states.toLocaleString()}
               </div>
-              <div className="text-[11px] text-slate-500 mt-0.5">Exact row/col state keys</div>
+              <div className="text-[11px] text-slate-500 mt-0.5">Detailed seat-maps (~2h split cadence)</div>
             </div>
 
             <div className="bg-slate-800/60 border border-slate-700/60 p-4 rounded-xl">
@@ -407,6 +414,15 @@ export const CollectorStatusModal: React.FC<CollectorStatusModalProps> = ({
                 <span className="text-slate-400">Collector Core:</span>
                 <div className="font-mono text-cyan-400 font-semibold mt-1">
                   v{scheduler?.collectorVersion || "2.0.0"} (Render Cron)
+                </div>
+              </div>
+
+              <div>
+                <span className="text-slate-400">Seats Last Captured:</span>
+                <div className="font-semibold text-cyan-300 mt-1">
+                  {totals.seats_last_captured_at
+                    ? new Date(totals.seats_last_captured_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Lisbon" })
+                    : "None yet"}
                 </div>
               </div>
             </div>

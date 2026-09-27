@@ -1822,8 +1822,23 @@ export const MovieDetailView: React.FC<MovieDetailViewProps> = ({
                               {sess.format}
                             </span>
                           </td>
-                          <td className="py-3 px-3 text-right text-slate-400 font-mono">
-                            {sess.sellable_seats}
+                          <td className="py-3 px-3 text-right font-mono">
+                            <div className="text-slate-300 font-medium">{sess.sellable_seats}</div>
+                            {sess.seats_last_captured_at ? (
+                              <div
+                                className="text-[10px] text-cyan-400 font-sans tracking-tight"
+                                title={`Physical seat map last captured at ${new Date(sess.seats_last_captured_at).toLocaleString()}`}
+                              >
+                                Seats last captured: {new Date(sess.seats_last_captured_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Lisbon" })}
+                              </div>
+                            ) : sess.latest_update ? (
+                              <div
+                                className="text-[10px] text-slate-500 font-sans tracking-tight"
+                                title={`Latest aggregate snapshot at ${new Date(sess.latest_update).toLocaleString()}`}
+                              >
+                                Seats last captured: {new Date(sess.latest_update).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Lisbon" })}
+                              </div>
+                            ) : null}
                           </td>
                           <td className="py-3 px-3 text-right text-emerald-400 font-mono">
                             {sess.available_seats}

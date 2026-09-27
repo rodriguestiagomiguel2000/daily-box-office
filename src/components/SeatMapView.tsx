@@ -207,6 +207,11 @@ export const SeatMapView: React.FC<SeatMapViewProps> = ({
                   {data.session.format}
                 </span>
               )}
+              {data?.session.seats_last_captured_at && (
+                <span className="px-2 py-0.5 text-[11px] font-mono font-semibold bg-emerald-950/70 border border-emerald-700/60 text-emerald-300 rounded-md">
+                  Seats last captured: {new Date(data.session.seats_last_captured_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Lisbon" })}
+                </span>
+              )}
             </div>
             <p className="text-xs text-slate-400 mt-0.5">
               {data?.session.movie_title || "Loading..."} &bull; {data?.session.cinema_name} ({data?.session.room_name})
@@ -282,8 +287,10 @@ export const SeatMapView: React.FC<SeatMapViewProps> = ({
         ) : !gridInfo || data?.seats.length === 0 ? (
           <div className="flex flex-col items-center justify-center my-auto py-16 text-slate-400 gap-3 text-center">
             <Info className="w-10 h-10 text-slate-500" />
-            <span className="text-sm font-medium text-slate-300">No seat map recorded for this session.</span>
-            <span className="text-xs text-slate-500">Seat observations will appear after data sweeps from NOS.</span>
+            <span className="text-sm font-semibold text-slate-200">No seat map data available</span>
+            <span className="text-xs text-slate-400 max-w-sm">
+              Physical seat states are retained for 45 days (older granular records are automatically purged, while revenue and admissions remain permanent), or detailed seat layout has not yet been swept for this session.
+            </span>
           </div>
         ) : (
           <div className="w-full flex flex-col items-center max-w-full overflow-x-auto my-auto">

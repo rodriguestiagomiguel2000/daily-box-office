@@ -27,6 +27,7 @@ import {
 } from "./revenue";
 import { computeMovieEODForecast, runHistoricalBacktests, getBacktestSummaryMetrics } from "./forecast";
 import { runDiagnostics } from "./diagnostics";
+import { executeRetentionPurge, getGranularTablesBloat } from "./retention";
 
 export const apiRouter = Router();
 
@@ -707,6 +708,7 @@ apiRouter.get("/movies/:id/detail", async (req, res) => {
         s.format,
         s.description,
         s.active,
+        s.seats_last_captured_at,
         c.id as cinema_id,
         c.name as cinema_name,
         c.city as cinema_city,
@@ -872,6 +874,9 @@ apiRouter.get("/movies/:id/detail", async (req, res) => {
         estimated_revenue: Math.round(sessionRev * 100) / 100,
         ticket_prices: prices,
         latest_update: snapTime ? new Date(snapTime).toISOString() : null,
+        seats_last_captured_at: sess.seats_last_captured_at
+          ? new Date(sess.seats_last_captured_at).toISOString()
+          : (snapTime ? new Date(snapTime).toISOString() : null),
         is_current: isCurrent,
       };
     });
@@ -975,6 +980,7 @@ apiRouter.get("/sessions/:id/history", async (req, res) => {
         s.format,
         s.description,
         s.active,
+        s.seats_last_captured_at,
         c.id as cinema_id,
         c.name as cinema_name,
         c.city as cinema_city,
@@ -1065,6 +1071,9 @@ apiRouter.get("/sessions/:id/history", async (req, res) => {
         effective_unavailable_seats: latestEffective,
         occupancy_proxy: latestSnap ? latestSnap.occupancy_proxy : 0,
         latest_collected_at: latestSnap ? latestSnap.collected_at : null,
+        seats_last_captured_at: sess.seats_last_captured_at
+          ? new Date(sess.seats_last_captured_at).toISOString()
+          : (latestSnap ? new Date(latestSnap.collected_at).toISOString() : null),
         movie_title: sess.movie_title,
       },
       snapshots: snapshotsRes.rows.map((s) => {
@@ -1113,6 +1122,7 @@ apiRouter.get("/sessions/:id/seat-map", async (req, res) => {
         s.starts_at,
         s.operational_date,
         s.format,
+        s.seats_last_captured_at,
         c.name as cinema_name,
         r.name as room_name,
         r.external_id as room_external_id,
@@ -1130,23 +1140,33 @@ apiRouter.get("/sessions/:id/seat-map", async (req, res) => {
     }
     const sess = sessionRes.rows[0];
 
-    // 2. Find last seat_snapshot for this session on the given operational date (or latest overall if not found)
+    // 2. Find last seat_snapshot with physical seat_states for this session
     let snapshotRes;
     if (requestedDate) {
       snapshotRes = await query(
-        `SELECT * FROM seat_snapshots 
-         WHERE session_id = $1 
-           AND (DATE(collected_at AT TIME ZONE 'Europe/Lisbon')::text = $2 OR DATE(collected_at)::text = $2)
-         ORDER BY collected_at DESC LIMIT 1;`,
+        `SELECT ss.* FROM seat_snapshots ss 
+         WHERE ss.session_id = $1 
+           AND (DATE(ss.collected_at AT TIME ZONE 'Europe/Lisbon')::text = $2 OR DATE(ss.collected_at)::text = $2)
+           AND EXISTS (SELECT 1 FROM seat_states st WHERE st.snapshot_id = ss.id)
+         ORDER BY ss.collected_at DESC LIMIT 1;`,
         [sessionId, requestedDate]
       );
     }
     
     if (!snapshotRes || snapshotRes.rows.length === 0) {
       snapshotRes = await query(
-        `SELECT * FROM seat_snapshots 
-         WHERE session_id = $1 
-         ORDER BY collected_at DESC LIMIT 1;`,
+        `SELECT ss.* FROM seat_snapshots ss 
+         WHERE ss.session_id = $1 
+           AND EXISTS (SELECT 1 FROM seat_states st WHERE st.snapshot_id = ss.id)
+         ORDER BY ss.collected_at DESC LIMIT 1;`,
+        [sessionId]
+      );
+    }
+
+    // Fallback: If no snapshots with seat states exist (e.g. purged historical sessions or lightweight-only runs)
+    if (!snapshotRes || snapshotRes.rows.length === 0) {
+      snapshotRes = await query(
+        `SELECT * FROM seat_snapshots WHERE session_id = $1 ORDER BY collected_at DESC LIMIT 1;`,
         [sessionId]
       );
     }
@@ -1163,6 +1183,7 @@ apiRouter.get("/sessions/:id/seat-map", async (req, res) => {
           room_name: sess.room_name || "Sala",
           format: sess.format || "2D",
           snapshot_collected_at: null,
+          seats_last_captured_at: sess.seats_last_captured_at ? new Date(sess.seats_last_captured_at).toISOString() : null,
           snapshot_id: null,
           total_seats: 0,
           sold_count: 0,
@@ -1262,6 +1283,14 @@ apiRouter.get("/sessions/:id/seat-map", async (req, res) => {
       };
     });
 
+    // If seat_states were purged or not captured, populate counts from the aggregate snapshot record
+    if (classifiedSeats.length === 0 && snapshot) {
+      total_seats = Number(snapshot.total_seats || snapshot.sellable_seats || 0);
+      free_count = Number(snapshot.available_seats || 0);
+      sold_count = Number(snapshot.unavailable_seats || 0);
+      safety_count = Number(snapshot.safety_seats || 0);
+    }
+
     return res.json({
       session: {
         session_id: sess.session_id,
@@ -1273,6 +1302,9 @@ apiRouter.get("/sessions/:id/seat-map", async (req, res) => {
         room_name: sess.room_name || "Sala",
         format: sess.format || "2D",
         snapshot_collected_at: snapshot.collected_at ? new Date(snapshot.collected_at).toISOString() : null,
+        seats_last_captured_at: sess.seats_last_captured_at
+          ? new Date(sess.seats_last_captured_at).toISOString()
+          : (snapshot.collected_at ? new Date(snapshot.collected_at).toISOString() : null),
         snapshot_id: snapshot.id,
         total_seats,
         sold_count,
@@ -1293,7 +1325,7 @@ apiRouter.get("/sessions/:id/seat-map", async (req, res) => {
 apiRouter.get("/collector/status", async (req, res) => {
   try {
     const currentOpDate = getOperationalDateStr();
-    const [recentRunsRes, totalSnapshotsRes, totalStatesRes, totalTransitionsRes, formatHealthRes] =
+    const [recentRunsRes, totalSnapshotsRes, totalStatesRes, totalTransitionsRes, formatHealthRes, lastSeatRunRes] =
       await Promise.all([
         query(`SELECT * FROM collection_runs ORDER BY started_at DESC LIMIT 20;`),
         query(`SELECT COUNT(*) as count FROM seat_snapshots;`),
@@ -1329,6 +1361,11 @@ apiRouter.get("/collector/status", async (req, res) => {
             )
           ORDER BY fdh.consecutive_failures DESC, fdh.last_failure_at DESC NULLS LAST;
         `, [currentOpDate]),
+        query<{ started_at: Date }>(
+          `SELECT started_at FROM collection_runs 
+           WHERE detailed_seats_captured = true AND status = 'SUCCESS' 
+           ORDER BY started_at DESC LIMIT 1;`
+        ),
       ]);
 
     const active = getActiveProgress();
@@ -1343,11 +1380,36 @@ apiRouter.get("/collector/status", async (req, res) => {
         snapshots: parseInt(totalSnapshotsRes.rows[0]?.count, 10) || 0,
         individual_seat_states: parseInt(totalStatesRes.rows[0]?.count, 10) || 0,
         transitions_recorded: parseInt(totalTransitionsRes.rows[0]?.count, 10) || 0,
+        seats_last_captured_at: lastSeatRunRes.rows[0]?.started_at ? new Date(lastSeatRunRes.rows[0].started_at).toISOString() : null,
       },
     });
   } catch (err: any) {
     console.error("Error fetching collector status:", err);
     res.status(500).json({ error: err.message });
+  }
+});
+
+// POST /api/collector/retention-purge - Manually or scheduled trigger 45-day retention purge
+apiRouter.post("/collector/retention-purge", async (req, res) => {
+  try {
+    const days = req.body?.days !== undefined ? Number(req.body.days) : 45;
+    const dryRun = Boolean(req.body?.dryRun);
+    const result = await executeRetentionPurge({ retentionDays: days, dryRun });
+    res.json(result);
+  } catch (err: any) {
+    console.error("Error executing retention purge:", err);
+    res.status(500).json({ error: err.message || String(err) });
+  }
+});
+
+// GET /api/collector/retention-bloat - Inspect dead tuple bloat on granular tables
+apiRouter.get("/collector/retention-bloat", async (req, res) => {
+  try {
+    const bloat = await getGranularTablesBloat();
+    res.json({ bloat });
+  } catch (err: any) {
+    console.error("Error checking retention bloat:", err);
+    res.status(500).json({ error: err.message || String(err) });
   }
 });
 

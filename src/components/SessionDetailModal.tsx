@@ -121,7 +121,7 @@ export const SessionDetailModal: React.FC<SessionDetailModalProps> = ({ sessionI
           ) : session ? (
             <>
               {/* Session Overview KPI Bar */}
-              <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-7 gap-3">
+              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
                 <div className="bg-slate-800/40 border border-slate-800 rounded-xl p-3.5">
                   <div className="text-xs text-slate-400 font-medium flex items-center gap-1.5 mb-1">
                     <Clock className="w-3.5 h-3.5 text-cyan-400" />
@@ -197,6 +197,21 @@ export const SessionDetailModal: React.FC<SessionDetailModalProps> = ({ sessionI
                     {session.latest_collected_at ? new Date(session.latest_collected_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Lisbon" }) : "N/A"}
                   </div>
                   <div className="text-[10px] text-slate-500 mt-0.5">{snapshots.length} total sweeps</div>
+                </div>
+
+                <div className="bg-slate-800/40 border border-cyan-500/20 rounded-xl p-3.5 bg-cyan-950/20">
+                  <div className="text-xs text-cyan-300 font-medium flex items-center gap-1.5 mb-1">
+                    <Armchair className="w-3.5 h-3.5 text-cyan-400" />
+                    Seat Map
+                  </div>
+                  <div className="text-xs font-bold text-cyan-200">
+                    {session.seats_last_captured_at
+                      ? `Seats last captured: ${new Date(session.seats_last_captured_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Lisbon" })}`
+                      : session.latest_collected_at
+                      ? `Seats last captured: ${new Date(session.latest_collected_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Lisbon" })}`
+                      : "Not captured"}
+                  </div>
+                  <div className="text-[10px] text-cyan-400/70 mt-0.5">~2h capture cycle</div>
                 </div>
               </div>
 
@@ -290,10 +305,19 @@ export const SessionDetailModal: React.FC<SessionDetailModalProps> = ({ sessionI
 
               {/* Tracking History Table */}
               <div className="space-y-3">
-                <div className="flex items-center justify-between">
-                  <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">
-                    Tracking History ({snapshots.length} Chronological Sweeps)
-                  </h3>
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-3">
+                    <h3 className="text-sm font-semibold text-slate-300 uppercase tracking-wider">
+                      Tracking History ({snapshots.length} Chronological Sweeps)
+                    </h3>
+                    <span className="text-[11px] font-mono px-2 py-0.5 rounded bg-cyan-950/60 border border-cyan-800/60 text-cyan-300">
+                      Seats last captured: {session.seats_last_captured_at
+                        ? new Date(session.seats_last_captured_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Lisbon" })
+                        : session.latest_collected_at
+                        ? new Date(session.latest_collected_at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", timeZone: "Europe/Lisbon" })
+                        : "N/A"}
+                    </span>
+                  </div>
                   <span className="text-xs text-slate-500 font-mono">Ordered: Oldest → Newest</span>
                 </div>
 
